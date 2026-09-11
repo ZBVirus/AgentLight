@@ -3,6 +3,9 @@
 Planned additions, roughly in priority order. Nothing here is committed; it is a
 parking lot so decisions are not silently forgotten.
 
+For the proposed source/engine/transport rework behind these items, see
+[`architecture-redesign.md`](architecture-redesign.md).
+
 ## Multiple containers / state files
 
 Today AgentLight reads exactly one `state.json`. Clawlight itself supports one
