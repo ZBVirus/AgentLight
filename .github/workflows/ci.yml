@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: core (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy -p agentlight-core --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p agentlight-core
+
+  windows:
+    name: windows app build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Test core
+        run: cargo test -p agentlight-core
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Build (core check, no bundle)
+        run: cargo build -p agentlight --release
+
+      - name: Bundle NSIS installer
+        run: cargo tauri build
+        continue-on-error: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentlight-windows
+          if-no-files-found: warn
+          path: |
+            target/release/agentlight.exe
+            target/release/bundle/nsis/*.exe

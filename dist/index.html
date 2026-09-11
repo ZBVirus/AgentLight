@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentLight</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="bar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-dot" id="brand-dot"></span>
+          <span class="brand-name" data-tauri-drag-region>AgentLight</span>
+        </div>
+        <div class="controls">
+          <button class="icon-btn" id="btn-pin" title="Toggle always on top" aria-label="Toggle always on top">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M9.5 1.5 14.5 6.5 12.4 7.1 9.6 9.9 10 13.6 8.6 15 5 11.4 2 14.4 1.6 14 4.6 11 1 7.4 2.4 6 6.1 6.4 8.9 3.6Z"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-min" title="Minimize" aria-label="Minimize">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="3" y="7.4" width="10" height="1.2" rx="0.6"/></svg>
+          </button>
+          <button class="icon-btn close" id="btn-hide" title="Hide to tray" aria-label="Hide to tray">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="view light" id="view-light">
+          <div class="light" id="big-light" aria-hidden="true"><span class="light-core"></span></div>
+          <div class="light-info">
+            <div class="light-label" id="agg-label">Waiting for clawlight…</div>
+            <div class="chips" id="chips"></div>
+            <button class="link" id="btn-pick">Choose state file…</button>
+          </div>
+          <button class="expand" id="btn-expand">Details</button>
+        </section>
+
+        <section class="view detail hidden" id="view-detail">
+          <div class="detail-head">
+            <span class="detail-title" id="detail-title">Sessions</span>
+            <button class="ghost" id="btn-collapse">Collapse</button>
+          </div>
+          <ul class="sessions" id="sessions"></ul>
+          <div class="detail-foot">
+            <button class="ghost" id="btn-clear-done">Clear done</button>
+            <button class="ghost" id="btn-settings">Settings</button>
+          </div>
+        </section>
+
+        <section class="view settings hidden" id="view-settings">
+          <div class="detail-head">
+            <span class="detail-title">Settings</span>
+          </div>
+          <form class="form" id="settings-form">
+            <label class="field">
+              <span>State file</span>
+              <div class="row">
+                <input type="text" id="set-state-path" placeholder="C:\Users\you\clawlight\state.json" />
+                <button type="button" class="ghost" id="btn-browse">Browse</button>
+              </div>
+            </label>
+
+            <label class="field inline">
+              <input type="checkbox" id="set-top" />
+              <span>Always on top</span>
+            </label>
+            <label class="field inline">
+              <input type="checkbox" id="set-autostart" />
+              <span>Start at login</span>
+            </label>
+            <label class="field inline">
+              <input type="checkbox" id="set-notifications" />
+              <span>Notify when a session needs help</span>
+            </label>
+            <label class="field inline">
+              <input type="checkbox" id="set-show-done" />
+              <span>Show every done session</span>
+            </label>
+
+            <label class="field">
+              <span>Idle behavior</span>
+              <select id="set-yellow-mode">
+                <option value="any_inactive">Any idle session turns it orange</option>
+                <option value="active_wins">Stay green while anything is working</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Poll interval (ms)</span>
+              <input type="number" id="set-poll" min="250" max="60000" step="250" />
+            </label>
+
+            <div class="settings-foot">
+              <button type="button" class="ghost" id="btn-settings-back">Back</button>
+              <button type="submit" class="primary" id="btn-save">Save</button>
+            </div>
+          </form>
+        </section>
+      </main>
+
+      <div class="toast hidden" id="toast"></div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
