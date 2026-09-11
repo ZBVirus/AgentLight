@@ -10,6 +10,7 @@ const getCurrentWindow = tauri.window ? tauri.window.getCurrentWindow : null;
 const MINI_SIZES = {
   single: { width: 88, height: 88 },
   triple: { width: 172, height: 68 },
+  triple_vertical: { width: 68, height: 172 },
 };
 
 const SIZES = {
@@ -58,7 +59,11 @@ function setView(next) {
       ? MINI_SIZES[collapseStyle()] || MINI_SIZES.single
       : SIZES[next] || MINI_SIZES.single;
   if (invoke) {
-    invoke("resize_window", size).catch(() => {});
+    invoke("resize_window", {
+      width: size.width,
+      height: size.height,
+      mode: next,
+    }).catch(() => {});
   }
 }
 
@@ -385,6 +390,9 @@ function wire() {
     try {
       const path = await invoke("pick_state_file");
       if (path) {
+        // `pick_state_file` already saved the choice; reflect it in the text
+        // box so a later Save does not write the stale path back.
+        $("set-state-path").value = path;
         toast("State file updated");
         await loadConfig();
         await refreshSnapshot();

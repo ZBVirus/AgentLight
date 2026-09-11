@@ -13,7 +13,10 @@ use std::time::{Duration, SystemTime};
 use agentlight_core::{Config, Snapshot, Status};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
+    WindowEvent,
+};
 use tauri_plugin_autostart::MacosLauncher;
 
 // Required in scope for `RecommendedWatcher::watch`.
@@ -31,6 +34,14 @@ struct AppState {
     /// Whether the window is currently shown. Tracked explicitly because
     /// `Window::is_visible` reads a cache that can lag after `hide()`.
     visible: AtomicBool,
+    /// Which view owns the window right now (`mini`, `detail`, or `settings`).
+    window_mode: Mutex<String>,
+    /// Top-left of the collapsed window, restored when expanding did not move
+    /// it. `None` until the first expand.
+    mini_anchor: Mutex<Option<PhysicalPosition<i32>>>,
+    /// Last position we placed the window at programmatically. Lets a real
+    /// user drag be told apart from our own clamping move.
+    applied_position: Mutex<Option<PhysicalPosition<i32>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +147,80 @@ fn set_always_on_top(
     Ok(())
 }
 
+/// Resize the window for a view and keep it inside the monitor work area.
+///
+/// `mode` is the target view. Going back to `mini` restores the position the
+/// collapsed window had before expanding, unless the user dragged the window
+/// in the meantime. Expanding clamps so the larger window stays on screen.
 #[tauri::command]
-fn resize_window(app: AppHandle, width: f64, height: f64) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let logical = LogicalSize::new(width, height);
+    let target: PhysicalSize<u32> = logical.to_physical(scale);
+    let state = app.state::<AppState>();
+
+    if mode == "mini" {
+        let current = window.outer_position().ok();
+        let moved = match (current, *state.applied_position.lock().unwrap()) {
+            (Some(now), Some(applied)) => now != applied,
+            _ => true,
+        };
+        let _ = window.set_size(logical);
+        let desired = if moved {
+            current
+        } else {
+            *state.mini_anchor.lock().unwrap()
+        };
+        if let Some(desired) = desired.or(current) {
+            let placed = clamp_to_work_area(&window, desired, target);
+            let _ = window.set_position(placed);
+            *state.applied_position.lock().unwrap() = Some(placed);
+        }
+        *state.window_mode.lock().unwrap() = "mini".to_string();
+    } else {
+        if *state.window_mode.lock().unwrap() == "mini" {
+            if let Ok(position) = window.outer_position() {
+                *state.mini_anchor.lock().unwrap() = Some(position);
+            }
+        }
+        let _ = window.set_size(logical);
+        if let Ok(current) = window.outer_position() {
+            let placed = clamp_to_work_area(&window, current, target);
+            if placed != current {
+                let _ = window.set_position(placed);
+                *state.applied_position.lock().unwrap() = Some(placed);
+            }
+        }
+        *state.window_mode.lock().unwrap() = mode;
     }
+}
+
+/// Pull `desired` inside the current monitor work area, leaving the window
+/// fully visible. Falls back to the primary monitor when needed.
+fn clamp_to_work_area(
+    window: &WebviewWindow,
+    desired: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return desired;
+    };
+    let area = monitor.work_area();
+    let left = area.position.x;
+    let top = area.position.y;
+    let right = area.position.x + area.size.width as i32;
+    let bottom = area.position.y + area.size.height as i32;
+    let max_x = (right - size.width as i32).max(left);
+    let max_y = (bottom - size.height as i32).max(top);
+    PhysicalPosition::new(desired.x.clamp(left, max_x), desired.y.clamp(top, max_y))
 }
 
 #[tauri::command]
@@ -388,6 +468,9 @@ pub fn run() {
             generation: AtomicU64::new(0),
             previous: Mutex::new(HashMap::new()),
             visible: AtomicBool::new(true),
+            window_mode: Mutex::new("mini".to_string()),
+            mini_anchor: Mutex::new(None),
+            applied_position: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,

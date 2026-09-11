@@ -160,8 +160,13 @@ body[data-collapse="single"] .mini-triple {
   display: none;
 }
 
-body[data-collapse="triple"] #mini-light {
+body[data-collapse="triple"] #mini-light,
+body[data-collapse="triple_vertical"] #mini-light {
   display: none;
+}
+
+body[data-collapse="triple_vertical"] .mini-triple {
+  flex-direction: column;
 }
 
 .mini-light {

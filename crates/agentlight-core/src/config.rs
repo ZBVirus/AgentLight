@@ -29,8 +29,10 @@ pub enum CollapseStyle {
     /// One aggregate traffic light. Default.
     #[default]
     Single,
-    /// Three independent lights: red, orange, green.
+    /// Three independent lights in a row: red, orange, green.
     Triple,
+    /// Three independent lights stacked, traffic-light style.
+    TripleVertical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +142,8 @@ mod tests {
         assert_eq!(Config::default().collapse_style, CollapseStyle::Single);
         let c: Config = serde_json::from_str(r#"{"collapse_style":"triple"}"#).unwrap();
         assert_eq!(c.collapse_style, CollapseStyle::Triple);
+        let c: Config = serde_json::from_str(r#"{"collapse_style":"triple_vertical"}"#).unwrap();
+        assert_eq!(c.collapse_style, CollapseStyle::TripleVertical);
     }
 
     #[test]
