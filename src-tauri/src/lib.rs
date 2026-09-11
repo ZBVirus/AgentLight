@@ -260,10 +260,9 @@ fn restart_watcher(app: &AppHandle) {
 fn spawn_watcher(app: AppHandle) {
     let (config, generation) = {
         let state = app.state::<AppState>();
-        (
-            state.config.lock().unwrap().clone(),
-            state.generation.load(Ordering::SeqCst),
-        )
+        let config = state.config.lock().unwrap().clone();
+        let generation = state.generation.load(Ordering::SeqCst);
+        (config, generation)
     };
     let path = config.state_file();
     let poll = config.poll_ms.max(250);
