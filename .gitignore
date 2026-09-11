@@ -1,0 +1,17 @@
+# Rust / Cargo
+/target
+**/target
+**/*.rs.bk
+
+# Tauri
+/src-tauri/gen
+
+# Node tooling (only if added later; the frontend itself is static)
+/node_modules
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
