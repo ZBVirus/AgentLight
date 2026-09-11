@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -28,6 +28,9 @@ struct AppState {
     generation: AtomicU64,
     /// Last seen status per session, for edge-triggered notifications.
     previous: Mutex<HashMap<String, Status>>,
+    /// Whether the window is currently shown. Tracked explicitly because
+    /// `Window::is_visible` reads a cache that can lag after `hide()`.
+    visible: AtomicBool,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,10 @@ fn clear_done(app: AppHandle, state: State<'_, AppState>) -> Result<usize, Strin
     Ok(removed)
 }
 
-#[tauri::command]
+// `async` here means Tauri runs the body on a worker thread. The blocking
+// native file dialog deadlocks if called on the main thread, where a plain
+// synchronous command would run.
+#[tauri::command(async)]
 fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
@@ -149,6 +155,9 @@ fn window_hide(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
+    app.state::<AppState>()
+        .visible
+        .store(false, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -166,20 +175,31 @@ fn current_config(state: &State<'_, AppState>) -> Config {
 
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
         let _ = window.unminimize();
+        let _ = window.show();
         let _ = window.set_focus();
     }
+    app.state::<AppState>()
+        .visible
+        .store(true, Ordering::SeqCst);
 }
 
 fn toggle_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let visible = window.is_visible().unwrap_or(false);
-        if visible {
-            let _ = window.hide();
-        } else {
-            show_window(app);
-        }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    // Use our own flag, not `is_visible`: the latter reflects a cached state
+    // that can still read "visible" right after `hide()`, so a second tray
+    // click would hide an already-hidden window and look unresponsive.
+    let visible = app.state::<AppState>().visible.load(Ordering::SeqCst);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if visible && !minimized {
+        let _ = window.hide();
+        app.state::<AppState>()
+            .visible
+            .store(false, Ordering::SeqCst);
+    } else {
+        show_window(app);
     }
 }
 
@@ -354,13 +374,20 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Persist only the position: the frontend owns the window size per
+        // view, and restoring an old size would clip the light/detail layout.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::POSITION)
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
         .manage(AppState {
             config: Mutex::new(config.clone()),
             config_path,
             generation: AtomicU64::new(0),
             previous: Mutex::new(HashMap::new()),
+            visible: AtomicBool::new(true),
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -392,6 +419,10 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                window
+                    .state::<AppState>()
+                    .visible
+                    .store(false, Ordering::SeqCst);
             }
         })
         .run(tauri::generate_context!())

@@ -55,6 +55,11 @@ body {
   background: var(--bg-soft);
 }
 
+/* Collapsed window is the light alone: no chrome, no text. */
+body[data-view="mini"] .bar {
+  display: none;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -130,13 +135,24 @@ main {
   padding: 12px;
 }
 
-/* Light view ------------------------------------------------------------- */
+/* Mini (collapsed) view -------------------------------------------------- */
 
-.view.light {
+.view.mini {
   flex-direction: row;
   align-items: center;
-  gap: 14px;
+  justify-content: center;
+  padding: 12px;
 }
+
+.view.mini .light {
+  cursor: grab;
+}
+
+.view.mini .light:active {
+  cursor: grabbing;
+}
+
+/* Light ------------------------------------------------------------------ */
 
 .light {
   flex: 0 0 auto;
@@ -155,6 +171,16 @@ main {
   border-radius: 50%;
   background: var(--dim);
   transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.light.small {
+  width: 46px;
+  height: 46px;
+}
+
+.light.small .light-core {
+  width: 30px;
+  height: 30px;
 }
 
 .light.red .light-core {
@@ -238,19 +264,6 @@ main {
   text-decoration: underline;
 }
 
-.expand {
-  align-self: flex-end;
-  flex: 0 0 auto;
-  padding: 5px 11px;
-  border: 1px solid var(--rule);
-  border-radius: 7px;
-  background: var(--bg-soft);
-  color: var(--fg);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.expand:hover,
 .ghost:hover {
   background: var(--sel);
 }
@@ -260,6 +273,15 @@ main {
 .view.detail,
 .view.settings {
   padding: 10px 12px 12px;
+}
+
+.detail-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
 }
 
 .detail-head {

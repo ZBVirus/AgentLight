@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the AgentLight window. Custom commands and all file IO live in Rust, so only core IPC (events + window) is granted here.",
+  "description": "Core permissions for the AgentLight window. Custom commands and all file IO live in Rust, so only core IPC (events + window) is granted here. `core:default` omits allow-start-dragging, which `data-tauri-drag-region` needs.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

@@ -6,12 +6,12 @@
     <title>AgentLight</title>
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body>
+  <body data-view="mini">
     <div class="app" id="app">
-      <header class="bar" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region>
+      <header class="bar" data-tauri-drag-region="deep">
+        <div class="brand" data-tauri-drag-region="deep">
           <span class="brand-dot" id="brand-dot"></span>
-          <span class="brand-name" data-tauri-drag-region>AgentLight</span>
+          <span class="brand-name">AgentLight</span>
         </div>
         <div class="controls">
           <button class="icon-btn" id="btn-pin" title="Toggle always on top" aria-label="Toggle always on top">
@@ -27,17 +27,19 @@
       </header>
 
       <main id="main">
-        <section class="view light" id="view-light">
-          <div class="light" id="big-light" aria-hidden="true"><span class="light-core"></span></div>
-          <div class="light-info">
-            <div class="light-label" id="agg-label">Waiting for clawlight…</div>
-            <div class="chips" id="chips"></div>
-            <button class="link" id="btn-pick">Choose state file…</button>
-          </div>
-          <button class="expand" id="btn-expand">Details</button>
+        <section class="view mini" id="view-mini">
+          <div class="light" id="mini-light" title="Click to expand · drag to move"><span class="light-core"></span></div>
         </section>
 
         <section class="view detail hidden" id="view-detail">
+          <div class="detail-top" data-tauri-drag-region="deep">
+            <div class="light small" id="detail-light" aria-hidden="true"><span class="light-core"></span></div>
+            <div class="light-info">
+              <div class="light-label" id="agg-label">Waiting for clawlight…</div>
+              <div class="chips" id="chips"></div>
+              <button class="link" id="btn-pick">Choose state file…</button>
+            </div>
+          </div>
           <div class="detail-head">
             <span class="detail-title" id="detail-title">Sessions</span>
             <button class="ghost" id="btn-collapse">Collapse</button>

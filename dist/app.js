@@ -5,10 +5,11 @@
 const tauri = window.__TAURI__ || {};
 const invoke = tauri.core ? tauri.core.invoke : null;
 const listen = tauri.event ? tauri.event.listen : null;
+const getCurrentWindow = tauri.window ? tauri.window.getCurrentWindow : null;
 
 const SIZES = {
-  light: { width: 340, height: 172 },
-  detail: { width: 420, height: 540 },
+  mini: { width: 88, height: 88 },
+  detail: { width: 420, height: 548 },
   settings: { width: 420, height: 600 },
 };
 
@@ -28,21 +29,18 @@ const STATUS_CLASS = {
 
 let snapshot = null;
 let config = null;
-let view = "light";
-let lastBrowsable = "light";
+let view = "mini";
 let toastTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
 function setView(next) {
   view = next;
-  if (next !== "settings") {
-    lastBrowsable = next;
-  }
-  $("view-light").classList.toggle("hidden", next !== "light");
+  document.body.dataset.view = next;
+  $("view-mini").classList.toggle("hidden", next !== "mini");
   $("view-detail").classList.toggle("hidden", next !== "detail");
   $("view-settings").classList.toggle("hidden", next !== "settings");
-  const size = SIZES[next] || SIZES.light;
+  const size = SIZES[next] || SIZES.mini;
   if (invoke) {
     invoke("resize_window", size).catch(() => {});
   }
@@ -84,21 +82,27 @@ function chip(colorClass, label) {
   return el;
 }
 
+function setLights(color) {
+  for (const el of document.querySelectorAll(".light")) {
+    el.classList.remove("red", "orange", "green", "gray");
+    el.classList.add(color);
+  }
+}
+
 function renderLight() {
-  const light = $("big-light");
   const label = $("agg-label");
   const chips = $("chips");
   const pick = $("btn-pick");
   chips.replaceChildren();
 
   if (!snapshot) {
-    light.className = "light gray";
+    setLights("gray");
     label.textContent = "Starting…";
     pick.classList.add("hidden");
     return;
   }
 
-  light.className = `light ${snapshot.aggregate || "gray"}`;
+  setLights(snapshot.aggregate || "gray");
   label.textContent = AGG_LABEL[snapshot.aggregate] || "No sessions";
 
   if (!snapshot.ok) {
@@ -278,20 +282,53 @@ async function saveSettings(event) {
     config = await invoke("set_config", { config: next });
     toast("Saved");
     await refreshSnapshot();
-    setView(lastBrowsable);
+    setView("detail");
   } catch (error) {
     toast(`Save failed: ${error}`);
   }
 }
 
+function wireMini() {
+  const mini = $("view-mini");
+  let armed = false;
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+
+  mini.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    armed = true;
+    dragging = false;
+    startX = event.screenX;
+    startY = event.screenY;
+  });
+  window.addEventListener("mousemove", (event) => {
+    if (!armed || dragging || !(event.buttons & 1)) return;
+    if (Math.hypot(event.screenX - startX, event.screenY - startY) < 4) return;
+    dragging = true;
+    const win = getCurrentWindow ? getCurrentWindow() : null;
+    if (win && win.startDragging) win.startDragging().catch(() => {});
+  });
+  const release = () => {
+    if (armed && !dragging) setView("detail");
+    armed = false;
+    dragging = false;
+  };
+  window.addEventListener("mouseup", release);
+  window.addEventListener("blur", () => {
+    armed = false;
+    dragging = false;
+  });
+}
+
 function wire() {
-  $("btn-expand").addEventListener("click", () => setView("detail"));
-  $("btn-collapse").addEventListener("click", () => setView("light"));
+  wireMini();
+  $("btn-collapse").addEventListener("click", () => setView("mini"));
   $("btn-settings").addEventListener("click", () => {
     populateSettings();
     setView("settings");
   });
-  $("btn-settings-back").addEventListener("click", () => setView(lastBrowsable));
+  $("btn-settings-back").addEventListener("click", () => setView("detail"));
   $("btn-clear-done").addEventListener("click", clearDone);
 
   $("btn-pin").addEventListener("click", async () => {
@@ -352,7 +389,7 @@ async function boot() {
   await loadConfig();
   await refreshSnapshot();
   populateSettings();
-  setView("light");
+  setView("mini");
   // Keep relative timestamps honest even without state changes.
   setInterval(() => {
     if (view === "detail") renderDetail();
