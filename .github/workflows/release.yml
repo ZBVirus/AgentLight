@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-installer:
+    name: windows NSIS installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "AgentLight ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload NSIS installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentlight-nsis
+          if-no-files-found: warn
+          path: target/release/bundle/nsis/*.exe
+
+      - name: Stage portable exe
+        shell: pwsh
+        run: Copy-Item target/release/agentlight.exe "target/release/AgentLight_${{ github.event.inputs.tag || github.ref_name }}_x64_portable.exe"
+
+      # Raw .exe downloads trip Chrome Safe Browsing for unsigned, low-reputation
+      # binaries. Zips download cleanly, so ship both and a checksum file.
+      - name: Package zips and checksums
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          Compress-Archive -Path target/release/agentlight.exe -DestinationPath "target/release/agentlight-$tag-windows-x64.zip" -Force
+          $nsis = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Compress-Archive -Path $nsis.FullName -DestinationPath "target/release/agentlight-$tag-windows-x64-setup.zip" -Force
+          $files = @(Get-ChildItem target/release/*.exe) + @(Get-ChildItem target/release/*.zip)
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.Name } |
+            Set-Content target/release/SHA256SUMS.txt
+
+      - name: Attach assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release upload "${{ github.event.inputs.tag || github.ref_name }}"
+          target/release/*_portable.exe target/release/*.zip target/release/SHA256SUMS.txt
+          --clobber
