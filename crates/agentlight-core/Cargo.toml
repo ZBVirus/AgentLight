@@ -12,6 +12,7 @@ serde_json.workspace = true
 chrono.workspace = true
 fs4.workspace = true
 dirs.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

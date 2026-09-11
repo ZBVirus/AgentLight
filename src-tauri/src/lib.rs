@@ -1,16 +1,17 @@
 //! Tauri shell for AgentLight.
 //!
-//! All state parsing, aggregation, and file writes live in `agentlight-core`.
-//! This layer only wires that logic to a window, a tray icon, a file watcher,
-//! and IPC commands.
+//! All state parsing, aggregation, watching, and notification policy live in
+//! `agentlight-core`. This layer only wires the engine to a window, a tray
+//! icon, and IPC commands.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use agentlight_core::{Config, Snapshot, Status};
+use agentlight_core::{
+    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, Update,
+    CLAWLIGHT_SOURCE_ID,
+};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -19,18 +20,12 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 
-// Required in scope for `RecommendedWatcher::watch`.
-use notify::Watcher;
-
 /// Shared app state managed by Tauri.
 struct AppState {
+    /// Owns source lifecycle, merge, retention, and notification edges.
+    engine: Arc<Engine>,
     config: Mutex<Config>,
     config_path: PathBuf,
-    /// Bumped whenever the watcher should be rebuilt. Older watcher threads see
-    /// a stale value and exit.
-    generation: AtomicU64,
-    /// Last seen status per session, for edge-triggered notifications.
-    previous: Mutex<HashMap<String, Status>>,
     /// Whether the window is currently shown. Tracked explicitly because
     /// `Window::is_visible` reads a cache that can lag after `hide()`.
     visible: AtomicBool,
@@ -50,8 +45,7 @@ struct AppState {
 
 #[tauri::command]
 fn get_snapshot(state: State<'_, AppState>) -> Snapshot {
-    let config = current_config(&state);
-    agentlight_core::build_snapshot(&config.state_file(), &config)
+    state.engine.snapshot_now()
 }
 
 #[tauri::command]
@@ -74,33 +68,38 @@ fn set_config(
     apply_autostart(&app, config.start_at_login);
 
     *state.config.lock().unwrap() = config.clone();
-    restart_watcher(&app);
+    state.engine.set_config(config.clone());
+    restart_source(&state.engine, &config);
     let _ = app.emit("config-changed", &config);
     Ok(config)
 }
 
 #[tauri::command]
-fn clear_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<bool, String> {
-    let path = current_config(&state).state_file();
-    let removed = agentlight_core::clear_session(&path, &session_id).map_err(|e| e.to_string())?;
-    if removed {
-        emit_snapshot(&app);
+fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    let key = SessionKey::new(SourceId::new(CLAWLIGHT_SOURCE_ID), session_id);
+    let existed = state.engine.has_session(&key);
+    state
+        .engine
+        .dispatch(SourceCommand::RemoveSession(key))
+        .map_err(|e| e.to_string())?;
+    if existed {
+        state.engine.refresh();
     }
-    Ok(removed)
+    Ok(existed)
 }
 
 #[tauri::command]
-fn clear_done(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
-    let path = current_config(&state).state_file();
-    let removed = agentlight_core::clear_done(&path).map_err(|e| e.to_string())?;
-    if removed > 0 {
-        emit_snapshot(&app);
+fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
+    let before = state.engine.counts_now().done;
+    if before == 0 {
+        return Ok(0);
     }
-    Ok(removed)
+    state
+        .engine
+        .dispatch(SourceCommand::ClearDone)
+        .map_err(|e| e.to_string())?;
+    let after = state.engine.refresh().snapshot.counts.done;
+    Ok(before.saturating_sub(after))
 }
 
 // `async` here means Tauri runs the body on a worker thread. The blocking
@@ -121,7 +120,8 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config.clone();
 
-    restart_watcher(&app);
+    state.engine.set_config(config.clone());
+    restart_source(&state.engine, &config);
     let _ = app.emit("config-changed", &config);
     Ok(Some(path_string))
 }
@@ -142,6 +142,7 @@ fn set_always_on_top(
         config.always_on_top = enabled;
         agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
         *state.config.lock().unwrap() = config.clone();
+        state.engine.set_config(config.clone());
         let _ = app.emit("config-changed", &config);
     }
     Ok(())
@@ -253,6 +254,31 @@ fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
+/// Rebuild the source for the current config. Dropping the old source stops its
+/// watcher; the new one emits an initial change on startup.
+fn restart_source(engine: &Engine, config: &Config) {
+    engine.replace_source(Arc::new(ClawlightFileSource::from_config(config)));
+}
+
+/// Forward an engine update: the wire snapshot to the frontend, and any
+/// notification edges to a desktop toast.
+fn emit_update(app: &AppHandle, update: &Update) {
+    let _ = app.emit("state-changed", &update.snapshot);
+    if update.notifications.is_empty() {
+        return;
+    }
+    use tauri_plugin_notification::NotificationExt;
+
+    for notification in &update.notifications {
+        let _ = app
+            .notification()
+            .builder()
+            .title(notification.title.as_str())
+            .body(notification.body.as_str())
+            .show();
+    }
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -295,108 +321,6 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     if let Err(error) = result {
         eprintln!("agentlight: could not update autostart: {error}");
     }
-}
-
-fn file_signature(path: &Path) -> Option<(u64, u128)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()?
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    Some((metadata.len(), modified))
-}
-
-/// Rebuild the snapshot and push it to the frontend, with edge-triggered
-/// notifications on the side.
-fn emit_snapshot(app: &AppHandle) {
-    let config = current_config(&app.state::<AppState>());
-    let snapshot = agentlight_core::build_snapshot(&config.state_file(), &config);
-    maybe_notify(app, &config, &snapshot);
-    let _ = app.emit("state-changed", &snapshot);
-}
-
-fn maybe_notify(app: &AppHandle, config: &Config, snapshot: &Snapshot) {
-    if !config.notifications {
-        return;
-    }
-    use tauri_plugin_notification::NotificationExt;
-
-    let state = app.state::<AppState>();
-    let mut previous = state.previous.lock().unwrap();
-
-    for session in &snapshot.sessions {
-        if session.status == Status::NeedsHelp
-            && previous.get(&session.session_id) != Some(&Status::NeedsHelp)
-        {
-            let _ = app
-                .notification()
-                .builder()
-                .title("AgentLight")
-                .body(format!("\"{}\" needs help", session.name))
-                .show();
-        }
-    }
-
-    previous.clear();
-    for session in &snapshot.sessions {
-        previous.insert(session.session_id.clone(), session.status);
-    }
-}
-
-/// Bump the generation and start a fresh watcher for the current config.
-fn restart_watcher(app: &AppHandle) {
-    app.state::<AppState>()
-        .generation
-        .fetch_add(1, Ordering::SeqCst);
-    spawn_watcher(app.clone());
-}
-
-/// Watch the state file. `notify` gives instant updates where the filesystem
-/// supports it; a `recv_timeout` poll is the backstop for network/bind-mount
-/// filesystems (for example a Windows host reading a container volume) that
-/// emit no events at all.
-fn spawn_watcher(app: AppHandle) {
-    let (config, generation) = {
-        let state = app.state::<AppState>();
-        let config = state.config.lock().unwrap().clone();
-        let generation = state.generation.load(Ordering::SeqCst);
-        (config, generation)
-    };
-    let path = config.state_file();
-    let poll = config.poll_ms.max(250);
-
-    std::thread::spawn(move || {
-        let directory = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let mut watcher = notify::recommended_watcher(move |_| {
-            let _ = tx.send(());
-        })
-        .ok();
-        if let Some(watcher) = watcher.as_mut() {
-            let _ = watcher.watch(&directory, notify::RecursiveMode::NonRecursive);
-        }
-
-        let mut last = file_signature(&path);
-        emit_snapshot(&app);
-
-        loop {
-            if app.state::<AppState>().generation.load(Ordering::SeqCst) != generation {
-                break;
-            }
-            let _ = rx.recv_timeout(Duration::from_millis(poll));
-            let signature = file_signature(&path);
-            if signature != last {
-                last = signature;
-                emit_snapshot(&app);
-            }
-        }
-    });
 }
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -443,6 +367,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let config_path = agentlight_core::config_path();
     let config = agentlight_core::load_config(&config_path);
+    let engine = Arc::new(Engine::new(config.clone()));
 
     tauri::Builder::default()
         // Must be registered first so a second launch forwards to this one.
@@ -463,10 +388,9 @@ pub fn run() {
         )
         .plugin(tauri_plugin_notification::init())
         .manage(AppState {
+            engine: engine.clone(),
             config: Mutex::new(config.clone()),
             config_path,
-            generation: AtomicU64::new(0),
-            previous: Mutex::new(HashMap::new()),
             visible: AtomicBool::new(true),
             window_mode: Mutex::new("mini".to_string()),
             mini_anchor: Mutex::new(None),
@@ -494,7 +418,14 @@ pub fn run() {
             apply_autostart(handle, config.start_at_login);
 
             setup_tray(handle)?;
-            spawn_watcher(handle.clone());
+
+            // Register the update sink before starting the source so the
+            // initial file change is delivered on startup.
+            let sink_handle = handle.clone();
+            engine.subscribe(Arc::new(move |update: Update| {
+                emit_update(&sink_handle, &update);
+            }));
+            engine.add_source(Arc::new(ClawlightFileSource::from_config(&config)));
             Ok(())
         })
         .on_window_event(|window, event| {

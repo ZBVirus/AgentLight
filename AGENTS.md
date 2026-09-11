@@ -9,8 +9,13 @@ deliberately deferred.
 
 - `crates/agentlight-core/` — **all state logic**. No GUI, no Tauri. Builds and
   tests on any host. Put parsing/aggregation/config here, not in the shell.
-- `src-tauri/` — thin Tauri v2 shell: commands, tray, watcher, autostart,
-  notifications. No state semantics live here.
+  - `src/source.rs` + `src/source/clawlight.rs` — the `StateSource` adapters.
+    The clawlight file adapter is the compatibility source; new integrations
+    are added here as adapters, never by teaching the engine a new file shape.
+  - `src/engine.rs` — merge, retention, aggregate, revisions, notification
+    edges. Owns source lifecycle; shells only deliver `Update`s.
+- `src-tauri/` — thin Tauri v2 shell: commands, tray, autostart, desktop
+  toasts. No state semantics live here.
 - `dist/` — static HTML/CSS/JS. No bundler, no Node. Tauri `withGlobalTauri`
   exposes `window.__TAURI__`; all IO goes through Rust commands.
 - `docs/state-format.md` — the verified clawlight contract. Read it before
@@ -50,7 +55,14 @@ on Linux — that is the point of the split.
   (default) any idle → orange; else any `active` → green; none → gray.
   `active_wins` is the alternate mode.
 - Keep only the newest 5 `done` sessions unless `show_done` is set.
-- Keep `agentlight-core` free of `tauri`/GUI/Windows-only dependencies.
+- Keep `agentlight-core` free of `tauri`/GUI/Windows-only dependencies. It
+  stays **synchronous**: no tokio or other async runtime. Async belongs to
+  future server/client crates.
+- **New integrations are source adapters.** Implement `StateSource` (see
+  `src/source.rs`) and translate the external shape there; never teach the
+  engine or the normalized model a new file shape. The clawlight file adapter
+  (`ClawlightFileSource`) is the compatibility source and must keep behaving
+  exactly as before.
 
 ## Conventions
 
