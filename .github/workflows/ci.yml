@@ -38,14 +38,18 @@ jobs:
       - name: Test core
         run: cargo test -p agentlight-core
 
-      # Compile-check the Tauri app. The NSIS installer is produced by the
-      # release workflow, which installs the (slow to compile) tauri-cli.
+      # Compile-check the Tauri app and produce a portable exe. The NSIS
+      # installer is produced by the release workflow.
       - name: Build app
         run: cargo build -p agentlight --release
 
-      - name: Upload exe
+      - name: Stage portable exe
+        shell: pwsh
+        run: Copy-Item target/release/agentlight.exe target/release/AgentLight-portable.exe
+
+      - name: Upload portable exe
         uses: actions/upload-artifact@v4
         with:
-          name: agentlight-windows-exe
+          name: agentlight-windows-portable
           if-no-files-found: warn
-          path: target/release/agentlight.exe
+          path: target/release/AgentLight-portable.exe

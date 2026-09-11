@@ -105,11 +105,17 @@ cargo fmt --all --check
 # GUI (Windows)
 cargo install tauri-cli --version "^2.0.0" --locked
 cargo tauri dev
-cargo tauri build      # NSIS installer under target/release/bundle/nsis/
+cargo tauri build              # NSIS installer under target/release/bundle/nsis/
+cargo tauri build --no-bundle  # portable target/release/agentlight.exe
 ```
 
-CI (`.github/workflows/ci.yml`) runs the core tests on Linux and builds the app
-on Windows, uploading the raw exe and the NSIS installer as artifacts.
+The portable exe needs the WebView2 runtime, which ships with Windows 10/11.
+For quick testing without an install, download the `agentlight-windows-portable`
+artifact from the latest CI run, or the `*_portable.exe` asset on a release.
+
+CI (`.github/workflows/ci.yml`) runs the core tests on Linux and builds the
+portable exe on Windows; the release workflow attaches both the portable exe and
+the NSIS installer to a tagged release.
 
 ## Configuration
 
