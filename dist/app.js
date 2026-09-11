@@ -8,7 +8,7 @@ const listen = tauri.event ? tauri.event.listen : null;
 const getCurrentWindow = tauri.window ? tauri.window.getCurrentWindow : null;
 
 const SIZES = {
-  mini: { width: 88, height: 88 },
+  mini: { width: 172, height: 68 },
   detail: { width: 420, height: 548 },
   settings: { width: 420, height: 600 },
 };
@@ -89,6 +89,14 @@ function setLights(color) {
   }
 }
 
+// Each collapsed light is independent: lit when at least one session has
+// that status. No "any needs_help wins" aggregation here.
+function setMiniState(state) {
+  $("mini-red").classList.toggle("on", !!(state && state.red));
+  $("mini-orange").classList.toggle("on", !!(state && state.yellow));
+  $("mini-green").classList.toggle("on", !!(state && state.green));
+}
+
 function renderLight() {
   const label = $("agg-label");
   const chips = $("chips");
@@ -97,6 +105,7 @@ function renderLight() {
 
   if (!snapshot) {
     setLights("gray");
+    setMiniState(null);
     label.textContent = "Starting…";
     pick.classList.add("hidden");
     return;
@@ -106,6 +115,7 @@ function renderLight() {
   label.textContent = AGG_LABEL[snapshot.aggregate] || "No sessions";
 
   if (!snapshot.ok) {
+    setMiniState(null);
     label.textContent = snapshot.exists
       ? "Could not read state file"
       : "Waiting for clawlight…";
@@ -115,6 +125,11 @@ function renderLight() {
   pick.classList.add("hidden");
 
   const counts = snapshot.counts || {};
+  setMiniState({
+    red: counts.needs_help > 0,
+    yellow: counts.inactive > 0,
+    green: counts.active > 0,
+  });
   const rows = [
     ["red", counts.needs_help, "needs help"],
     ["orange", counts.inactive, "paused"],
