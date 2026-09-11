@@ -6,10 +6,45 @@ parking lot so decisions are not silently forgotten.
 For the proposed source/engine/transport rework behind these items, see
 [`architecture-redesign.md`](architecture-redesign.md).
 
+## North star (end goal)
+
+The long-term product is a hosted hub service ("the service") with accounts.
+
+- The opencode plugin pushes session state to the service. The plugin is the
+  producer; clawlight and a shared file are no longer required.
+- The service fans the state out to every client linked to the account:
+  desktop, web, PWA, mobile, CLI.
+- One account authenticates both sides. The plugin is registered to the account
+  as a producer; each client device is registered as a consumer. Linking a
+  device to the account is what authorizes it to see state and receive
+  notifications.
+- This removes the need for a VPN or a reachable host. It is the convenient
+  path for people who do not want to run Tailscale/WireGuard or expose ports.
+- Self-hosting stays first-class. A user who wants full control wires their own
+  transport (LAN, Tailscale, WireGuard, port-forward) and runs the engine
+  themselves: no account, no dependency on the service.
+- The service is cheap by design. Small JSON status payloads, no history by
+  default, no agent content, only session status. Cost scales with the number
+  of connections, not data volume.
+
+Design constraints to keep open now:
+
+- The wire protocol must be identical whether the hub is local or hosted, so
+  the service is a transport swap, not a rewrite. See `docs/protocol.md`.
+- Authentication must separate producer (plugin) from consumer (clients), with
+  account linking and per-device revocation.
+- Privacy: prefer end-to-end encryption between producer and clients so the
+  service holds only ciphertext and routing metadata. At minimum, no session
+  names or project paths in service logs.
+- The local topologies (A desktop hub, B container sidecar) remain supported.
+  The service is topology C.
+
+Recorded so the design stays compatible. Not a near-term deliverable.
+
 ## Hub topologies
 
 The hub is the engine plus an HTTP/SSE surface for remote clients (desktop,
-phone, web, CLI). Two deployment topologies are planned. They run the same
+phone, web, CLI). Several deployment topologies are planned. They run the same
 engine, binary, and protocol, so switching later is a deployment choice, not a
 rewrite.
 
@@ -22,6 +57,9 @@ rewrite.
   phone works with the PC off. Downside: a new process to build, run,
   supervise, expose, secure, and update in the container, plus container
   networking and discovery. Build B later; the protocol is the same as A.
+- **C — hosted service (north star).** A hosted hub with accounts where the
+  plugin pushes state and clients subscribe. See "North star" above. Deferred,
+  but the protocol and auth model are shaped to allow it.
 
 ## opencode plugin as a source
 

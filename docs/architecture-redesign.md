@@ -633,7 +633,9 @@ appear only when Phase 3/4 need them.
 ## 13. Non-goals
 
 - Replacing clawlight or writing to agents.
-- A hosted service with accounts for the default experience.
+- A hosted service that is required for the default experience. A hosted hub
+  with accounts is the eventual north star (see `ROADMAP.md`), but it stays
+  optional and self-hosting stays first-class.
 - Long-term history, metrics, or team dashboards.
 - Container process control (focus, attach) from the host.
 - A plugin system beyond source adapters and notification channels.
