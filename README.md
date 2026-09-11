@@ -27,12 +27,15 @@ mode (see [`docs/state-format.md`](docs/state-format.md)). Switch to
 
 ## Screens
 
-- **Light** — one large light plus live counts. The default view.
-- **Details** — every session: status dot, name, harness badge (`oc` / `cx` /
-  `co`), project, relative time, and a remove button. A "Clear done" action
-  drops all `done` rows.
-- **Settings** — state path (with a file picker), always-on-top, start at login,
-  notifications, show-every-done, idle behavior, and the poll interval.
+- **Collapsed** — the mini window: a single aggregate light, or three per-status
+  lights, horizontal or vertical traffic-light style. Click to expand, drag to
+  move. Chosen in Settings.
+- **Details** — aggregate light plus live counts, then every session: status
+  dot, name, harness badge (`oc` / `cx` / `co`), project, relative time, and a
+  remove button. A "Clear done" action drops all `done` rows.
+- **Settings** — state path (with a file picker), collapsed view, always-on-top,
+  start at login, notifications, show-every-done, idle behavior, and the poll
+  interval.
 
 The window is frameless and draggable by its top bar, and it lives in the system
 tray: closing or hiding it keeps it running, and the tray icon toggles it back.
@@ -127,6 +130,7 @@ can be edited by hand.
 | `state_path`     | *(resolved)*      | Absolute path to `state.json`.                     |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
+| `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
 | `notifications`  | `false`           | Desktop notification when a session needs help.    |
