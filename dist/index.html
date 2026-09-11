@@ -6,7 +6,7 @@
     <title>AgentLight</title>
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body data-view="mini">
+  <body data-view="mini" data-collapse="single">
     <div class="app" id="app">
       <header class="bar" data-tauri-drag-region="deep">
         <div class="brand" data-tauri-drag-region="deep">
@@ -28,9 +28,12 @@
 
       <main id="main">
         <section class="view mini" id="view-mini" title="Click to expand · drag to move">
-          <span class="mini-light red" id="mini-red"><span class="core"></span></span>
-          <span class="mini-light orange" id="mini-orange"><span class="core"></span></span>
-          <span class="mini-light green" id="mini-green"><span class="core"></span></span>
+          <div class="light" id="mini-light"><span class="light-core"></span></div>
+          <div class="mini-triple" id="mini-triple">
+            <span class="mini-light red" id="mini-red"><span class="core"></span></span>
+            <span class="mini-light orange" id="mini-orange"><span class="core"></span></span>
+            <span class="mini-light green" id="mini-green"><span class="core"></span></span>
+          </div>
         </section>
 
         <section class="view detail hidden" id="view-detail">
@@ -88,6 +91,14 @@
               <select id="set-yellow-mode">
                 <option value="any_inactive">Any idle session turns it orange</option>
                 <option value="active_wins">Stay green while anything is working</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Collapsed view</span>
+              <select id="set-collapse-style">
+                <option value="single">Single light (aggregate)</option>
+                <option value="triple">Three lights (per status)</option>
               </select>
             </label>
 

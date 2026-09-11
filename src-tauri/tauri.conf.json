@@ -12,9 +12,9 @@
       {
         "label": "main",
         "title": "AgentLight",
-        "width": 172,
-        "height": 68,
-        "minWidth": 164,
+        "width": 88,
+        "height": 88,
+        "minWidth": 64,
         "minHeight": 64,
         "resizable": false,
         "maximizable": false,

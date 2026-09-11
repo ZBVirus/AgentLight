@@ -150,6 +150,20 @@ main {
   cursor: grabbing;
 }
 
+.mini-triple {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body[data-collapse="single"] .mini-triple {
+  display: none;
+}
+
+body[data-collapse="triple"] #mini-light {
+  display: none;
+}
+
 .mini-light {
   display: grid;
   place-items: center;

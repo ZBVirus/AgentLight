@@ -22,6 +22,17 @@ pub enum YellowMode {
     ActiveWins,
 }
 
+/// Collapsed (mini) window layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CollapseStyle {
+    /// One aggregate traffic light. Default.
+    #[default]
+    Single,
+    /// Three independent lights: red, orange, green.
+    Triple,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -31,6 +42,8 @@ pub struct Config {
     pub always_on_top: bool,
     /// Aggregate rule for idle sessions.
     pub yellow_mode: YellowMode,
+    /// Layout of the collapsed window.
+    pub collapse_style: CollapseStyle,
     /// Fallback poll interval, in milliseconds, for the file watcher.
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
@@ -47,6 +60,7 @@ impl Default for Config {
             state_path: None,
             always_on_top: true,
             yellow_mode: YellowMode::AnyInactive,
+            collapse_style: CollapseStyle::Single,
             poll_ms: 1500,
             show_done: false,
             notifications: false,
@@ -116,8 +130,16 @@ mod tests {
         assert!(!c.notifications, "notifications are off by default");
         assert!(!c.show_done);
         assert_eq!(c.yellow_mode, YellowMode::AnyInactive);
+        assert_eq!(c.collapse_style, CollapseStyle::Single);
         assert_eq!(c.poll_ms, 1500);
         assert!(c.state_path.is_none());
+    }
+
+    #[test]
+    fn collapse_style_parses_and_defaults() {
+        assert_eq!(Config::default().collapse_style, CollapseStyle::Single);
+        let c: Config = serde_json::from_str(r#"{"collapse_style":"triple"}"#).unwrap();
+        assert_eq!(c.collapse_style, CollapseStyle::Triple);
     }
 
     #[test]

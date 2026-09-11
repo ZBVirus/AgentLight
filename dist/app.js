@@ -7,8 +7,12 @@ const invoke = tauri.core ? tauri.core.invoke : null;
 const listen = tauri.event ? tauri.event.listen : null;
 const getCurrentWindow = tauri.window ? tauri.window.getCurrentWindow : null;
 
+const MINI_SIZES = {
+  single: { width: 88, height: 88 },
+  triple: { width: 172, height: 68 },
+};
+
 const SIZES = {
-  mini: { width: 172, height: 68 },
   detail: { width: 420, height: 548 },
   settings: { width: 420, height: 600 },
 };
@@ -34,13 +38,25 @@ let toastTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
+function collapseStyle() {
+  return (config && config.collapse_style) || "single";
+}
+
+function applyCollapseStyle() {
+  document.body.dataset.collapse = collapseStyle();
+  if (view === "mini") setView("mini");
+}
+
 function setView(next) {
   view = next;
   document.body.dataset.view = next;
   $("view-mini").classList.toggle("hidden", next !== "mini");
   $("view-detail").classList.toggle("hidden", next !== "detail");
   $("view-settings").classList.toggle("hidden", next !== "settings");
-  const size = SIZES[next] || SIZES.mini;
+  const size =
+    next === "mini"
+      ? MINI_SIZES[collapseStyle()] || MINI_SIZES.single
+      : SIZES[next] || MINI_SIZES.single;
   if (invoke) {
     invoke("resize_window", size).catch(() => {});
   }
@@ -240,6 +256,7 @@ function populateSettings() {
   $("set-notifications").checked = !!config.notifications;
   $("set-show-done").checked = !!config.show_done;
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
+  $("set-collapse-style").value = config.collapse_style || "single";
   $("set-poll").value = config.poll_ms || 1500;
 }
 
@@ -261,6 +278,7 @@ async function loadConfig() {
     config = null;
   }
   renderPin();
+  applyCollapseStyle();
 }
 
 async function removeSession(sessionId, name) {
@@ -291,10 +309,12 @@ async function saveSettings(event) {
     notifications: $("set-notifications").checked,
     show_done: $("set-show-done").checked,
     yellow_mode: $("set-yellow-mode").value,
+    collapse_style: $("set-collapse-style").value,
     poll_ms: Number($("set-poll").value) || 1500,
   };
   try {
     config = await invoke("set_config", { config: next });
+    applyCollapseStyle();
     toast("Saved");
     await refreshSnapshot();
     setView("detail");
@@ -386,6 +406,7 @@ function wire() {
     listen("config-changed", (event) => {
       config = event.payload;
       renderPin();
+      applyCollapseStyle();
     });
     listen("open-settings", () => {
       populateSettings();
