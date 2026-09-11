@@ -464,6 +464,12 @@ Do not replace the file; make it one source behind a seam. Concretely:
 This keeps the default install exactly as simple as it is today: one process,
 one file, no network. Every additional capability is opt-in.
 
+Chosen for the first hub: topology A, a hub embedded in the desktop app.
+Topology B, a standalone `agentlight-server` running as a container sidecar, is
+recorded in [`ROADMAP.md`](ROADMAP.md) as a deferred deployment. It reuses the
+same engine, binary, and wire protocol, so adding it later is a deployment
+choice rather than a redesign.
+
 ---
 
 ## 7. Key differences and their effects

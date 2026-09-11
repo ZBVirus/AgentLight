@@ -6,6 +6,35 @@ parking lot so decisions are not silently forgotten.
 For the proposed source/engine/transport rework behind these items, see
 [`architecture-redesign.md`](architecture-redesign.md).
 
+## Hub topologies
+
+The hub is the engine plus an HTTP/SSE surface for remote clients (desktop,
+phone, web, CLI). Two deployment topologies are planned. They run the same
+engine, binary, and protocol, so switching later is a deployment choice, not a
+rewrite.
+
+- **A — desktop-embedded hub (chosen).** The desktop app owns the engine and
+  serves clients over the LAN. Lowest cost: no new process. Downside: the hub
+  only exists while the desktop app runs; PC off means no clients.
+- **B — container sidecar hub (deferred).** A standalone `agentlight-server`
+  runs inside the container next to opencode and clawlight, owns the engine,
+  and serves desktop and phone clients. Independent of the desktop PC, so the
+  phone works with the PC off. Downside: a new process to build, run,
+  supervise, expose, secure, and update in the container, plus container
+  networking and discovery. Build B later; the protocol is the same as A.
+
+## opencode plugin as a source
+
+Replace clawlight's file write with an opencode plugin that reports session
+state directly. This skips `state.json` entirely. Two shapes:
+
+- **Push.** The plugin POSTs events to the hub's ingest endpoint.
+- **Pull.** The plugin exposes a small HTTP/SSE source endpoint the hub
+  subscribes to.
+
+The plugin is a source, never the engine. The clawlight file source stays as a
+first-class alternative for backward compatibility.
+
 ## Multiple containers / state files
 
 Today AgentLight reads exactly one `state.json`. Clawlight itself supports one
