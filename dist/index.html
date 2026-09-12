@@ -62,12 +62,33 @@
           </div>
           <form class="form" id="settings-form">
             <label class="field">
+              <span>Source</span>
+              <select id="set-source-kind">
+                <option value="file">Local state file</option>
+                <option value="hub">Remote AgentLight hub</option>
+              </select>
+              <small class="hint">Where sessions are read from. The embedded server below is independent: this widget can host a hub and read from one at the same time.</small>
+            </label>
+
+            <label class="field" id="set-file-fields">
               <span>State file</span>
               <div class="row">
                 <input type="text" id="set-state-path" placeholder="C:\Users\you\clawlight\state.json" />
                 <button type="button" class="ghost" id="btn-browse">Browse</button>
               </div>
             </label>
+
+            <div id="set-hub-fields">
+              <label class="field">
+                <span>Hub URL</span>
+                <input type="text" id="set-hub-url" placeholder="http://127.0.0.1:8787" />
+              </label>
+              <label class="field">
+                <span>Hub token (optional)</span>
+                <input type="password" id="set-hub-token" placeholder="Bearer token required by the hub" />
+                <small class="hint">Stored in plaintext in config.json because it must be sent to the hub; unlike the server admin token it cannot be hashed.</small>
+              </label>
+            </div>
 
             <label class="field inline">
               <input type="checkbox" id="set-top" />

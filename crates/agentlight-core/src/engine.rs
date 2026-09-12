@@ -89,6 +89,16 @@ impl Engine {
         self.inner.replace_source(source);
     }
 
+    /// Replace the entire source set with a single `source`.
+    ///
+    /// Used when the configured source *kind* changes: the file (`local`) and
+    /// hub (`hub`) adapters use different [`SourceId`]s, so
+    /// [`replace_source`](Self::replace_source) would keep the old one. The
+    /// previous sources are dropped, stopping their watcher/poll threads.
+    pub fn set_source(&self, source: Arc<dyn StateSource>) {
+        self.inner.set_source(source);
+    }
+
     pub fn set_config(&self, config: Config) {
         *self.inner.config.lock().unwrap() = config;
     }
@@ -158,6 +168,21 @@ impl Inner {
         {
             let mut sources = self.sources.lock().unwrap();
             sources.retain(|existing| existing.id() != source.id());
+            sources.push(source.clone());
+        }
+        let weak = Arc::downgrade(self);
+        source.subscribe(Arc::new(move |_event| {
+            if let Some(inner) = weak.upgrade() {
+                inner.publish(Utc::now());
+            }
+        }));
+    }
+
+    /// Swap every source for `source`, dropping the old ones.
+    fn set_source(self: &Arc<Self>, source: Arc<dyn StateSource>) {
+        {
+            let mut sources = self.sources.lock().unwrap();
+            sources.clear();
             sources.push(source.clone());
         }
         let weak = Arc::downgrade(self);
@@ -516,6 +541,22 @@ mod tests {
         assert!(engine.has_session(&SessionKey::new(SourceId::new("a"), "2")));
         assert!(!engine.has_session(&SessionKey::new(SourceId::new("a"), "1")));
         assert_eq!(engine.counts_now().total, 2);
+    }
+
+    #[test]
+    fn set_source_replaces_sources_of_a_different_id() {
+        let engine = Engine::new(Config::default());
+        engine.add_source(Arc::new(
+            FixtureSource::new("local").with_sessions(vec![frame("local", "1", Status::Active, 1)]),
+        ));
+        assert!(engine.has_session(&SessionKey::new(SourceId::new("local"), "1")));
+
+        engine.set_source(Arc::new(
+            FixtureSource::new("hub").with_sessions(vec![frame("hub", "2", Status::Active, 2)]),
+        ));
+        assert!(!engine.has_session(&SessionKey::new(SourceId::new("local"), "1")));
+        assert!(engine.has_session(&SessionKey::new(SourceId::new("hub"), "2")));
+        assert_eq!(engine.snapshot(at(3)).counts.total, 1);
     }
 
     #[test]

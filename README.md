@@ -33,9 +33,9 @@ mode (see [`docs/state-format.md`](docs/state-format.md)). Switch to
 - **Details** — aggregate light plus live counts, then every session: status
   dot, name, harness badge (`oc` / `cx` / `co`), project, relative time, and a
   remove button. A "Clear done" action drops all `done` rows.
-- **Settings** — state path (with a file picker), collapsed view, always-on-top,
-  start at login, notifications, show-every-done, idle behavior, and the poll
-  interval.
+- **Settings** — source (local file or remote hub), state path (with a file
+  picker) or hub URL and token, collapsed view, always-on-top, start at login,
+  notifications, show-every-done, idle behavior, and the poll interval.
 
 The window is frameless and draggable by its top bar, and it lives in the system
 tray: closing or hiding it keeps it running, and the tray icon toggles it back.
@@ -61,6 +61,20 @@ cannot be shown again. Pair other devices with the pairing code. The standalone
 binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json`). The full rule is in
 [`docs/protocol.md`](docs/protocol.md).
+
+## Reading from a hub
+
+The desktop can read its sessions from either a local `state.json` (the default)
+or a remote AgentLight hub, chosen under **Source** in Settings. The embedded
+server above is independent: this widget can host a hub and read from one at the
+same time, and reading from a hub needs no local clawlight install.
+
+A hub that requires auth is addressed with a bearer token. That token is a
+**client credential** the hub validates, so it must be sent verbatim and cannot
+be stored as a hash the way the server's admin token is. It therefore lives in
+**plaintext** in `config.json`; protect that file as you would any secret. It is
+never logged. Point `hub_url` at the host running `agentlight-server` (or at
+another desktop with its embedded server enabled).
 
 ## How it reads state
 
@@ -148,6 +162,9 @@ can be edited by hand.
 | Field            | Default           | Meaning                                            |
 |------------------|-------------------|----------------------------------------------------|
 | `state_path`     | *(resolved)*      | Absolute path to `state.json`.                     |
+| `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`.  |
+| `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
+| `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |

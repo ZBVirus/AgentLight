@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agentlight_core::{
-    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, Update,
-    CLAWLIGHT_SOURCE_ID,
+    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
+    StateSource, Update, CLAWLIGHT_SOURCE_ID,
 };
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -101,7 +101,9 @@ fn set_config(
 
     *state.config.lock().unwrap() = config.clone();
     state.engine.set_config(config.clone());
-    restart_source(&state.engine, &config);
+    if source_fields_changed(&previous, &config) {
+        restart_source(&state.engine, &config);
+    }
     restart_server(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(config)
@@ -109,7 +111,13 @@ fn set_config(
 
 #[tauri::command]
 fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    let key = SessionKey::new(SourceId::new(CLAWLIGHT_SOURCE_ID), session_id);
+    // Use whatever source the engine is currently reading so Remove works in
+    // both file and hub mode.
+    let source = state
+        .engine
+        .source_id()
+        .unwrap_or_else(|| SourceId::new(CLAWLIGHT_SOURCE_ID));
+    let key = SessionKey::new(source, session_id);
     let existed = state.engine.has_session(&key);
     state
         .engine
@@ -186,6 +194,8 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     let previous = current_config(&state);
     let mut config = previous.clone();
     config.state_path = Some(path_string.clone());
+    // Choosing a file is an implicit switch back to file mode.
+    config.source_kind = SourceKind::File;
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config.clone();
 
@@ -326,10 +336,37 @@ fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
-/// Rebuild the source for the current config. Dropping the old source stops its
-/// watcher; the new one emits an initial change on startup.
+/// Build the configured source adapter: a local clawlight file or a remote hub.
+fn build_source(config: &Config) -> Arc<dyn StateSource> {
+    match config.source_kind {
+        SourceKind::File => Arc::new(ClawlightFileSource::from_config(config)),
+        SourceKind::Hub => Arc::new(agentlight_hub_client::HubSource::new(
+            agentlight_hub_client::HubConfig {
+                id: agentlight_hub_client::DEFAULT_HUB_ID.to_string(),
+                base_url: config.hub_url.clone(),
+                token: config.hub_token.clone(),
+                poll_ms: config.poll_ms,
+            },
+        )),
+    }
+}
+
+/// Rebuild the source for the current config. `set_source` drops the previous
+/// adapter (stopping its watcher/poll thread) even when the new one has a
+/// different id, as when switching between the file and hub sources.
 fn restart_source(engine: &Engine, config: &Config) {
-    engine.replace_source(Arc::new(ClawlightFileSource::from_config(config)));
+    engine.set_source(build_source(config));
+}
+
+/// Whether a config change alters where or how fast state is read, so the
+/// source adapter must be rebuilt. Display-only fields (yellow mode, retention,
+/// notifications) do not need a new source.
+fn source_fields_changed(previous: &Config, config: &Config) -> bool {
+    previous.source_kind != config.source_kind
+        || previous.state_path != config.state_path
+        || previous.hub_url != config.hub_url
+        || previous.hub_token != config.hub_token
+        || previous.poll_ms != config.poll_ms
 }
 
 fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
@@ -578,7 +615,7 @@ pub fn run() {
             engine.subscribe(Arc::new(move |update: Update| {
                 emit_update(&sink_handle, &update);
             }));
-            engine.add_source(Arc::new(ClawlightFileSource::from_config(&config)));
+            engine.add_source(build_source(&config));
 
             if config.server_enabled {
                 let state = handle.state::<AppState>();

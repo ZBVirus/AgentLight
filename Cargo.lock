@@ -13,6 +13,7 @@ name = "agentlight"
 version = "0.3.0"
 dependencies = [
  "agentlight-core",
+ "agentlight-hub-client",
  "agentlight-server",
  "serde",
  "serde_json",

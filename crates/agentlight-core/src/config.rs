@@ -15,6 +15,20 @@ use crate::state::{self, Error, Result};
 /// an explicit opt-in.
 pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8787";
 
+/// Default remote hub address. Matches `agentlight-server`'s loopback default.
+pub const DEFAULT_HUB_URL: &str = "http://127.0.0.1:8787";
+
+/// Where the desktop reads session state from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A local clawlight `state.json`. Default.
+    #[default]
+    File,
+    /// A remote AgentLight hub over HTTP.
+    Hub,
+}
+
 /// How an idle (`inactive`) session colors the aggregate when others still
 /// work. Mirrors clawlight's `YellowMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -55,6 +69,18 @@ pub struct Config {
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
     pub show_done: bool,
+    /// Where session state comes from: `file` (default) or `hub`.
+    pub source_kind: SourceKind,
+    /// Base URL of the remote hub, e.g. `http://127.0.0.1:8787`. Used only when
+    /// [`source_kind`](Self::source_kind) is [`SourceKind::Hub`].
+    pub hub_url: String,
+    /// Bearer token sent to the remote hub, if one is required.
+    ///
+    /// This is a **client credential**: the hub validates it, so unlike the
+    /// server's admin token it must be sent verbatim and cannot be stored as a
+    /// hash. It therefore stays plaintext in `config.json`; protect that file
+    /// as you would any secret. It is never logged.
+    pub hub_token: Option<String>,
     /// Fire a desktop notification when a session needs help.
     pub notifications: bool,
     /// Launch AgentLight at login. Off by default.
@@ -83,6 +109,9 @@ impl Default for Config {
             collapse_style: CollapseStyle::Single,
             poll_ms: 1500,
             show_done: false,
+            source_kind: SourceKind::File,
+            hub_url: DEFAULT_HUB_URL.to_string(),
+            hub_token: None,
             notifications: false,
             start_at_login: false,
             server_enabled: false,
@@ -116,6 +145,18 @@ impl Config {
                 self.state_path = None;
             }
         }
+        self.hub_url = self.hub_url.trim().to_string();
+        if self.hub_url.is_empty() {
+            self.hub_url = DEFAULT_HUB_URL.to_string();
+        }
+        // The hub token is a client credential and cannot be hashed, so it is
+        // kept plaintext; only trim it and drop an empty value.
+        self.hub_token = self
+            .hub_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string);
         self.server_bind = self.server_bind.trim().to_string();
         if self.server_bind.is_empty() {
             self.server_bind = DEFAULT_SERVER_BIND.to_string();
@@ -188,6 +229,13 @@ mod tests {
         assert_eq!(c.collapse_style, CollapseStyle::Single);
         assert_eq!(c.poll_ms, 1500);
         assert!(c.state_path.is_none());
+        assert_eq!(
+            c.source_kind,
+            SourceKind::File,
+            "the file source is default"
+        );
+        assert_eq!(c.hub_url, DEFAULT_HUB_URL);
+        assert!(c.hub_token.is_none());
         assert!(!c.server_enabled, "the embedded hub is off by default");
         assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
         assert!(c.server_token_hash.is_none());
@@ -217,6 +265,60 @@ mod tests {
         assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
         assert!(c.server_token.is_none());
         assert!(c.server_token_hash.is_none());
+    }
+
+    #[test]
+    fn source_fields_parse_and_sanitize() {
+        let c: Config = serde_json::from_str(
+            r#"{"source_kind":"hub","hub_url":"  http://10.0.0.5:9999  ","hub_token":"  s3cret  "}"#,
+        )
+        .unwrap();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "  http://10.0.0.5:9999  ");
+        assert_eq!(c.hub_token.as_deref(), Some("  s3cret  "));
+        let c = c.sanitized();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "http://10.0.0.5:9999");
+        assert_eq!(c.hub_token.as_deref(), Some("s3cret"));
+
+        let c = Config {
+            hub_url: "   ".to_string(),
+            hub_token: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert_eq!(c.hub_url, DEFAULT_HUB_URL);
+        assert!(c.hub_token.is_none());
+    }
+
+    #[test]
+    fn hub_token_roundtrips_as_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        let c = Config {
+            source_kind: SourceKind::Hub,
+            hub_url: "http://hub.local:8787".to_string(),
+            hub_token: Some("client-secret".to_string()),
+            ..Config::default()
+        };
+        save(&path, &c).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("client-secret"),
+            "a client credential cannot be hashed and is stored plaintext"
+        );
+        assert_eq!(load(&path), c);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let c: Config = serde_json::from_str(
+            r#"{"source_kind":"hub","hub_url":"http://h:1","future_field":42}"#,
+        )
+        .unwrap();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "http://h:1");
+        assert!(c.always_on_top);
     }
 
     #[test]

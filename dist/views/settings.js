@@ -15,6 +15,7 @@ import {
 const $ = (id) => document.getElementById(id);
 
 const DEFAULT_SERVER_BIND = "127.0.0.1:8787";
+const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 
 // Whether the persisted config carries an admin token hash. Lets the token
 // hint explain that a secret is set without ever putting the hash in the input.
@@ -42,8 +43,21 @@ function renderTokenHint() {
       : "No admin token. The API is open on loopback, or available to paired devices.";
 }
 
+// Show the fields that belong to the selected source: the file path in file
+// mode, the hub URL/token in hub mode.
+function renderSourceFields() {
+  const hub = $("set-source-kind").value === "hub";
+  $("set-file-fields").classList.toggle("hidden", hub);
+  $("set-hub-fields").classList.toggle("hidden", !hub);
+}
+
 export function populateSettings() {
   if (!config) return;
+  $("set-source-kind").value = config.source_kind || "file";
+  $("set-hub-url").value = config.hub_url || DEFAULT_HUB_URL;
+  // The hub token is a client credential and must be stored plaintext, so it is
+  // the one secret we can render back; clearing the field clears it on save.
+  $("set-hub-token").value = config.hub_token || "";
   $("set-state-path").value = config.state_path || (snapshot ? snapshot.state_path : "");
   $("set-top").checked = !!config.always_on_top;
   $("set-autostart").checked = !!config.start_at_login;
@@ -57,11 +71,13 @@ export function populateSettings() {
   $("set-server-token").value = "";
   // Assigning `oninput` (instead of addEventListener) keeps re-population from
   // stacking listeners.
+  $("set-source-kind").onchange = renderSourceFields;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
   $("btn-server-token-clear").onclick = clearAdminToken;
+  renderSourceFields();
   renderServerUrl();
   refreshServerStatus();
 }
@@ -200,6 +216,9 @@ export async function saveSettings(event) {
   if (!invoke || !config) return;
   const next = applyServerFields({
     ...config,
+    source_kind: $("set-source-kind").value,
+    hub_url: $("set-hub-url").value.trim() || DEFAULT_HUB_URL,
+    hub_token: $("set-hub-token").value.trim() || null,
     state_path: $("set-state-path").value.trim() || null,
     always_on_top: $("set-top").checked,
     start_at_login: $("set-autostart").checked,
