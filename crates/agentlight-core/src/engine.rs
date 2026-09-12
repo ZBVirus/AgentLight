@@ -125,6 +125,13 @@ impl Engine {
         self.inner.dispatch(command)
     }
 
+    /// Remove every session the engine currently reports as done, including
+    /// ones downgraded to done by the staleness reap. Returns the number
+    /// removed. Callers refresh; this does not publish.
+    pub fn clear_done(&self) -> Result<usize> {
+        self.inner.clear_done()
+    }
+
     /// Recompute and publish an update now. Used after an explicit command so
     /// the frontend sees the result without waiting for the watcher.
     pub fn refresh(&self) -> Update {
@@ -173,6 +180,33 @@ impl Inner {
                 "no source can handle the command".to_string(),
             )),
         }
+    }
+
+    fn clear_done(&self) -> Result<usize> {
+        let done: Vec<Session> = self
+            .models(Utc::now())
+            .into_iter()
+            .filter(|model| model.is_done)
+            .collect();
+        if done.is_empty() {
+            return Ok(0);
+        }
+
+        let mut removed = 0usize;
+        let mut last_error: Option<Error> = None;
+        for model in done {
+            match self.dispatch(SourceCommand::RemoveSession(model.key)) {
+                Ok(()) => removed += 1,
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        if removed == 0 {
+            if let Some(error) = last_error {
+                return Err(error);
+            }
+        }
+        Ok(removed)
     }
 
     fn source_snapshots(&self, now: DateTime<Utc>) -> Vec<SourceSnapshot> {
@@ -518,5 +552,65 @@ mod tests {
         assert_eq!(from_engine.counts, legacy.counts);
         assert_eq!(from_engine.sessions, legacy.sessions);
         assert_eq!(from_engine.yellow_mode, legacy.yellow_mode);
+    }
+
+    #[test]
+    fn clear_done_removes_file_done_and_reaped_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let stale = (Utc::now() - chrono::Duration::hours(crate::state::STALE_AFTER_HOURS + 1))
+            .to_rfc3339();
+        let fresh = Utc::now().to_rfc3339();
+        let json = format!(
+            r#"{{"version":7,"sessions":{{
+                "a":{{"status":"done","name":"Already done"}},
+                "b":{{"status":"active","name":"Stale","last_updated":"{stale}"}},
+                "live":{{"status":"active","name":"Live","last_updated":"{fresh}","future":{{"a":1}}}}
+            }},"other_top":{{"x":true}}}}"#
+        );
+        std::fs::write(&path, json).unwrap();
+
+        let config = Config {
+            state_path: Some(path.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            crate::source::clawlight::ClawlightFileSource::new(path.clone(), 1500),
+        ));
+
+        assert_eq!(engine.clear_done().unwrap(), 2);
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(after["sessions"].get("a").is_none());
+        assert!(after["sessions"].get("b").is_none());
+        assert_eq!(after["sessions"]["live"]["name"], "Live");
+        assert_eq!(after["sessions"]["live"]["future"]["a"], 1);
+        assert_eq!(after["version"], 7);
+        assert_eq!(after["other_top"]["x"], true);
+    }
+
+    #[test]
+    fn second_clear_done_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(
+            &path,
+            r#"{"sessions":{"a":{"status":"done"},"b":{"status":"needs_help"}}}"#,
+        )
+        .unwrap();
+
+        let config = Config {
+            state_path: Some(path.to_string_lossy().to_string()),
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            crate::source::clawlight::ClawlightFileSource::new(path.clone(), 1500),
+        ));
+
+        assert_eq!(engine.clear_done().unwrap(), 1);
+        assert_eq!(engine.clear_done().unwrap(), 0);
     }
 }

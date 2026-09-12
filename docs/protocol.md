@@ -147,7 +147,9 @@ optional and defaults to the engine's first source):
 { "command": "remove_session", "source": "local", "session_id": "abc" }
 ```
 
-Clear every retained `done` session:
+Clear every session the engine currently reports as `done` — including
+sessions downgraded to `done` by the 24-hour staleness rule, not just those
+whose file `status` is `done`. Unknown fields are preserved:
 
 ```json
 { "command": "clear_done" }

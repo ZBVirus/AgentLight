@@ -114,7 +114,7 @@ pub async fn commands(
     let default_source = engine.source_id();
 
     let revision = tokio::task::spawn_blocking(move || -> Result<u64, ApiError> {
-        let command = match request {
+        match request {
             CommandRequest::RemoveSession { source, session_id } => {
                 let source = source
                     .map(SourceId::new)
@@ -124,11 +124,16 @@ pub async fn commands(
                             "remove_session requires a source and none is configured",
                         )
                     })?;
-                SourceCommand::RemoveSession(SessionKey::new(source, session_id))
+                engine
+                    .dispatch(SourceCommand::RemoveSession(SessionKey::new(
+                        source, session_id,
+                    )))
+                    .map_err(ApiError::from)?;
             }
-            CommandRequest::ClearDone => SourceCommand::ClearDone,
-        };
-        engine.dispatch(command).map_err(ApiError::from)?;
+            CommandRequest::ClearDone => {
+                engine.clear_done().map_err(ApiError::from)?;
+            }
+        }
         Ok(engine.refresh().revision)
     })
     .await

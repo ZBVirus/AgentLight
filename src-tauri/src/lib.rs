@@ -90,16 +90,11 @@ fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool,
 
 #[tauri::command]
 fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
-    let before = state.engine.counts_now().done;
-    if before == 0 {
-        return Ok(0);
+    let removed = state.engine.clear_done().map_err(|e| e.to_string())?;
+    if removed > 0 {
+        state.engine.refresh();
     }
-    state
-        .engine
-        .dispatch(SourceCommand::ClearDone)
-        .map_err(|e| e.to_string())?;
-    let after = state.engine.refresh().snapshot.counts.done;
-    Ok(before.saturating_sub(after))
+    Ok(removed)
 }
 
 // `async` here means Tauri runs the body on a worker thread. The blocking
