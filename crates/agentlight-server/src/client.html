@@ -98,27 +98,152 @@
         padding: 0 16px;
         color: #8a8d98;
       }
+      .pair {
+        max-width: 420px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      .pair h2 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+      .pair p.hint {
+        margin: 0 0 8px;
+        color: #8a8d98;
+        font-size: 14px;
+      }
+      .pair label {
+        display: block;
+        margin: 16px 0 6px;
+        color: #b9bcc8;
+        font-size: 14px;
+      }
+      .pair input {
+        width: 100%;
+        padding: 12px;
+        color: #e8eaf0;
+        background: #1d2029;
+        border: 1px solid #3a3f4d;
+        border-radius: 10px;
+        font: inherit;
+      }
+      .pair input:focus {
+        outline: 2px solid #61afef;
+        outline-offset: 1px;
+      }
+      #pair-code {
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+      }
+      #pair-button {
+        width: 100%;
+        margin-top: 18px;
+        padding: 13px;
+        color: #14161d;
+        background: #98c379;
+        border: 0;
+        border-radius: 10px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #pair-button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      #pair-error {
+        margin: 14px 0 0;
+        color: #e06c75;
+        font-size: 14px;
+      }
+      #forget-bar {
+        padding: 8px 16px 24px;
+        text-align: center;
+      }
+      #forget {
+        padding: 10px;
+        color: #8a8d98;
+        background: none;
+        border: 0;
+        font: inherit;
+        font-size: 14px;
+        text-decoration: underline;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
     <header>
-      <div class="light" id="light"></div>
+      <div class="light" id="light" hidden></div>
       <div>
         <h1>AgentLight</h1>
-        <div id="status">connecting…</div>
+        <div id="status" hidden>connecting…</div>
       </div>
     </header>
-    <ul id="sessions"></ul>
-    <p class="empty" id="empty" hidden>No sessions.</p>
+
+    <form class="pair" id="pair-panel" hidden>
+      <h2>Pair this device</h2>
+      <p class="hint">Enter the pairing code shown on the host.</p>
+      <label for="pair-code">Pairing code</label>
+      <input
+        id="pair-code"
+        name="code"
+        type="text"
+        maxlength="8"
+        autocomplete="one-time-code"
+        autocapitalize="characters"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="XXXXXXXX"
+        required
+      />
+      <label for="pair-name">Device name</label>
+      <input id="pair-name" name="device_name" type="text" value="My device" />
+      <button id="pair-button" type="submit">Pair</button>
+      <p id="pair-error" role="alert" hidden></p>
+    </form>
+
+    <div id="state" hidden>
+      <ul id="sessions"></ul>
+      <p class="empty" id="empty" hidden>No sessions.</p>
+    </div>
+
+    <div id="forget-bar" hidden>
+      <button id="forget" type="button">Forget this device</button>
+    </div>
+
     <script>
       (function () {
         "use strict";
-        var token = new URLSearchParams(location.search).get("token") || "";
+        var TOKEN_KEY = "agentlight.token";
+        var CODE_LENGTH = 8;
+        var DEFAULT_NAME = "My device";
+
+        var queryToken = new URLSearchParams(location.search).get("token") || "";
+        var storedToken = "";
+        try {
+          storedToken = localStorage.getItem(TOKEN_KEY) || "";
+        } catch (error) {
+          storedToken = "";
+        }
+        // A token in the URL wins over anything remembered locally; it means
+        // the page was opened with an explicit credential and needs no pairing.
+        var token = queryToken || storedToken;
         var lastRevision = -1;
+        var events = null;
+
         var light = document.getElementById("light");
         var status = document.getElementById("status");
         var list = document.getElementById("sessions");
         var empty = document.getElementById("empty");
+        var state = document.getElementById("state");
+        var forgetBar = document.getElementById("forget-bar");
+        var forgetButton = document.getElementById("forget");
+        var panel = document.getElementById("pair-panel");
+        var codeInput = document.getElementById("pair-code");
+        var nameInput = document.getElementById("pair-name");
+        var pairButton = document.getElementById("pair-button");
+        var errorLine = document.getElementById("pair-error");
 
         function headers() {
           return token ? { Authorization: "Bearer " + token } : {};
@@ -160,25 +285,140 @@
             .then(render);
         }
 
-        refresh().catch(function (error) {
-          status.textContent = "error: " + error.message;
-        });
+        function showState() {
+          panel.hidden = true;
+          state.hidden = false;
+          light.hidden = false;
+          status.hidden = false;
+          forgetBar.hidden = false;
+        }
 
-        var events = new EventSource(
-          "/api/v1/events" + (token ? "?token=" + encodeURIComponent(token) : "")
-        );
-        events.addEventListener("update", function (event) {
-          var update = JSON.parse(event.data);
-          if (update.revision <= lastRevision) return;
-          lastRevision = update.revision;
-          render(update.snapshot);
+        function showPairing(message) {
+          state.hidden = true;
+          light.hidden = true;
+          status.hidden = true;
+          forgetBar.hidden = true;
+          panel.hidden = false;
+          setError(message || "");
+          codeInput.focus();
+        }
+
+        function setError(message) {
+          errorLine.textContent = message;
+          errorLine.hidden = !message;
+        }
+
+        function connect() {
+          if (events) events.close();
+          events = new EventSource(
+            "/api/v1/events" + (token ? "?token=" + encodeURIComponent(token) : "")
+          );
+          events.addEventListener("update", function (event) {
+            var update = JSON.parse(event.data);
+            if (update.revision <= lastRevision) return;
+            lastRevision = update.revision;
+            render(update.snapshot);
+          });
+          events.addEventListener("lagged", function () {
+            refresh().catch(function () {});
+          });
+          events.onerror = function () {
+            status.textContent = "disconnected — retrying…";
+          };
+        }
+
+        function start() {
+          showState();
+          lastRevision = -1;
+          refresh().catch(function (error) {
+            status.textContent = "error: " + error.message;
+          });
+          connect();
+        }
+
+        function submitPair(event) {
+          event.preventDefault();
+          var code = codeInput.value.trim().toUpperCase();
+          var deviceName = nameInput.value.trim() || DEFAULT_NAME;
+          if (code.length !== CODE_LENGTH) {
+            setError("The pairing code is " + CODE_LENGTH + " characters.");
+            codeInput.focus();
+            return;
+          }
+          setError("");
+          pairButton.disabled = true;
+          pairButton.textContent = "Pairing…";
+          fetch("/api/v1/pair", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code: code, device_name: deviceName }),
+          })
+            .then(function (response) {
+              return response
+                .json()
+                .catch(function () {
+                  return {};
+                })
+                .then(function (body) {
+                  if (!response.ok) {
+                    var message = body && body.error && body.error.message;
+                    throw new Error(message || "code expired or wrong");
+                  }
+                  return body;
+                });
+            })
+            .then(function (body) {
+              if (!body || !body.token) {
+                throw new Error("pairing response was missing a token");
+              }
+              token = body.token;
+              try {
+                localStorage.setItem(TOKEN_KEY, token);
+              } catch (error) {
+                // Storage may be unavailable (private mode); the session still
+                // works until the page is reloaded.
+              }
+              codeInput.value = "";
+              start();
+            })
+            .catch(function (error) {
+              setError(error.message || "code expired or wrong");
+            })
+            .then(function () {
+              pairButton.disabled = false;
+              pairButton.textContent = "Pair";
+            });
+        }
+
+        function forget() {
+          try {
+            localStorage.removeItem(TOKEN_KEY);
+          } catch (error) {
+            // Nothing to clear.
+          }
+          token = "";
+          lastRevision = -1;
+          if (events) {
+            events.close();
+            events = null;
+          }
+          list.textContent = "";
+          light.className = "light";
+          showPairing("");
+        }
+
+        panel.addEventListener("submit", submitPair);
+        codeInput.addEventListener("input", function () {
+          var upper = codeInput.value.toUpperCase();
+          if (upper !== codeInput.value) codeInput.value = upper;
         });
-        events.addEventListener("lagged", function () {
-          refresh().catch(function () {});
-        });
-        events.onerror = function () {
-          status.textContent = "disconnected — retrying…";
-        };
+        forgetButton.addEventListener("click", forget);
+
+        if (token) {
+          start();
+        } else {
+          showPairing("");
+        }
       })();
     </script>
   </body>

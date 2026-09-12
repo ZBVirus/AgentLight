@@ -88,9 +88,11 @@ Every error response is JSON:
 ## `GET /`
 
 The built-in, self-contained web client: a single HTML document with inline CSS
-and JavaScript that reads the token from `location.search`, fetches
-`/api/v1/snapshot`, and subscribes to `/api/v1/events`. No auth, no build step,
-no third-party assets. It is same-origin with the API, so no CORS is required.
+and JavaScript that reads the token from `location.search` or `localStorage`,
+fetches `/api/v1/snapshot`, and subscribes to `/api/v1/events`. With no token it
+shows a self-service pairing form that calls `POST /api/v1/pair` and remembers
+the returned device token. No auth to load, no build step, no third-party
+assets. It is same-origin with the API, so no CORS is required.
 
 ## `GET /healthz`
 

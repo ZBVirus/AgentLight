@@ -271,6 +271,10 @@ async fn root_serves_the_built_in_client() {
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(body.contains("<!doctype html>"));
     assert!(body.contains("EventSource"));
+    // The self-service pairing form ships with the client.
+    assert!(body.contains("id=\"pair-code\""));
+    assert!(body.contains("/api/v1/pair"));
+    assert!(body.contains("Forget this device"));
 }
 
 #[tokio::test]
