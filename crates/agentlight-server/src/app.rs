@@ -27,7 +27,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 64;
 pub struct AppState {
     engine: Engine,
     sender: broadcast::Sender<Update>,
-    token: Option<String>,
+    admin_token_hash: Option<String>,
     devices: Arc<DeviceStore>,
 }
 
@@ -40,12 +40,17 @@ impl AppState {
     /// persist them.
     ///
     /// [`with_devices`]: Self::with_devices
-    pub fn new(engine: Engine, token: Option<String>) -> Self {
-        Self::with_devices(engine, token, DeviceStore::in_memory())
+    pub fn new(engine: Engine, admin_token_hash: Option<String>) -> Self {
+        Self::with_devices(engine, admin_token_hash, DeviceStore::in_memory())
     }
 
-    /// Wrap an engine with an explicit device store.
-    pub fn with_devices(engine: Engine, token: Option<String>, devices: DeviceStore) -> Self {
+    /// Wrap an engine with an explicit device store. `admin_token_hash` is a
+    /// SHA-256 hex digest, never a plaintext token.
+    pub fn with_devices(
+        engine: Engine,
+        admin_token_hash: Option<String>,
+        devices: DeviceStore,
+    ) -> Self {
         let (sender, _receiver) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let sink_sender = sender.clone();
         let sink: UpdateSink = Arc::new(move |update| {
@@ -55,7 +60,7 @@ impl AppState {
         Self {
             engine,
             sender,
-            token,
+            admin_token_hash,
             devices: Arc::new(devices),
         }
     }
@@ -64,7 +69,7 @@ impl AppState {
     pub fn from_config(config: &ServerConfig) -> Self {
         Self::with_devices(
             build_engine(config),
-            config.token.clone(),
+            config.admin_token_hash.clone(),
             DeviceStore::load(config.devices_path.clone()),
         )
     }
@@ -73,8 +78,9 @@ impl AppState {
         &self.engine
     }
 
-    pub fn token(&self) -> Option<&str> {
-        self.token.as_deref()
+    /// The admin token's SHA-256 hex, if one is configured.
+    pub fn admin_token_hash(&self) -> Option<&str> {
+        self.admin_token_hash.as_deref()
     }
 
     /// The paired-device store.
@@ -86,7 +92,7 @@ impl AppState {
     /// a paired device, the loopback default stays open, matching the previous
     /// "auth disabled" behavior.
     pub fn auth_required(&self) -> bool {
-        self.token.is_some() || self.devices.has_devices()
+        self.admin_token_hash.is_some() || self.devices.has_devices()
     }
 
     /// Pairing code and expiry for the desktop to display.

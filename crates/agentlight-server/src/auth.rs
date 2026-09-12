@@ -7,8 +7,9 @@
 //!
 //! The token is accepted either as `Authorization: Bearer <token>` or as a
 //! `token` query parameter. The query form exists for `EventSource`, which
-//! cannot set request headers from the browser. Admin comparison is
-//! constant-time; device tokens are hashed, then compared constant-time.
+//! cannot set request headers from the browser. Only the SHA-256 hash of the
+//! admin token is stored; the provided token is hashed and the digests are
+//! compared constant-time. Device tokens are handled the same way.
 
 use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
@@ -16,6 +17,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::app::AppState;
+use crate::devices::hash_token;
 use crate::error::ApiError;
 
 const BEARER_PREFIX: &str = "Bearer ";
@@ -32,8 +34,9 @@ pub async fn require_token(
 
     let provided = provided_token(&request);
     let authorized = provided.as_deref().is_some_and(|token| {
-        if let Some(expected) = state.token() {
-            if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        if let Some(expected) = state.admin_token_hash() {
+            let hashed = hash_token(token);
+            if constant_time_eq(hashed.as_bytes(), expected.as_bytes()) {
                 return true;
             }
         }
@@ -60,12 +63,12 @@ pub async fn require_admin(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let Some(expected) = state.token() else {
+    let Some(expected) = state.admin_token_hash() else {
         return Err(ApiError::forbidden("admin token is not configured"));
     };
     let provided = provided_token(&request);
     match provided {
-        Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+        Some(token) if constant_time_eq(hash_token(&token).as_bytes(), expected.as_bytes()) => {
             Ok(next.run(request).await)
         }
         _ => Err(ApiError::unauthorized("missing or invalid admin token")),

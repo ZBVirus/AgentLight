@@ -42,6 +42,26 @@ tray: closing or hiding it keeps it running, and the tray icon toggles it back.
 Left-clicking the tray icon shows/hides the window; the tray menu has Settings
 and Quit.
 
+## Serving to other devices
+
+Settings can start an embedded HTTP server over the same engine. It is off by
+default and binds loopback; exposing it on the LAN is an explicit choice.
+
+- With neither an admin token nor a paired device, the API is open (the loopback
+  default).
+- With an admin token set, every `/api/v1/*` request needs a valid token.
+- With a paired device but no admin token, `/api/v1/*` needs a device token, and
+  HTTP device management (`GET /api/v1/devices`,
+  `DELETE /api/v1/devices/{id}`) returns `403`. The desktop can still list and
+  revoke devices from Settings because it calls the server in-process.
+
+The admin token is stored only as a SHA-256 hash, and device tokens are hashed
+the same way; plaintext tokens are never persisted, so a saved admin token
+cannot be shown again. Pair other devices with the pairing code. The standalone
+binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
+`AGENTLIGHT_DEVICES_FILE` (default `devices.json`). The full rule is in
+[`docs/protocol.md`](docs/protocol.md).
+
 ## How it reads state
 
 - Resolution order for the state file: `AGENTLIGHT_STATE_PATH` env var, then

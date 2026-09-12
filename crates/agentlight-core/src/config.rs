@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::state::{self, Error, Result};
 
@@ -63,7 +64,13 @@ pub struct Config {
     /// Address the embedded server binds. Defaults to
     /// [`DEFAULT_SERVER_BIND`] (`127.0.0.1:8787`).
     pub server_bind: String,
-    /// Static bearer token for the embedded server. `None` disables auth.
+    /// SHA-256 hex of the admin bearer token for the embedded server. `None`
+    /// disables admin auth. The plaintext is never persisted.
+    pub server_token_hash: Option<String>,
+    /// Legacy plaintext admin token. Read-only: [`Config::sanitized`] hashes it
+    /// into [`server_token_hash`](Self::server_token_hash) and clears it, and it
+    /// is never serialized back to disk.
+    #[serde(default, skip_serializing)]
     pub server_token: Option<String>,
 }
 
@@ -80,9 +87,23 @@ impl Default for Config {
             start_at_login: false,
             server_enabled: false,
             server_bind: DEFAULT_SERVER_BIND.to_string(),
+            server_token_hash: None,
             server_token: None,
         }
     }
+}
+
+/// SHA-256 hex of a token. Identical to the server's implementation so a config
+/// migrated here compares equal to one the server hashed.
+pub fn hash_token(token: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(token.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 impl Config {
@@ -99,11 +120,19 @@ impl Config {
         if self.server_bind.is_empty() {
             self.server_bind = DEFAULT_SERVER_BIND.to_string();
         }
-        self.server_token = self
-            .server_token
+        // Migrate a legacy plaintext token to its hash, then drop the plaintext
+        // so it cannot be serialized back to disk.
+        if let Some(token) = self.server_token.take() {
+            let token = token.trim();
+            if !token.is_empty() {
+                self.server_token_hash = Some(hash_token(token));
+            }
+        }
+        self.server_token_hash = self
+            .server_token_hash
             .as_deref()
             .map(str::trim)
-            .filter(|token| !token.is_empty())
+            .filter(|hash| !hash.is_empty())
             .map(str::to_string);
         self
     }
@@ -161,6 +190,7 @@ mod tests {
         assert!(c.state_path.is_none());
         assert!(!c.server_enabled, "the embedded hub is off by default");
         assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
+        assert!(c.server_token_hash.is_none());
         assert!(c.server_token.is_none());
     }
 
@@ -172,9 +202,11 @@ mod tests {
         .unwrap();
         assert!(c.server_enabled);
         assert_eq!(c.server_bind.trim(), "0.0.0.0:9000");
+        assert_eq!(c.server_token.as_deref(), Some("  s3cret  "));
         let c = c.sanitized();
         assert_eq!(c.server_bind, "0.0.0.0:9000");
-        assert_eq!(c.server_token.as_deref(), Some("s3cret"));
+        assert_eq!(c.server_token_hash, Some(hash_token("s3cret")));
+        assert!(c.server_token.is_none(), "legacy plaintext is dropped");
 
         let c = Config {
             server_bind: "   ".to_string(),
@@ -184,6 +216,37 @@ mod tests {
         .sanitized();
         assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
         assert!(c.server_token.is_none());
+        assert!(c.server_token_hash.is_none());
+    }
+
+    #[test]
+    fn legacy_plaintext_token_is_hashed_and_never_serialized() {
+        let c: Config = serde_json::from_str(r#"{"server_token":"hunter2"}"#).unwrap();
+        assert_eq!(c.server_token.as_deref(), Some("hunter2"));
+        let c = c.sanitized();
+        assert_eq!(c.server_token_hash, Some(hash_token("hunter2")));
+        assert!(c.server_token.is_none());
+
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("hunter2"), "plaintext must not be written");
+        assert!(json.contains(&hash_token("hunter2")));
+    }
+
+    #[test]
+    fn load_migrates_legacy_plaintext_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"server_enabled":true,"server_token":"hunter2"}"#).unwrap();
+
+        let config = load(&path);
+        assert_eq!(config.server_token_hash, Some(hash_token("hunter2")));
+        assert!(config.server_token.is_none());
+
+        save(&path, &config).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("hunter2"), "plaintext must not remain: {raw}");
+        assert!(raw.contains(&hash_token("hunter2")));
     }
 
     #[test]

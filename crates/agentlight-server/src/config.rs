@@ -18,9 +18,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
 pub struct ServerConfig {
     /// Address to listen on. Defaults to `127.0.0.1:8787`.
     pub bind: SocketAddr,
-    /// Static bearer token. `None` disables auth (loopback only). Functions as
-    /// an admin token when set: it also authorizes device management.
-    pub token: Option<String>,
+    /// SHA-256 hex of the static admin bearer token. `None` disables admin auth
+    /// (loopback only). When set it also authorizes device management. The
+    /// plaintext is never stored or accepted here.
+    pub admin_token_hash: Option<String>,
     /// Where paired-device records live. `None` keeps them in memory only.
     pub devices_path: Option<PathBuf>,
     /// State source and display policy.
@@ -33,7 +34,7 @@ impl Default for ServerConfig {
             bind: DEFAULT_BIND
                 .parse()
                 .expect("DEFAULT_BIND is a valid socket address"),
-            token: None,
+            admin_token_hash: None,
             devices_path: None,
             core: Config::default(),
         }
@@ -41,10 +42,12 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn new(bind: SocketAddr, token: Option<String>, core: Config) -> Self {
+    /// `admin_token_hash` is the SHA-256 hex of the admin token, not the
+    /// plaintext. Use [`crate::hash_token`] to hash a user-supplied secret.
+    pub fn new(bind: SocketAddr, admin_token_hash: Option<String>, core: Config) -> Self {
         Self {
             bind,
-            token,
+            admin_token_hash,
             devices_path: None,
             core,
         }
@@ -71,7 +74,7 @@ mod tests {
     fn defaults_are_loopback_without_a_token() {
         let config = ServerConfig::default();
         assert_eq!(config.bind.to_string(), DEFAULT_BIND);
-        assert!(config.token.is_none());
+        assert!(config.admin_token_hash.is_none());
         assert!(config.devices_path.is_none());
         assert!(config.core.state_path.is_none());
     }

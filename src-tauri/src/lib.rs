@@ -5,7 +5,7 @@
 //! icon, and IPC commands.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -73,6 +73,16 @@ fn set_config(
     state: State<'_, AppState>,
     config: Config,
 ) -> Result<Config, String> {
+    // The settings view is write-only for the admin token: a non-empty legacy
+    // `server_token` is the user typing a new secret, so hash it here and drop
+    // the plaintext before anything is persisted.
+    let mut config = config;
+    if let Some(token) = config.server_token.take() {
+        let token = token.trim();
+        if !token.is_empty() {
+            config.server_token_hash = Some(agentlight_server::hash_token(token));
+        }
+    }
     let config = config.sanitized();
     let previous = current_config(&state);
 
@@ -122,7 +132,7 @@ fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
 
 #[tauri::command]
 fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
-    let admin_token_set = current_config(&state).server_token.is_some();
+    let admin_token_set = current_config(&state).server_token_hash.is_some();
     match state.server.lock().unwrap().as_ref() {
         Some(handle) => {
             let pair = handle.pair_info();
@@ -331,8 +341,11 @@ fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
 /// Start the embedded hub over the shared engine and remember the handle.
 fn start_server(app: &AppHandle, state: &AppState, config: &Config) -> Result<(), String> {
     let bind = parse_server_bind(&config.server_bind)?;
-    let mut server_config =
-        agentlight_server::ServerConfig::new(bind, config.server_token.clone(), config.clone());
+    let mut server_config = agentlight_server::ServerConfig::new(
+        bind,
+        config.server_token_hash.clone(),
+        config.clone(),
+    );
     // Keep paired devices beside the config so they survive server restarts.
     server_config.devices_path = state
         .config_path
@@ -366,8 +379,11 @@ fn restart_server(
 ) -> Result<(), String> {
     let changed = previous.server_enabled != config.server_enabled
         || previous.server_bind != config.server_bind
-        || previous.server_token != config.server_token;
-    if !changed {
+        || previous.server_token_hash != config.server_token_hash;
+    // Also start when the config wants the server but no handle is live (for
+    // example a failed startup). Otherwise Start would be a no-op.
+    let running = state.server.lock().unwrap().is_some();
+    if !changed && running == config.server_enabled {
         return Ok(());
     }
     stop_server(state);
@@ -477,6 +493,16 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Whether the config file on disk still carries the legacy plaintext admin
+/// token. Used once at startup to persist the migrated, hashed config.
+fn legacy_plaintext_token_present(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.get("server_token").cloned())
+        .is_some_and(|token| token.is_string())
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -484,6 +510,12 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let config_path = agentlight_core::config_path();
     let config = agentlight_core::load_config(&config_path);
+    if legacy_plaintext_token_present(&config_path) {
+        // `load_config` already hashed the plaintext into `server_token_hash`;
+        // write the sanitized config back so the file no longer holds the
+        // secret. Best-effort: a read-only config dir keeps the old file.
+        let _ = agentlight_core::save_config(&config_path, &config);
+    }
     let engine = Arc::new(Engine::new(config.clone()));
 
     let app = tauri::Builder::default()

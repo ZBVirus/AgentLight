@@ -23,24 +23,46 @@ framing around them, not a second model.
 
 Two kinds of bearer token are accepted:
 
-- **Admin token.** The optional static token (`AGENTLIGHT_TOKEN`, or the
-  desktop's `server_token`). It authorizes every endpoint, including device
-  management. It is the operator secret.
+- **Admin token.** The optional static operator secret. `AGENTLIGHT_TOKEN` on
+  the standalone binary, or the desktop's "Admin token" setting. It authorizes
+  every endpoint, including device management.
 - **Device token.** A per-device secret obtained by pairing (below). It
   authorizes the read/command endpoints but not device management. A device
   token stays valid until it is revoked.
 
 A request may carry the token as `Authorization: Bearer <token>`, or as a
 `?token=<token>` query parameter. The query form exists for browser
-`EventSource`, which cannot set request headers. Admin comparison is
-constant-time; device tokens are SHA-256 hashed and the hashes are compared
-constant-time.
+`EventSource`, which cannot set request headers.
 
-When neither an admin token nor any paired device exists, every route is open
-(the loopback default). Once either exists, `/api/v1/*` requires a token.
+### What is required
+
+- **No admin token and no paired device.** The API is open. This is the loopback
+  default: nothing is listening beyond `127.0.0.1` unless the operator opted
+  into LAN exposure.
+- **Admin token hash set.** Every `/api/v1/*` request needs a valid token. The
+  admin token works everywhere; a device token works on the read/command
+  endpoints only.
+- **A paired device but no admin token.** `/api/v1/*` needs a device token, and
+  the HTTP device-management endpoints (`GET /api/v1/devices`,
+  `DELETE /api/v1/devices/{id}`) return `403 forbidden`. There is no admin
+  secret to present, so HTTP clients cannot manage devices.
+- The desktop app can still list and revoke paired devices from Settings even
+  with no admin token, because it calls the running server in-process rather
+  than over HTTP.
+
 `GET /healthz` and `GET /` are always open, so the built-in client can load
 before the user supplies a token. Missing or invalid credentials: `401` with the
 error shape below.
+
+### Storage
+
+The admin token is stored only as a SHA-256 hex digest (`server_token_hash` on
+the desktop; the standalone binary hashes `AGENTLIGHT_TOKEN` at startup). Device
+tokens are hashed the same way. Comparison is constant-time over the digests.
+Plaintext tokens are never persisted, and a saved admin token cannot be shown or
+recovered later — pair additional devices with the pairing code instead. A
+legacy config file that still carries the plaintext `server_token` field is
+migrated to `server_token_hash` on load, and the plaintext is not written back.
 
 `agentlight-server` and the embedded hub do plaintext HTTP. Treat the LAN as the
 trust boundary and use a VPN (WireGuard/Tailscale) for off-LAN access; TLS is
@@ -245,10 +267,10 @@ failed to parse.
 ## Server defaults
 
 `agentlight-server` binds `127.0.0.1:8787` unless overridden
-(`AGENTLIGHT_BIND`), and auth is disabled unless `AGENTLIGHT_TOKEN` is set.
-`AGENTLIGHT_STATE_PATH` points at clawlight's `state.json`,
-`AGENTLIGHT_POLL_MS` sets the watcher backstop, and
-`AGENTLIGHT_DEVICES_PATH` (default `devices.json` in the working directory)
+(`AGENTLIGHT_BIND`), and admin auth is disabled unless `AGENTLIGHT_TOKEN` is set
+(its SHA-256 hash is what the server keeps). `AGENTLIGHT_STATE_PATH` points at
+clawlight's `state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
+`AGENTLIGHT_DEVICES_FILE` (default `devices.json` in the working directory)
 is where paired devices persist. The pairing code is logged at startup so a
 headless host can be paired. LAN exposure is an explicit opt-in; use a VPN for
 off-LAN access.

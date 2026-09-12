@@ -2,14 +2,14 @@
 //!
 //! Configuration is environment-only so the process is container-friendly:
 //! `AGENTLIGHT_BIND` (`127.0.0.1:8787`), `AGENTLIGHT_TOKEN` (unset disables
-//! auth), `AGENTLIGHT_STATE_PATH` (clawlight `state.json`),
-//! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_PATH` (`devices.json`
+//! auth; hashed at startup), `AGENTLIGHT_STATE_PATH` (clawlight `state.json`),
+//! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_FILE` (`devices.json`
 //! in the working directory). No config file is read.
 
 use std::path::PathBuf;
 
 use agentlight_core::Config;
-use agentlight_server::{serve, ServerConfig};
+use agentlight_server::{hash_token, serve, ServerConfig};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -19,7 +19,8 @@ async fn main() -> std::io::Result<()> {
 
 fn server_config() -> ServerConfig {
     let bind = env_parse("AGENTLIGHT_BIND").unwrap_or_else(|| ServerConfig::default().bind);
-    let token = env_non_empty("AGENTLIGHT_TOKEN");
+    // Hash once at startup: only the digest lives in memory and on the wire.
+    let admin_token_hash = env_non_empty("AGENTLIGHT_TOKEN").map(|token| hash_token(&token));
 
     let mut core = Config::default();
     if let Some(path) = env_non_empty("AGENTLIGHT_STATE_PATH") {
@@ -32,11 +33,11 @@ fn server_config() -> ServerConfig {
     // them on unless the engine's default is deliberately changed.
     core.notifications = true;
 
-    let devices_path = env_non_empty("AGENTLIGHT_DEVICES_PATH")
+    let devices_path = env_non_empty("AGENTLIGHT_DEVICES_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("devices.json"));
 
-    ServerConfig::new(bind, token, core.sanitized()).with_devices_path(devices_path)
+    ServerConfig::new(bind, admin_token_hash, core.sanitized()).with_devices_path(devices_path)
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

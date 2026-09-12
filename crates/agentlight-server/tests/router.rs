@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use agentlight_core::{
     Capabilities, Config, Engine, FixtureSource, Session, SessionKey, SourceId, Status,
 };
-use agentlight_server::{router, AppState};
+use agentlight_server::{hash_token, router, AppState};
 
 fn session(id: &str, status: Status) -> Session {
     Session::new(
@@ -65,7 +65,7 @@ async fn read_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn healthz_is_open_and_negotiates() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let response = app
         .oneshot(request(Method::GET, "/healthz", None, None))
@@ -115,7 +115,7 @@ async fn snapshot_exposes_the_core_shape() {
 #[tokio::test]
 async fn auth_rejects_missing_and_wrong_tokens() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let missing = app
         .clone()
@@ -132,6 +132,20 @@ async fn auth_rejects_missing_and_wrong_tokens() {
         .await
         .unwrap();
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    // The stored digest is not itself a credential.
+    let digest = hash_token("secret");
+    let hash_tried = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/snapshot",
+            Some(&digest),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(hash_tried.status(), StatusCode::UNAUTHORIZED);
 
     let right = app
         .oneshot(request(
@@ -236,7 +250,7 @@ async fn unknown_command_is_a_bad_request() {
 #[tokio::test]
 async fn root_serves_the_built_in_client() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let response = app
         .oneshot(request(Method::GET, "/", None, None))
@@ -262,7 +276,7 @@ async fn root_serves_the_built_in_client() {
 #[tokio::test]
 async fn query_token_is_accepted() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let response = app
         .oneshot(request(
@@ -280,7 +294,7 @@ async fn query_token_is_accepted() {
 #[tokio::test]
 async fn query_token_is_rejected_when_wrong() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let response = app
         .oneshot(request(
@@ -298,7 +312,7 @@ async fn query_token_is_rejected_when_wrong() {
 #[tokio::test]
 async fn pair_exchanges_a_code_for_a_working_device_token() {
     let (engine, _) = engine_with_sessions();
-    let state = AppState::new(engine, Some("secret".into()));
+    let state = AppState::new(engine, Some(hash_token("secret")));
     let code = state.pair_info().code;
     let app = router(state);
 
@@ -359,7 +373,7 @@ async fn pair_exchanges_a_code_for_a_working_device_token() {
 #[tokio::test]
 async fn pair_rejects_a_wrong_code() {
     let (engine, _) = engine_with_sessions();
-    let app = router(AppState::new(engine, Some("secret".into())));
+    let app = router(AppState::new(engine, Some(hash_token("secret"))));
 
     let response = app
         .oneshot(request(
@@ -379,7 +393,7 @@ async fn pair_rejects_a_wrong_code() {
 #[tokio::test]
 async fn regenerate_invalidates_the_previous_code() {
     let (engine, _) = engine_with_sessions();
-    let state = AppState::new(engine, Some("secret".into()));
+    let state = AppState::new(engine, Some(hash_token("secret")));
     let old = state.pair_info().code;
     let fresh = state.regenerate_pairing().code;
     assert_ne!(old, fresh);
@@ -412,7 +426,7 @@ async fn regenerate_invalidates_the_previous_code() {
 #[tokio::test]
 async fn device_listing_requires_admin() {
     let (engine, _) = engine_with_sessions();
-    let state = AppState::new(engine, Some("secret".into()));
+    let state = AppState::new(engine, Some(hash_token("secret")));
     let code = state.pair_info().code;
     let app = router(state);
 
@@ -460,6 +474,52 @@ async fn device_listing_requires_admin() {
         .await
         .unwrap();
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn paired_device_without_admin_needs_a_device_token_and_cannot_manage() {
+    let (engine, _) = engine_with_sessions();
+    let state = AppState::new(engine, None);
+    let code = state.pair_info().code;
+    let app = router(state);
+
+    let paired = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": code, "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+    let token = read_json(paired).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // With a paired device present, `/api/v1/*` is no longer open.
+    let missing = app
+        .clone()
+        .oneshot(request(Method::GET, "/api/v1/snapshot", None, None))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let with_device = app
+        .clone()
+        .oneshot(request(Method::GET, "/api/v1/snapshot", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(with_device.status(), StatusCode::OK);
+
+    // No admin token means device management is closed with 403, even with a
+    // valid device token.
+    let manage = app
+        .oneshot(request(Method::GET, "/api/v1/devices", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(manage.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

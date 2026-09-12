@@ -29,7 +29,7 @@ mod routes;
 
 pub use app::{app, build_engine, router, AppState};
 pub use config::ServerConfig;
-pub use devices::{DeviceInfo, DeviceStore, PairInfo};
+pub use devices::{hash_token, DeviceInfo, DeviceStore, PairInfo};
 pub use error::ApiError;
 
 /// Wire protocol version. Bump only for breaking changes; additive changes
@@ -104,12 +104,12 @@ pub fn start(
     engine: agentlight_core::Engine,
     config: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
-    let token_required = config.token.is_some();
+    let token_required = config.admin_token_hash.is_some();
     // Build state on this thread and share it with the server thread so the
     // handle can reach the live pairing code and device list.
     let state = Arc::new(AppState::with_devices(
         engine,
-        config.token.clone(),
+        config.admin_token_hash.clone(),
         DeviceStore::load(config.devices_path.clone()),
     ));
     let server_state = state.clone();
@@ -197,7 +197,7 @@ pub async fn serve(config: ServerConfig) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(
         address = %listener.local_addr()?,
-        token = if config.token.is_some() { "required" } else { "disabled" },
+        token = if config.admin_token_hash.is_some() { "required" } else { "disabled" },
         "agentlight-server listening"
     );
     tracing::info!(
@@ -232,7 +232,7 @@ mod tests {
         let engine = Engine::new(Config::default());
         let config = ServerConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            token: None,
+            admin_token_hash: None,
             ..ServerConfig::default()
         };
         let mut handle = start(engine, config).unwrap();

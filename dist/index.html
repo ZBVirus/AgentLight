@@ -108,22 +108,29 @@
               <input type="number" id="set-poll" min="250" max="60000" step="250" />
             </label>
 
-            <label class="field inline">
-              <input type="checkbox" id="set-server-enabled" />
+            <div class="field">
               <span>Serve to other devices</span>
-            </label>
+              <div class="row">
+                <button type="button" class="primary" id="btn-server-toggle">Start server</button>
+                <small class="hint" id="set-server-status">Stopped</small>
+              </div>
+            </div>
             <label class="field">
               <span>Bind address</span>
               <input type="text" id="set-server-bind" placeholder="127.0.0.1:8787" />
             </label>
             <label class="field">
               <span>Admin token (optional)</span>
-              <input type="text" id="set-server-token" placeholder="optional secret" />
+              <div class="row">
+                <input type="text" id="set-server-token" placeholder="Type a new secret to set one" />
+                <button type="button" class="ghost" id="btn-server-token-clear">Clear</button>
+              </div>
+              <small class="hint" id="set-server-token-hint"></small>
             </label>
             <div class="field">
               <span>Open on another device</span>
               <input type="text" id="set-server-url" readonly />
-              <small class="hint">The device must be on the same network. Use 0.0.0.0:8787 to accept LAN connections.</small>
+              <small class="hint" id="set-server-url-hint">The device must be on the same network. Use 0.0.0.0:8787 to accept LAN connections.</small>
             </div>
 
             <div class="field">

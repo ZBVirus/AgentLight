@@ -14,7 +14,9 @@ pub mod snapshot;
 pub mod source;
 pub mod state;
 
-pub use config::{config_path, load as load_config, save as save_config, Config, YellowMode};
+pub use config::{
+    config_path, hash_token, load as load_config, save as save_config, Config, YellowMode,
+};
 pub use engine::{Engine, Notification, Update, UpdateSink, Urgency};
 pub use session::{display_session, harness_badge, load_sessions, DisplaySession, DONE_RETENTION};
 pub use snapshot::{build_snapshot, build_snapshot_at, Counts, Snapshot};

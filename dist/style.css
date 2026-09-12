@@ -506,6 +506,7 @@ body[data-collapse="triple_vertical"] .mini-triple {
 
 .field .row {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
