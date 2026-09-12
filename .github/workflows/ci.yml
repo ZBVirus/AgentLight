@@ -23,9 +23,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy -p agentlight-core -p agentlight-server --all-targets -- -D warnings
+        run: cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p agentlight-core -p agentlight-server
+        run: cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client
 
   windows:
     name: windows app build
