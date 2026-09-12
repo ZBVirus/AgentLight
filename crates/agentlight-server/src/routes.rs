@@ -5,7 +5,8 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Html;
 use axum::Json;
@@ -17,6 +18,7 @@ use tokio_stream::{Stream, StreamExt};
 use agentlight_core::{SessionKey, Snapshot, SourceCommand, SourceId, Update};
 
 use crate::app::AppState;
+use crate::devices::DeviceInfo;
 use crate::error::ApiError;
 use crate::SCHEMA_VERSION;
 
@@ -52,13 +54,64 @@ pub async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
         capabilities: CapabilityResponse {
             events: vec!["sse"],
             commands: vec!["remove_session", "clear_done"],
-            auth: if state.token().is_some() {
+            auth: if state.auth_required() {
                 "bearer"
             } else {
                 "none"
             },
         },
     })
+}
+
+/// Body for `POST /api/v1/pair`.
+#[derive(Debug, Deserialize)]
+pub struct PairRequest {
+    pub code: String,
+    #[serde(default)]
+    pub device_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairResponse {
+    pub device_id: String,
+    pub token: String,
+}
+
+/// `POST /api/v1/pair` — no auth. Exchange a valid, unexpired pairing code for
+/// a per-device token. The plaintext token is returned exactly once.
+pub async fn pair(
+    State(state): State<AppState>,
+    payload: Result<Json<PairRequest>, JsonRejection>,
+) -> Result<Json<PairResponse>, ApiError> {
+    let Json(request) =
+        payload.map_err(|rejection| ApiError::bad_request(rejection.body_text()))?;
+    let (device, token) = state
+        .devices()
+        .pair(&request.code, &request.device_name)
+        .ok_or_else(|| ApiError::unauthorized("invalid or expired pairing code"))?;
+    Ok(Json(PairResponse {
+        device_id: device.id,
+        token,
+    }))
+}
+
+/// `GET /api/v1/devices` — admin-only list of paired devices. Never exposes a
+/// token or its hash.
+pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<DeviceInfo>> {
+    Json(state.list_devices())
+}
+
+/// `DELETE /api/v1/devices/{id}` — admin-only revoke. The token stops working
+/// on the next request.
+pub async fn revoke_device(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if state.revoke_device(&id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("unknown device"))
+    }
 }
 
 /// `GET /api/v1/snapshot` — the current [`Snapshot`]. The read runs on the

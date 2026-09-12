@@ -21,15 +21,30 @@ framing around them, not a second model.
 
 ## Authentication
 
-- Optional static bearer token. When the server is configured with a token, every
-  `/api/v1/*` request must send `Authorization: Bearer <token>`, or supply it as
-  a `?token=<token>` query parameter. The query form exists for browser
-  `EventSource`, which cannot set request headers. Token comparison is
-  constant-time for both.
-- `GET /healthz` and `GET /` are always open, so the built-in client can load
-  before the user supplies a token.
-- Missing or invalid token: `401` with the error shape below. Token comparison
-  is constant-time.
+Two kinds of bearer token are accepted:
+
+- **Admin token.** The optional static token (`AGENTLIGHT_TOKEN`, or the
+  desktop's `server_token`). It authorizes every endpoint, including device
+  management. It is the operator secret.
+- **Device token.** A per-device secret obtained by pairing (below). It
+  authorizes the read/command endpoints but not device management. A device
+  token stays valid until it is revoked.
+
+A request may carry the token as `Authorization: Bearer <token>`, or as a
+`?token=<token>` query parameter. The query form exists for browser
+`EventSource`, which cannot set request headers. Admin comparison is
+constant-time; device tokens are SHA-256 hashed and the hashes are compared
+constant-time.
+
+When neither an admin token nor any paired device exists, every route is open
+(the loopback default). Once either exists, `/api/v1/*` requires a token.
+`GET /healthz` and `GET /` are always open, so the built-in client can load
+before the user supplies a token. Missing or invalid credentials: `401` with the
+error shape below.
+
+`agentlight-server` and the embedded hub do plaintext HTTP. Treat the LAN as the
+trust boundary and use a VPN (WireGuard/Tailscale) for off-LAN access; TLS is
+not part of this version.
 
 ## Error shape
 
@@ -41,7 +56,9 @@ Every error response is JSON:
 
 | `code` | HTTP | Meaning |
 |---|---|---|
-| `unauthorized` | 401 | Missing or wrong bearer token. |
+| `unauthorized` | 401 | Missing or wrong token, or a bad/expired pairing code. |
+| `forbidden` | 403 | An endpoint that needs the admin token has none configured. |
+| `not_found` | 404 | Unknown device id. |
 | `bad_request` | 400 | Malformed body, unknown command, or no source to target. |
 | `command_failed` | 409 | The source could not apply the command (e.g. unreadable state). |
 | `internal_error` | 500 | Unexpected server failure. |
@@ -71,6 +88,52 @@ Liveness plus the negotiation data a client needs before authenticating. No auth
 
 `capabilities.auth` is `"bearer"` or `"none"`. Clients negotiate by treating
 unknown capability strings as unsupported; unknown fields are ignored.
+
+## `POST /api/v1/pair`
+
+No auth. Exchanges the pairing code shown on the host (or logged by the
+standalone binary) for a per-device token. The code is eight characters from an
+unambiguous alphabet, is valid for five minutes, and can pair more than one
+device within that window.
+
+Request:
+
+```json
+{ "code": "X7Y5R7K4", "device_name": "Pixel 8" }
+```
+
+`device_name` is optional; a blank name is stored as `Unnamed device`. Response:
+
+```json
+{ "device_id": "6c356f3262d6f27dc45161ae97630f32", "token": "…64 hex chars…" }
+```
+
+The plaintext `token` is returned exactly once. The server stores only its
+SHA-256 hash, so a leaked device store cannot be replayed. A wrong or expired
+code is `401 unauthorized`. The host rotates or regenerates the code from the
+desktop; regenerating invalidates the previous code.
+
+## `GET /api/v1/devices`
+
+Admin token only. Lists paired devices. When no admin token is configured this
+returns `403 forbidden`; a device token is not sufficient. The response never
+contains a token or its hash:
+
+```json
+[
+  {
+    "id": "6c356f3262d6f27dc45161ae97630f32",
+    "name": "Pixel 8",
+    "created_at": "2026-09-12T21:25:49Z",
+    "last_seen": "2026-09-12T21:26:10Z"
+  }
+]
+```
+
+## `DELETE /api/v1/devices/{id}`
+
+Admin token only. Revokes a device; its token stops working immediately.
+Returns `204 No Content`, or `404 not_found` for an unknown id.
 
 ## `GET /api/v1/snapshot`
 
@@ -183,12 +246,15 @@ failed to parse.
 
 `agentlight-server` binds `127.0.0.1:8787` unless overridden
 (`AGENTLIGHT_BIND`), and auth is disabled unless `AGENTLIGHT_TOKEN` is set.
-`AGENTLIGHT_STATE_PATH` points at clawlight's `state.json` and
-`AGENTLIGHT_POLL_MS` sets the watcher backstop. LAN exposure is an explicit
-opt-in; use a VPN for off-LAN access.
+`AGENTLIGHT_STATE_PATH` points at clawlight's `state.json`,
+`AGENTLIGHT_POLL_MS` sets the watcher backstop, and
+`AGENTLIGHT_DEVICES_PATH` (default `devices.json` in the working directory)
+is where paired devices persist. The pairing code is logged at startup so a
+headless host can be paired. LAN exposure is an explicit opt-in; use a VPN for
+off-LAN access.
 
 The same server can be embedded in the desktop app with
 `agentlight_server::start(engine, config) -> ServerHandle`, which runs its own
-Tokio runtime on a background thread and returns the bound address. The
-pairing-code flow (Phase 3 step 3.2) remains deferred; until it lands, clients
-use the static bearer token.
+Tokio runtime on a background thread and returns the bound address. The desktop
+shows the pairing code and device list in settings, backed by
+`ServerHandle::pair_info`, `regenerate_pairing`, `devices`, and `revoke_device`.

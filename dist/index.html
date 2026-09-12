@@ -117,13 +117,27 @@
               <input type="text" id="set-server-bind" placeholder="127.0.0.1:8787" />
             </label>
             <label class="field">
-              <span>Access token</span>
+              <span>Admin token (optional)</span>
               <input type="text" id="set-server-token" placeholder="optional secret" />
             </label>
             <div class="field">
               <span>Open on another device</span>
               <input type="text" id="set-server-url" readonly />
               <small class="hint">The device must be on the same network. Use 0.0.0.0:8787 to accept LAN connections.</small>
+            </div>
+
+            <div class="field">
+              <span>Pairing code</span>
+              <div class="pair-code" id="set-pair-code">—</div>
+              <div class="pair-actions">
+                <small class="hint" id="set-pair-hint"></small>
+                <button type="button" class="ghost" id="btn-new-code">New code</button>
+              </div>
+            </div>
+            <div class="field">
+              <span>Paired devices</span>
+              <ul class="devices" id="set-devices"></ul>
+              <small class="hint" id="set-devices-empty">No devices paired yet.</small>
             </div>
 
             <div class="settings-foot">

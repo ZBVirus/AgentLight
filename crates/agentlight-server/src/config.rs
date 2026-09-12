@@ -2,6 +2,7 @@
 //! to read.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use agentlight_core::Config;
 
@@ -17,8 +18,11 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
 pub struct ServerConfig {
     /// Address to listen on. Defaults to `127.0.0.1:8787`.
     pub bind: SocketAddr,
-    /// Static bearer token. `None` disables auth (loopback only).
+    /// Static bearer token. `None` disables auth (loopback only). Functions as
+    /// an admin token when set: it also authorizes device management.
     pub token: Option<String>,
+    /// Where paired-device records live. `None` keeps them in memory only.
+    pub devices_path: Option<PathBuf>,
     /// State source and display policy.
     pub core: Config,
 }
@@ -30,6 +34,7 @@ impl Default for ServerConfig {
                 .parse()
                 .expect("DEFAULT_BIND is a valid socket address"),
             token: None,
+            devices_path: None,
             core: Config::default(),
         }
     }
@@ -37,12 +42,23 @@ impl Default for ServerConfig {
 
 impl ServerConfig {
     pub fn new(bind: SocketAddr, token: Option<String>, core: Config) -> Self {
-        Self { bind, token, core }
+        Self {
+            bind,
+            token,
+            devices_path: None,
+            core,
+        }
     }
 
     /// Point the server at a specific clawlight `state.json`.
     pub fn with_state_path(mut self, path: impl Into<String>) -> Self {
         self.core.state_path = Some(path.into());
+        self
+    }
+
+    /// Persist paired devices at `path`.
+    pub fn with_devices_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.devices_path = Some(path.into());
         self
     }
 }
@@ -56,7 +72,17 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.bind.to_string(), DEFAULT_BIND);
         assert!(config.token.is_none());
+        assert!(config.devices_path.is_none());
         assert!(config.core.state_path.is_none());
+    }
+
+    #[test]
+    fn with_devices_path_sets_the_store() {
+        let config = ServerConfig::default().with_devices_path("/tmp/devices.json");
+        assert_eq!(
+            config.devices_path.as_deref(),
+            Some(std::path::Path::new("/tmp/devices.json"))
+        );
     }
 
     #[test]

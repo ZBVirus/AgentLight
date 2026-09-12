@@ -2,8 +2,11 @@
 //!
 //! Configuration is environment-only so the process is container-friendly:
 //! `AGENTLIGHT_BIND` (`127.0.0.1:8787`), `AGENTLIGHT_TOKEN` (unset disables
-//! auth), `AGENTLIGHT_STATE_PATH` (clawlight `state.json`), and
-//! `AGENTLIGHT_POLL_MS` (`1500`). No config file is read.
+//! auth), `AGENTLIGHT_STATE_PATH` (clawlight `state.json`),
+//! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_PATH` (`devices.json`
+//! in the working directory). No config file is read.
+
+use std::path::PathBuf;
 
 use agentlight_core::Config;
 use agentlight_server::{serve, ServerConfig};
@@ -29,7 +32,11 @@ fn server_config() -> ServerConfig {
     // them on unless the engine's default is deliberately changed.
     core.notifications = true;
 
-    ServerConfig::new(bind, token, core.sanitized())
+    let devices_path = env_non_empty("AGENTLIGHT_DEVICES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("devices.json"));
+
+    ServerConfig::new(bind, token, core.sanitized()).with_devices_path(devices_path)
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

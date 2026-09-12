@@ -14,6 +14,7 @@
 
 use std::net::SocketAddr;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -22,11 +23,13 @@ use tokio::sync::watch;
 mod app;
 mod auth;
 pub mod config;
+mod devices;
 mod error;
 mod routes;
 
 pub use app::{app, build_engine, router, AppState};
 pub use config::ServerConfig;
+pub use devices::{DeviceInfo, DeviceStore, PairInfo};
 pub use error::ApiError;
 
 /// Wire protocol version. Bump only for breaking changes; additive changes
@@ -44,6 +47,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 /// [`shutdown`](Self::shutdown) to stop it explicitly and wait for the thread.
 pub struct ServerHandle {
     addr: SocketAddr,
+    state: Arc<AppState>,
     shutdown: Option<watch::Sender<bool>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -52,6 +56,26 @@ impl ServerHandle {
     /// The actual bound address. With a `:0` bind this is the OS-chosen port.
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// The pairing code and expiry the desktop should display.
+    pub fn pair_info(&self) -> PairInfo {
+        self.state.pair_info()
+    }
+
+    /// Rotate the pairing code, invalidating the previous one.
+    pub fn regenerate_pairing(&self) -> PairInfo {
+        self.state.regenerate_pairing()
+    }
+
+    /// Every paired device, without secret material.
+    pub fn devices(&self) -> Vec<DeviceInfo> {
+        self.state.list_devices()
+    }
+
+    /// Revoke a device. Returns `true` if it existed.
+    pub fn revoke_device(&self, id: &str) -> bool {
+        self.state.revoke_device(id)
     }
 
     /// Ask the server to stop and wait for its thread to exit.
@@ -81,6 +105,14 @@ pub fn start(
     config: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
     let token_required = config.token.is_some();
+    // Build state on this thread and share it with the server thread so the
+    // handle can reach the live pairing code and device list.
+    let state = Arc::new(AppState::with_devices(
+        engine,
+        config.token.clone(),
+        DeviceStore::load(config.devices_path.clone()),
+    ));
+    let server_state = state.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (addr_tx, addr_rx) = mpsc::channel::<std::io::Result<SocketAddr>>();
 
@@ -99,7 +131,6 @@ pub fn start(
             };
 
             runtime.block_on(async move {
-                let state = AppState::new(engine, config.token.clone());
                 let listener = match tokio::net::TcpListener::bind(config.bind).await {
                     Ok(listener) => listener,
                     Err(error) => {
@@ -131,7 +162,8 @@ pub fn start(
                         let _ = rx.changed().await;
                     }
                 };
-                let serve = axum::serve(listener, router(state)).with_graceful_shutdown(graceful);
+                let serve = axum::serve(listener, router((*server_state).clone()))
+                    .with_graceful_shutdown(graceful);
                 tokio::select! {
                     _ = serve => {}
                     _ = wait_for_shutdown(shutdown_rx) => {}
@@ -147,6 +179,7 @@ pub fn start(
 
     Ok(ServerHandle {
         addr,
+        state,
         shutdown: Some(shutdown_tx),
         thread: Some(thread),
     })
@@ -156,16 +189,23 @@ async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
     let _ = rx.changed().await;
 }
 
-/// Build the router, bind it, and serve until the process exits.
+/// Build the router, bind it, and serve until the process exits. The pairing
+/// code is logged so a headless host can be paired without a display.
 pub async fn serve(config: ServerConfig) -> std::io::Result<()> {
-    let app = app(&config);
+    let state = AppState::from_config(&config);
+    let pair = state.pair_info();
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(
         address = %listener.local_addr()?,
         token = if config.token.is_some() { "required" } else { "disabled" },
         "agentlight-server listening"
     );
-    axum::serve(listener, app).await
+    tracing::info!(
+        pairing_code = %pair.code,
+        expires_at = %pair.expires_at,
+        "pair a device with this code"
+    );
+    axum::serve(listener, router(state)).await
 }
 
 #[cfg(test)]
@@ -193,7 +233,7 @@ mod tests {
         let config = ServerConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
             token: None,
-            core: Config::default(),
+            ..ServerConfig::default()
         };
         let mut handle = start(engine, config).unwrap();
         assert_eq!(handle.addr().ip().to_string(), "127.0.0.1");
@@ -204,6 +244,10 @@ mod tests {
 
         let client = get(handle.addr(), "/");
         assert!(client.contains("<!doctype html>"), "{client}");
+
+        let pair = handle.pair_info();
+        assert_eq!(pair.code.chars().count(), 8);
+        assert!(handle.devices().is_empty());
 
         handle.shutdown();
     }

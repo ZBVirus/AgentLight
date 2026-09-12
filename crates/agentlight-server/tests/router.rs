@@ -296,6 +296,173 @@ async fn query_token_is_rejected_when_wrong() {
 }
 
 #[tokio::test]
+async fn pair_exchanges_a_code_for_a_working_device_token() {
+    let (engine, _) = engine_with_sessions();
+    let state = AppState::new(engine, Some("secret".into()));
+    let code = state.pair_info().code;
+    let app = router(state);
+
+    let paired = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": code, "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(paired.status(), StatusCode::OK);
+    let body = read_json(paired).await;
+    let device_id = body["device_id"].as_str().unwrap().to_string();
+    let token = body["token"].as_str().unwrap().to_string();
+    assert!(!token.is_empty());
+
+    let accepted = app
+        .clone()
+        .oneshot(request(Method::GET, "/api/v1/snapshot", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+
+    let bogus = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/snapshot",
+            Some("bogus"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bogus.status(), StatusCode::UNAUTHORIZED);
+
+    let revoked = app
+        .clone()
+        .oneshot(request(
+            Method::DELETE,
+            &format!("/api/v1/devices/{device_id}"),
+            Some("secret"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    let after_revoke = app
+        .oneshot(request(Method::GET, "/api/v1/snapshot", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(after_revoke.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn pair_rejects_a_wrong_code() {
+    let (engine, _) = engine_with_sessions();
+    let app = router(AppState::new(engine, Some("secret".into())));
+
+    let response = app
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": "ZZZZZZZZ", "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = read_json(response).await;
+    assert_eq!(body["error"]["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn regenerate_invalidates_the_previous_code() {
+    let (engine, _) = engine_with_sessions();
+    let state = AppState::new(engine, Some("secret".into()));
+    let old = state.pair_info().code;
+    let fresh = state.regenerate_pairing().code;
+    assert_ne!(old, fresh);
+    let app = router(state);
+
+    let stale = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": old, "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+
+    let ok = app
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": fresh, "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn device_listing_requires_admin() {
+    let (engine, _) = engine_with_sessions();
+    let state = AppState::new(engine, Some("secret".into()));
+    let code = state.pair_info().code;
+    let app = router(state);
+
+    let paired = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/pair",
+            None,
+            Some(json!({ "code": code, "device_name": "phone" })),
+        ))
+        .await
+        .unwrap();
+    let token = read_json(paired).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let with_device = app
+        .clone()
+        .oneshot(request(Method::GET, "/api/v1/devices", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(with_device.status(), StatusCode::UNAUTHORIZED);
+
+    let with_admin = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/devices",
+            Some("secret"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(with_admin.status(), StatusCode::OK);
+    let devices = read_json(with_admin).await;
+    assert_eq!(devices.as_array().unwrap().len(), 1);
+    assert_eq!(devices[0]["name"], "phone");
+    assert!(devices[0].get("token_hash").is_none());
+
+    let no_admin = router(AppState::new(engine_with_sessions().0, None));
+    let forbidden = no_admin
+        .oneshot(request(Method::GET, "/api/v1/devices", None, None))
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn events_opens_an_sse_stream() {
     let (engine, _) = engine_with_sessions();
     let app = router(AppState::new(engine, None));

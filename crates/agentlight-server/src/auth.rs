@@ -1,12 +1,14 @@
-//! Static bearer-token auth for `/api/v1/*`.
+//! Bearer-token auth for `/api/v1/*`.
 //!
-//! `/healthz` stays open so a supervisor or load balancer can probe liveness
-//! without a secret. When no token is configured, every route is open.
+//! A request may authenticate with either the static admin token or a paired
+//! device token. `/healthz` stays open so a supervisor or load balancer can
+//! probe liveness without a secret. When neither an admin token nor a paired
+//! device exists, every route is open (the loopback default).
 //!
 //! The token is accepted either as `Authorization: Bearer <token>` or as a
 //! `token` query parameter. The query form exists for `EventSource`, which
-//! cannot set request headers from the browser. Comparison stays
-//! constant-time for both forms.
+//! cannot set request headers from the browser. Admin comparison is
+//! constant-time; device tokens are hashed, then compared constant-time.
 
 use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
@@ -18,26 +20,67 @@ use crate::error::ApiError;
 
 const BEARER_PREFIX: &str = "Bearer ";
 
-/// Reject requests that do not carry the configured bearer token.
+/// Reject requests that carry neither the admin token nor a known device token.
 pub async fn require_token(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if let Some(expected) = state.token() {
-        let header = request
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix(BEARER_PREFIX))
-            .map(str::to_string);
-        let provided = header.or_else(|| token_from_query(request.uri().query()));
-        match provided {
-            Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {}
-            _ => return Err(ApiError::unauthorized("missing or invalid bearer token")),
+    if !state.auth_required() {
+        return Ok(next.run(request).await);
+    }
+
+    let provided = provided_token(&request);
+    let authorized = provided.as_deref().is_some_and(|token| {
+        if let Some(expected) = state.token() {
+            if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+                return true;
+            }
         }
+        match state.devices().authenticate(token) {
+            Some(id) => {
+                state.devices().touch(&id);
+                true
+            }
+            None => false,
+        }
+    });
+
+    if !authorized {
+        return Err(ApiError::unauthorized("missing or invalid bearer token"));
     }
     Ok(next.run(request).await)
+}
+
+/// Reject requests that do not carry the static admin token. Device tokens are
+/// deliberately not enough to manage devices. When no admin token is
+/// configured, device management is closed with `403`.
+pub async fn require_admin(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(expected) = state.token() else {
+        return Err(ApiError::forbidden("admin token is not configured"));
+    };
+    let provided = provided_token(&request);
+    match provided {
+        Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+            Ok(next.run(request).await)
+        }
+        _ => Err(ApiError::unauthorized("missing or invalid admin token")),
+    }
+}
+
+/// Pull the bearer token from the `Authorization` header or the `token` query.
+fn provided_token(request: &Request) -> Option<String> {
+    let header = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix(BEARER_PREFIX))
+        .map(str::to_string);
+    header.or_else(|| token_from_query(request.uri().query()))
 }
 
 /// Pull `token` out of a query string, percent-decoding the value.
@@ -92,7 +135,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 /// Compare without early-exit so token length and content do not leak timing.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

@@ -21,6 +21,17 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 
+/// The embedded server's state, as shown in the settings view.
+#[derive(serde::Serialize)]
+struct ServerStatus {
+    enabled: bool,
+    url: Option<String>,
+    admin_token_set: bool,
+    pairing_code: Option<String>,
+    pairing_expires_at: Option<String>,
+    devices: Vec<agentlight_server::DeviceInfo>,
+}
+
 /// Shared app state managed by Tauri.
 struct AppState {
     /// Owns source lifecycle, merge, retention, and notification edges.
@@ -107,6 +118,46 @@ fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
         state.engine.refresh();
     }
     Ok(removed)
+}
+
+#[tauri::command]
+fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
+    let admin_token_set = current_config(&state).server_token.is_some();
+    match state.server.lock().unwrap().as_ref() {
+        Some(handle) => {
+            let pair = handle.pair_info();
+            ServerStatus {
+                enabled: true,
+                url: Some(format!("http://{}/", handle.addr())),
+                admin_token_set,
+                pairing_code: Some(pair.code),
+                pairing_expires_at: Some(pair.expires_at),
+                devices: handle.devices(),
+            }
+        }
+        None => ServerStatus {
+            enabled: false,
+            url: None,
+            admin_token_set,
+            pairing_code: None,
+            pairing_expires_at: None,
+            devices: Vec::new(),
+        },
+    }
+}
+
+#[tauri::command]
+fn regenerate_pairing(state: State<'_, AppState>) -> Result<agentlight_server::PairInfo, String> {
+    let server = state.server.lock().unwrap();
+    let handle = server.as_ref().ok_or("server is not running")?;
+    Ok(handle.regenerate_pairing())
+}
+
+#[tauri::command]
+fn revoke_device(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let server = state.server.lock().unwrap();
+    let handle = server.as_ref().ok_or("server is not running")?;
+    Ok(handle.revoke_device(&id))
 }
 
 // `async` here means Tauri runs the body on a worker thread. The blocking
@@ -280,8 +331,13 @@ fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
 /// Start the embedded hub over the shared engine and remember the handle.
 fn start_server(app: &AppHandle, state: &AppState, config: &Config) -> Result<(), String> {
     let bind = parse_server_bind(&config.server_bind)?;
-    let server_config =
+    let mut server_config =
         agentlight_server::ServerConfig::new(bind, config.server_token.clone(), config.clone());
+    // Keep paired devices beside the config so they survive server restarts.
+    server_config.devices_path = state
+        .config_path
+        .parent()
+        .map(|dir| dir.join("devices.json"));
     let handle = agentlight_server::start((*state.engine).clone(), server_config)
         .map_err(|error| format!("could not start server: {error}"))?;
     eprintln!(
@@ -464,6 +520,9 @@ pub fn run() {
             set_config,
             clear_session,
             clear_done,
+            get_server_status,
+            regenerate_pairing,
+            revoke_device,
             pick_state_file,
             set_always_on_top,
             resize_window,

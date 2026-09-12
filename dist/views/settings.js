@@ -1,6 +1,7 @@
 "use strict";
 
 import { invoke } from "../lib/ipc.js";
+import { relativeTime } from "../lib/format.js";
 import { toast } from "../lib/toast.js";
 import {
   applyCollapseStyle,
@@ -42,7 +43,85 @@ export function populateSettings() {
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
   $("set-server-enabled").onchange = renderServerUrl;
+  $("btn-new-code").onclick = regeneratePairing;
   renderServerUrl();
+  refreshServerStatus();
+}
+
+export async function refreshServerStatus() {
+  if (!invoke) return;
+  try {
+    renderServerStatus(await invoke("get_server_status"));
+  } catch (error) {
+    renderServerStatus(null);
+  }
+}
+
+function renderServerStatus(status) {
+  const running = !!(status && status.enabled);
+  $("set-pair-code").textContent = running ? status.pairing_code || "--------" : "—";
+  $("btn-new-code").disabled = !running;
+  $("set-pair-hint").textContent = running
+    ? status.pairing_expires_at
+      ? `Expires ${new Date(status.pairing_expires_at).toLocaleTimeString()}`
+      : ""
+    : "Enable the server to pair a device.";
+  renderDevices(running ? status.devices || [] : []);
+}
+
+function renderDevices(devices) {
+  const list = $("set-devices");
+  list.innerHTML = "";
+  for (const device of devices) {
+    list.appendChild(deviceRow(device));
+  }
+  $("set-devices-empty").classList.toggle("hidden", devices.length > 0);
+}
+
+function deviceRow(device) {
+  const li = document.createElement("li");
+  li.className = "device";
+
+  const meta = document.createElement("div");
+  meta.className = "device-meta";
+  const name = document.createElement("span");
+  name.className = "device-name";
+  name.textContent = device.name || device.id;
+  const seen = document.createElement("span");
+  seen.className = "device-sub";
+  seen.textContent = `last seen ${relativeTime(device.last_seen) || "never"}`;
+  meta.append(name, seen);
+
+  const revoke = document.createElement("button");
+  revoke.type = "button";
+  revoke.className = "ghost";
+  revoke.textContent = "Revoke";
+  revoke.addEventListener("click", () => revokeDevice(device.id));
+
+  li.append(meta, revoke);
+  return li;
+}
+
+async function regeneratePairing() {
+  if (!invoke) return;
+  try {
+    await invoke("regenerate_pairing");
+    toast("New pairing code");
+  } catch (error) {
+    toast(`Could not make a code: ${error}`);
+  }
+  await refreshServerStatus();
+}
+
+async function revokeDevice(id) {
+  if (!invoke) return;
+  try {
+    await invoke("revoke_device", { id });
+    toast("Device revoked");
+  } catch (error) {
+    toast(`Revoke failed: ${error}`);
+  }
+  await refreshServerStatus();
 }
 
 export async function saveSettings(event) {
@@ -66,6 +145,7 @@ export async function saveSettings(event) {
     applyCollapseStyle();
     toast("Saved");
     await refreshSnapshot();
+    await refreshServerStatus();
     setView("detail");
   } catch (error) {
     toast(`Save failed: ${error}`);
