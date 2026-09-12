@@ -1,6 +1,7 @@
 # AgentLight architecture redesign
 
-Status: proposal. Scope: how to make AgentLight modular enough to grow into a
+Status: design accepted; Phases 0-3 and most of Phase 5 are implemented on
+`feat/architecture-redesign` (statuses per phase in section 8). Scope: how to make AgentLight modular enough to grow into a
 multi-client product (desktop, web, mobile) without breaking clawlight
 compatibility or the current desktop widget.
 
@@ -509,7 +510,7 @@ Each phase is shippable and leaves the app working.
 **Phase 0 — Baseline (done).** Widget with clawlight file reads, tray,
 notifications, settings, release pipeline.
 
-**Phase 1 — Extract the seam (no behavior change).**
+**Phase 1 — Extract the seam (no behavior change). Status: Done.**
 - Add `source` module to `agentlight-core` with `StateSource`,
   `SourceSnapshot`, `Capabilities`, `SessionKey`.
 - Move `ClawlightFileSource` (parsing + watcher loop + poll backstop) into the
@@ -521,12 +522,13 @@ notifications, settings, release pipeline.
 - Exit criteria: all 34 tests still pass; new adapter/engine tests; zero UI
   change.
 
-**Phase 2 — Frontend modules.**
+**Phase 2 — Frontend modules. Status: Done.**
 - Split `dist/app.js` into ES modules: store, render, views, drag, ipc. Keep
   no bundler and `withGlobalTauri`.
 - Exit criteria: same behavior; each module testable in isolation.
 
-**Phase 3 — Local hub.**
+**Phase 3 — Local hub. Status: Done** (protocol, endpoints, pairing and
+per-device tokens, desktop embedding).
 - New `agentlight-server` crate: `axum` (or equivalent) serving
   `/api/v1/snapshot` and `/api/v1/events`, loopback by default.
 - Embedded in the desktop app behind a setting; standalone binary for
@@ -535,13 +537,16 @@ notifications, settings, release pipeline.
 - Exit criteria: desktop unchanged when disabled; a second machine on the LAN
   renders the same snapshot.
 
-**Phase 4 — Web/PWA + mobile client.**
+**Phase 4 — Web/PWA + mobile client. Status: Partial.** The Rust client crate
+and a same-origin browser client exist; the PWA, push, and mobile shell do not.
 - `ClawlightHubSource` client crate (Rust) and a PWA mode of `dist`.
 - Web Push or `ntfy`/UnifiedPush for notifications.
 - Tauri mobile shell if native background/push is needed.
 - Exit criteria: phone shows the light and receives "needs help" alerts.
 
-**Phase 5 — Optional event ingest and multi-source UX.**
+**Phase 5 — Optional event ingest and multi-source UX. Status: Partial.**
+Ingest, `EventPushSource`, the `agentlight-hook` CLI, and a reference opencode
+plugin exist; the multi-source UI does not.
 - `agentlight hook` CLI / HTTP endpoint; merge policy and per-source labels in
   the UI; `docs/protocol.md` published.
 - Exit criteria: an agent can report without a shared file, and the file
