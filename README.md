@@ -76,6 +76,9 @@ be stored as a hash the way the server's admin token is. It therefore lives in
 never logged. Point `hub_url` at the host running `agentlight-server` (or at
 another desktop with its embedded server enabled).
 
+Status text follows the chosen source: a hub that cannot be reached says so
+("Could not reach the hub"), instead of talking about a state file.
+
 ## How it reads state
 
 - Resolution order for the state file: `AGENTLIGHT_STATE_FILE` env var, then

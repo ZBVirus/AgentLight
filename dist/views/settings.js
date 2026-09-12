@@ -1,6 +1,6 @@
 "use strict";
 
-import { invoke } from "../lib/ipc.js";
+import { invoke, listen } from "../lib/ipc.js";
 import { relativeTime } from "../lib/format.js";
 import { toast } from "../lib/toast.js";
 import {
@@ -20,6 +20,15 @@ const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 // Whether the persisted config carries an admin token hash. Lets the token
 // hint explain that a secret is set without ever putting the hash in the input.
 let adminTokenSet = false;
+
+// The backend emits this whenever the live server starts or stops, including
+// from a path other than the Settings buttons. Keep the button label and
+// status in sync with the real handle.
+if (listen) {
+  listen("server-changed", () => {
+    refreshServerStatus();
+  });
+}
 
 export function renderServerUrl() {
   const bind = $("set-server-bind").value.trim();

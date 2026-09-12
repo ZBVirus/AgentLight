@@ -13,9 +13,15 @@ export function renderDetail(snapshot) {
   if (!snapshot || !snapshot.ok) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = snapshot && snapshot.exists
-      ? "State file could not be read."
-      : "No state file yet. Use Settings to choose one.";
+    if (snapshot && snapshot.source_kind === "hub") {
+      empty.textContent = snapshot.exists
+        ? "Could not reach the hub."
+        : "Not connected to a hub. Check Settings.";
+    } else {
+      empty.textContent = snapshot && snapshot.exists
+        ? "State file could not be read."
+        : "No state file yet. Use Settings to choose one.";
+    }
     list.appendChild(empty);
     return;
   }

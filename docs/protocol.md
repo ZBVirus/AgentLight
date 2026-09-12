@@ -165,9 +165,11 @@ Returns `agentlight_core::Snapshot` JSON:
 
 | Field | Type | Notes |
 |---|---|---|
-| `ok` | bool | State file was read and parsed. |
-| `error` | string \| null | Waiting/read error when `ok` is false. |
+| `ok` | bool | The active source was read and parsed. |
+| `error` | string \| null | Waiting/read error when `ok` is false. Wording follows the source: a `file` source says "state file", a `hub` source says "hub". |
 | `state_path` | string | Resolved clawlight `state.json` path. |
+| `source_kind` | string | `file` \| `hub`. Additive; older payloads omit it and are treated as `file`. |
+| `source_label` | string | The active source location: a file path for `file`, a base URL for `hub`. Additive. |
 | `exists` | bool | The file exists (even if unreadable). |
 | `aggregate` | string | `red` \| `orange` \| `green` \| `gray`. |
 | `counts` | object | `needs_help`, `active`, `inactive`, `done`, `total`. |
@@ -192,6 +194,12 @@ Each session row:
 
 `done` sessions are capped at the newest five unless the host config sets
 `show_done`.
+
+When `ok` is false the `error` string is source-aware: a file-backed engine
+reports `Waiting for clawlight state file` / `Could not read state file: …`,
+while a hub-backed engine reports `Waiting for the hub` /
+`Could not reach the hub: …`. Clients may show their own wording from
+`source_kind` instead of echoing `error`.
 
 ## `GET /api/v1/events`
 

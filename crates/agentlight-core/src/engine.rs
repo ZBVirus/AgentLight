@@ -15,10 +15,12 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::config::Config;
+use crate::config::{Config, SourceKind};
 use crate::session::{display_session, DisplaySession, DONE_RETENTION};
 use crate::snapshot::{Counts, Snapshot};
-use crate::source::{Session, SessionKey, SourceCommand, SourceId, SourceSnapshot, StateSource};
+use crate::source::{
+    Session, SessionKey, SourceCommand, SourceHealth, SourceId, SourceSnapshot, StateSource,
+};
 use crate::state::{aggregate_statuses, Error, Result, Status};
 
 /// A callback the engine calls for every published update.
@@ -284,17 +286,37 @@ impl Inner {
 
         let ok = !sources.is_empty() && sources.iter().all(|s| s.health.is_ready());
         let exists = sources.iter().any(|s| !s.health.is_missing());
+        // Word status from the active source's kind, so a hub never says
+        // "state file". With no source yet, fall back to the configured kind.
         let error = if ok {
             None
-        } else if let Some(source) = sources.iter().find(|s| !s.health.is_ready()) {
-            match &source.health {
-                crate::source::SourceHealth::Unreadable(reason) => {
+        } else {
+            let not_ready = sources.iter().find(|s| !s.health.is_ready());
+            let kind = not_ready.map(|s| s.kind).unwrap_or(config.source_kind);
+            let reason = not_ready.and_then(|s| match &s.health {
+                SourceHealth::Unreadable(reason) => Some(reason.clone()),
+                _ => None,
+            });
+            match (kind, reason) {
+                (SourceKind::Hub, Some(reason)) => {
+                    Some(format!("Could not reach the hub: {reason}"))
+                }
+                (SourceKind::Hub, None) => Some("Waiting for the hub".to_string()),
+                (SourceKind::File, Some(reason)) => {
                     Some(format!("Could not read state file: {reason}"))
                 }
-                _ => Some("Waiting for clawlight state file".to_string()),
+                (SourceKind::File, None) => Some("Waiting for clawlight state file".to_string()),
             }
-        } else {
-            Some("Waiting for clawlight state file".to_string())
+        };
+
+        let active = sources.first();
+        let source_kind = active.map(|s| s.kind).unwrap_or(config.source_kind);
+        let source_label = match active {
+            Some(source) => source.label.clone(),
+            None => match config.source_kind {
+                SourceKind::File => config.state_file().to_string_lossy().to_string(),
+                SourceKind::Hub => config.hub_url.clone(),
+            },
         };
 
         let mut sessions: Vec<Session> = sources
@@ -315,6 +337,8 @@ impl Inner {
             ok,
             error,
             state_path: config.state_file().to_string_lossy().to_string(),
+            source_kind: source_kind_str(source_kind).to_string(),
+            source_label,
             exists,
             aggregate,
             counts,
@@ -396,6 +420,13 @@ fn yellow_mode_str(mode: crate::config::YellowMode) -> String {
     match mode {
         crate::config::YellowMode::AnyInactive => "any_inactive".to_string(),
         crate::config::YellowMode::ActiveWins => "active_wins".to_string(),
+    }
+}
+
+fn source_kind_str(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::File => "file",
+        SourceKind::Hub => "hub",
     }
 }
 
@@ -653,5 +684,84 @@ mod tests {
 
         assert_eq!(engine.clear_done().unwrap(), 1);
         assert_eq!(engine.clear_done().unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_file_source_says_waiting_for_state_file() {
+        let engine = Engine::new(Config::default());
+        let source = FixtureSource::new("local");
+        source.set_health(SourceHealth::Missing);
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        assert!(!snapshot.ok);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("Waiting for clawlight state file")
+        );
+        assert_eq!(snapshot.source_kind, "file");
+        assert_eq!(snapshot.source_label, "local");
+    }
+
+    #[test]
+    fn unreadable_file_source_says_state_file() {
+        let engine = Engine::new(Config::default());
+        let source = FixtureSource::new("local");
+        source.set_health(SourceHealth::Unreadable("bad json".to_string()));
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("Could not read state file: bad json")
+        );
+    }
+
+    #[test]
+    fn missing_hub_source_says_waiting_for_the_hub() {
+        let engine = Engine::new(Config {
+            source_kind: SourceKind::Hub,
+            ..Config::default()
+        });
+        let source = FixtureSource::new("hub").with_kind(SourceKind::Hub);
+        source.set_health(SourceHealth::Missing);
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        assert!(!snapshot.ok);
+        assert_eq!(snapshot.error.as_deref(), Some("Waiting for the hub"));
+        assert_eq!(snapshot.source_kind, "hub");
+        assert_eq!(snapshot.source_label, "hub");
+    }
+
+    #[test]
+    fn unreadable_hub_source_never_says_state_file() {
+        let engine = Engine::new(Config {
+            source_kind: SourceKind::Hub,
+            hub_url: "http://hub.local:8787".to_string(),
+            ..Config::default()
+        });
+        let source = FixtureSource::new("hub").with_kind(SourceKind::Hub);
+        source.set_health(SourceHealth::Unreadable("connection refused".to_string()));
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        let error = snapshot.error.expect("an error");
+        assert_eq!(error, "Could not reach the hub: connection refused");
+        assert!(!error.contains("state file"), "{error}");
+        assert_eq!(snapshot.source_kind, "hub");
+    }
+
+    #[test]
+    fn no_source_falls_back_to_the_configured_kind() {
+        let engine = Engine::new(Config {
+            source_kind: SourceKind::Hub,
+            hub_url: "http://hub.local:8787".to_string(),
+            ..Config::default()
+        });
+        let snapshot = engine.snapshot_now();
+        assert_eq!(snapshot.error.as_deref(), Some("Waiting for the hub"));
+        assert_eq!(snapshot.source_kind, "hub");
+        assert_eq!(snapshot.source_label, "http://hub.local:8787");
     }
 }

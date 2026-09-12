@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use agentlight_core::state::{Error, Result};
 use agentlight_core::{
     Capabilities, DisplaySession, Session, SessionKey, Snapshot, SourceCommand, SourceEvent,
-    SourceHealth, SourceId, SourceSink, SourceSnapshot, StateSource,
+    SourceHealth, SourceId, SourceKind, SourceSink, SourceSnapshot, StateSource,
 };
 
 use crate::client::{HubClient, HubConfig};
@@ -116,6 +116,8 @@ impl StateSource for HubSource {
         };
         SourceSnapshot {
             source: self.id.clone(),
+            kind: SourceKind::Hub,
+            label: self.client.config().base_url.clone(),
             revision,
             observed_at: now,
             health,

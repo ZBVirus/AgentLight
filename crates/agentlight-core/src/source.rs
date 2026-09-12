@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::SourceKind;
 use crate::state::{Result, Status};
 
 pub mod clawlight;
@@ -165,6 +166,10 @@ impl Capabilities {
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceSnapshot {
     pub source: SourceId,
+    /// Backing-store kind, so the engine can pick source-aware status wording.
+    pub kind: SourceKind,
+    /// Human-readable location (a file path or a hub URL) for status text.
+    pub label: String,
     pub revision: u64,
     pub observed_at: DateTime<Utc>,
     pub health: SourceHealth,
@@ -190,6 +195,17 @@ pub enum SourceCommand {
 /// drive from several shells.
 pub trait StateSource: Send + Sync {
     fn id(&self) -> SourceId;
+    /// The kind of backing store. Defaults to [`SourceKind::File`]; remote
+    /// adapters override it so status text can say "hub" instead of "state
+    /// file".
+    fn kind(&self) -> SourceKind {
+        SourceKind::File
+    }
+    /// Human-readable location shown in status text: a path for a file source,
+    /// a base URL for a hub. Defaults to the source id.
+    fn label(&self) -> String {
+        self.id().as_str().to_string()
+    }
     fn capabilities(&self) -> Capabilities;
     /// Full current view. Cheap and idempotent.
     fn snapshot(&self, now: DateTime<Utc>) -> SourceSnapshot;
@@ -204,6 +220,7 @@ pub trait StateSource: Send + Sync {
 /// by default.
 pub struct FixtureSource {
     id: SourceId,
+    kind: SourceKind,
     capabilities: Capabilities,
     health: Mutex<SourceHealth>,
     sessions: Mutex<Vec<Session>>,
@@ -215,6 +232,7 @@ impl FixtureSource {
     pub fn new(id: impl Into<SourceId>) -> Self {
         Self {
             id: id.into(),
+            kind: SourceKind::File,
             capabilities: Capabilities::NONE,
             health: Mutex::new(SourceHealth::Ready),
             sessions: Mutex::new(Vec::new()),
@@ -230,6 +248,12 @@ impl FixtureSource {
 
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Override the backing-store kind, for tests that exercise hub wording.
+    pub fn with_kind(mut self, kind: SourceKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -256,6 +280,10 @@ impl StateSource for FixtureSource {
         self.id.clone()
     }
 
+    fn kind(&self) -> SourceKind {
+        self.kind
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
@@ -263,6 +291,8 @@ impl StateSource for FixtureSource {
     fn snapshot(&self, now: DateTime<Utc>) -> SourceSnapshot {
         SourceSnapshot {
             source: self.id.clone(),
+            kind: self.kind,
+            label: self.id.as_str().to_string(),
             revision: self.revision.fetch_add(1, Ordering::SeqCst) + 1,
             observed_at: now,
             health: self.health.lock().unwrap().clone(),
@@ -305,10 +335,24 @@ mod tests {
         let first = source.snapshot(now);
         let second = source.snapshot(now);
         assert_eq!(first.source, SourceId::new("fixture"));
+        assert_eq!(first.kind, SourceKind::File);
+        assert_eq!(first.label, "fixture");
         assert_eq!(first.health, SourceHealth::Ready);
         assert_eq!(first.sessions.len(), 1);
         assert_eq!(first.capabilities, Capabilities::NONE);
         assert!(second.revision > first.revision);
+    }
+
+    #[test]
+    fn fixture_kind_and_label_follow_the_source() {
+        let source = FixtureSource::new("remote").with_kind(SourceKind::Hub);
+        assert_eq!(StateSource::kind(&source), SourceKind::Hub);
+        assert_eq!(StateSource::label(&source), "remote");
+        assert_eq!(source.snapshot(Utc::now()).kind, SourceKind::Hub);
+
+        let fallback = FixtureSource::new("default");
+        assert_eq!(StateSource::kind(&fallback), SourceKind::File);
+        assert_eq!(StateSource::label(&fallback), "default");
     }
 
     #[test]

@@ -268,6 +268,36 @@ mod tests {
     }
 
     #[test]
+    fn server_enabled_defaults_off_and_true_roundtrips() {
+        assert!(
+            !Config::default().server_enabled,
+            "serving to other devices is off unless turned on"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        let on = Config {
+            server_enabled: true,
+            ..Config::default()
+        };
+        save(&path, &on).unwrap();
+        assert!(
+            load(&path).server_enabled,
+            "an opt-in must survive a save/load round trip"
+        );
+
+        let off = Config {
+            server_enabled: false,
+            ..Config::default()
+        };
+        save(&path, &off).unwrap();
+        assert!(
+            !load(&path).server_enabled,
+            "an opt-out must survive a save/load round trip"
+        );
+    }
+
+    #[test]
     fn source_fields_parse_and_sanitize() {
         let c: Config = serde_json::from_str(
             r#"{"source_kind":"hub","hub_url":"  http://10.0.0.5:9999  ","hub_token":"  s3cret  "}"#,

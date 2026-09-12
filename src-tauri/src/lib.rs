@@ -86,11 +86,14 @@ fn set_config(
     let config = config.sanitized();
     let previous = current_config(&state);
 
-    // Reject a bad bind before persisting or stopping the running server, so
-    // the old handle keeps serving and the typo never lands on disk.
+    // Reject a bad bind before doing anything else.
     if config.server_enabled {
         parse_server_bind(&config.server_bind)?;
     }
+
+    // Apply the server transition before persisting. A failed start keeps the
+    // previous handle and leaves the persisted `server_enabled` untouched.
+    apply_server_change(&app, &state, &previous, &config)?;
 
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
 
@@ -104,7 +107,6 @@ fn set_config(
     if source_fields_changed(&previous, &config) {
         restart_source(&state.engine, &config);
     }
-    restart_server(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(config)
 }
@@ -203,7 +205,7 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     restart_source(&state.engine, &config);
     // The hub shares the engine, so a source change needs no rebind; only a
     // server-field change restarts it.
-    restart_server(&app, &state, &previous, &config)?;
+    apply_server_change(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(Some(path_string))
 }
@@ -375,8 +377,13 @@ fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
         .map_err(|error| format!("invalid server bind \"{value}\": {error}"))
 }
 
-/// Start the embedded hub over the shared engine and remember the handle.
-fn start_server(app: &AppHandle, state: &AppState, config: &Config) -> Result<(), String> {
+/// Start the embedded hub over the shared engine and return its handle. Does
+/// not touch the current handle or emit an event; callers decide what to do on
+/// success or failure so a failed start cannot drop a working server.
+fn start_server_handle(
+    state: &AppState,
+    config: &Config,
+) -> Result<agentlight_server::ServerHandle, String> {
     let bind = parse_server_bind(&config.server_bind)?;
     let mut server_config = agentlight_server::ServerConfig::new(
         bind,
@@ -394,9 +401,7 @@ fn start_server(app: &AppHandle, state: &AppState, config: &Config) -> Result<()
         "agentlight: embedded server listening on http://{}/",
         handle.addr()
     );
-    *state.server.lock().unwrap() = Some(handle);
-    let _ = app.emit("server-changed", ());
-    Ok(())
+    Ok(handle)
 }
 
 /// Stop the embedded hub if one is running.
@@ -406,9 +411,19 @@ fn stop_server(state: &AppState) {
     }
 }
 
-/// Restart the hub only when a server field changed. The engine is shared, so
-/// a `state_path` change alone must not churn the socket.
-fn restart_server(
+fn emit_server_changed(app: &AppHandle) {
+    let _ = app.emit("server-changed", ());
+}
+
+/// Apply a server start/stop/restart described by `config`, keeping the
+/// persisted flag and the live handle consistent.
+///
+/// A failed start is never fatal to a running server: when the bind address is
+/// unchanged the old handle is restored on a failed restart, and when the
+/// address changes the new server is bound before the old one is stopped. The
+/// caller persists the config only if this returns `Ok`, so the on-disk
+/// `server_enabled` never changes on a failed start.
+fn apply_server_change(
     app: &AppHandle,
     state: &AppState,
     previous: &Config,
@@ -423,11 +438,48 @@ fn restart_server(
     if !changed && running == config.server_enabled {
         return Ok(());
     }
-    stop_server(state);
-    if config.server_enabled {
-        start_server(app, state, config)?;
+
+    if !config.server_enabled {
+        stop_server(state);
+        emit_server_changed(app);
+        return Ok(());
     }
-    Ok(())
+
+    // Restarting on the same address must free it before rebinding, so keep the
+    // previous config to restore the server if the new one cannot bind.
+    let same_bind_live = running && previous.server_bind == config.server_bind;
+    if same_bind_live {
+        stop_server(state);
+        match start_server_handle(state, config) {
+            Ok(server) => {
+                *state.server.lock().unwrap() = Some(server);
+                emit_server_changed(app);
+                Ok(())
+            }
+            Err(error) => {
+                match start_server_handle(state, previous) {
+                    Ok(server) => *state.server.lock().unwrap() = Some(server),
+                    Err(restore_error) => eprintln!(
+                        "agentlight: could not restore server after a failed restart: {restore_error}"
+                    ),
+                }
+                emit_server_changed(app);
+                Err(error)
+            }
+        }
+    } else {
+        // A different address, or nothing running: bind first so a failure
+        // leaves any existing server untouched.
+        match start_server_handle(state, config) {
+            Ok(server) => {
+                stop_server(state);
+                *state.server.lock().unwrap() = Some(server);
+                emit_server_changed(app);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// Forward an engine update: the wire snapshot to the frontend, and any
@@ -619,8 +671,11 @@ pub fn run() {
 
             if config.server_enabled {
                 let state = handle.state::<AppState>();
-                if let Err(error) = start_server(&handle, &state, &config) {
-                    eprintln!("agentlight: embedded server not started: {error}");
+                match start_server_handle(&state, &config) {
+                    // The persisted flag is the user's preference and is left
+                    // untouched when a startup bind fails; next launch retries.
+                    Ok(server) => *state.server.lock().unwrap() = Some(server),
+                    Err(error) => eprintln!("agentlight: embedded server not started: {error}"),
                 }
             }
             Ok(())

@@ -48,9 +48,16 @@ export function renderLight(snapshot) {
 
   if (!snapshot.ok) {
     setMiniState(null);
-    label.textContent = snapshot.exists
-      ? "Could not read state file"
-      : "Waiting for clawlight…";
+    const hub = snapshot.source_kind === "hub";
+    if (hub) {
+      label.textContent = snapshot.exists
+        ? "Could not reach the hub"
+        : "Waiting for the hub…";
+    } else {
+      label.textContent = snapshot.exists
+        ? "Could not read state file"
+        : "Waiting for clawlight…";
+    }
     pick.classList.remove("hidden");
     return;
   }

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 
 use agentlight_core::{
-    SessionKey, SourceCommand, SourceEvent, SourceHealth, SourceId, StateSource, Status,
+    SessionKey, SourceCommand, SourceEvent, SourceHealth, SourceId, SourceKind, StateSource, Status,
 };
 use agentlight_hub_client::{HubClient, HubConfig, HubSource};
 
@@ -306,6 +306,8 @@ fn snapshot_parses_into_normalized_sessions_and_health() {
     let snapshot = source.snapshot(Utc::now());
     assert_eq!(snapshot.health, SourceHealth::Ready);
     assert_eq!(snapshot.source, SourceId::new("hub"));
+    assert_eq!(snapshot.kind, SourceKind::Hub);
+    assert_eq!(snapshot.label, hub.base_url());
     assert_eq!(snapshot.sessions.len(), 1);
 
     let session = &snapshot.sessions[0];
@@ -437,6 +439,21 @@ fn commands_post_expected_tagged_bodies() {
         )))
         .expect("ignored other-source key");
     assert_eq!(hub.recorded().len(), 2);
+}
+
+#[test]
+fn unreachable_hub_reports_hub_wording_through_the_engine() {
+    let source = HubSource::new(HubConfig::new("http://127.0.0.1:1").with_id("hub"));
+    let engine = agentlight_core::Engine::new(agentlight_core::Config::default());
+    engine.add_source(Arc::new(source));
+
+    let snapshot = engine.snapshot_now();
+    assert!(!snapshot.ok);
+    let error = snapshot.error.expect("an error");
+    assert!(error.contains("hub"), "{error}");
+    assert!(!error.contains("state file"), "{error}");
+    assert_eq!(snapshot.source_kind, "hub");
+    assert_eq!(snapshot.source_label, "http://127.0.0.1:1");
 }
 
 #[test]

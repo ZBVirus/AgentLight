@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, Utc};
 use notify::Watcher;
 
+use crate::config::SourceKind;
 use crate::session::{char_prefix, harness_badge};
 use crate::source::{
     Capabilities, Session, SessionKey, SourceCommand, SourceEvent, SourceHealth, SourceId,
@@ -110,6 +111,8 @@ impl StateSource for ClawlightFileSource {
         };
         SourceSnapshot {
             source: self.id.clone(),
+            kind: SourceKind::File,
+            label: self.path.to_string_lossy().to_string(),
             revision,
             observed_at: now,
             health,
@@ -253,6 +256,8 @@ mod tests {
         .unwrap();
         let source = ClawlightFileSource::new(path, 1500);
         let snapshot = source.snapshot(now());
+        assert_eq!(snapshot.kind, SourceKind::File);
+        assert!(snapshot.label.ends_with("state.json"));
         assert_eq!(snapshot.health, SourceHealth::Ready);
         assert_eq!(snapshot.sessions.len(), 2);
         let a = snapshot
