@@ -35,7 +35,19 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "agentlight-hub-client"
+version = "0.3.0"
+dependencies = [
+ "agentlight-core",
+ "chrono",
+ "minreq",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2301,6 +2313,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "minreq"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "659579df697b372ef9e36f02fcbb41f6d6f157dcec7db9c9618fa0f23cf0fc20"
 
 [[package]]
 name = "mio"

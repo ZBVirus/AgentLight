@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/agentlight-core",
+    "crates/agentlight-hub-client",
     "crates/agentlight-server",
     "src-tauri",
 ]

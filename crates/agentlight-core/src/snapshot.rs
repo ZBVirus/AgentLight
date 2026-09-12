@@ -2,13 +2,13 @@
 //! the Tauri layer) so it is unit-testable on any host.
 
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::session::{load_sessions, DisplaySession, DONE_RETENTION};
 use crate::state::{self, aggregate, reap_stale, HookState, Load, STALE_AFTER_HOURS};
 
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Counts {
     pub needs_help: usize,
     pub active: usize,
@@ -17,7 +17,7 @@ pub struct Counts {
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Whether the state file was read and parsed. `false` means missing or
     /// unreadable; the UI shows a waiting/error state instead of stale data.

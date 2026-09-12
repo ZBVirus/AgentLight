@@ -4,7 +4,7 @@
 //! of the shared state file does not have those indexes).
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::{HookState, Status};
 
@@ -12,7 +12,9 @@ use crate::state::{HookState, Status};
 /// clawlight.
 pub const DONE_RETENTION: usize = 5;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The hub wire contract is this exact type; `Deserialize` lets remote clients
+/// parse `GET /api/v1/snapshot` back into the canonical shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplaySession {
     pub session_id: String,
     pub name: String,
