@@ -53,3 +53,13 @@ jobs:
           name: agentlight-windows-portable
           if-no-files-found: warn
           path: target/release/AgentLight-portable.exe
+
+      - name: Build server
+        run: cargo build -p agentlight-server --release
+
+      - name: Upload server exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentlight-server-windows
+          if-no-files-found: warn
+          path: target/release/agentlight-server.exe
