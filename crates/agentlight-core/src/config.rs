@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{self, Error, Result};
 
+/// Default bind address for the opt-in embedded hub. Loopback; LAN exposure is
+/// an explicit opt-in.
+pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8787";
+
 /// How an idle (`inactive`) session colors the aggregate when others still
 /// work. Mirrors clawlight's `YellowMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -54,6 +58,13 @@ pub struct Config {
     pub notifications: bool,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
+    /// Serve the engine over HTTP on the LAN. Off by default.
+    pub server_enabled: bool,
+    /// Address the embedded server binds. Defaults to
+    /// [`DEFAULT_SERVER_BIND`] (`127.0.0.1:8787`).
+    pub server_bind: String,
+    /// Static bearer token for the embedded server. `None` disables auth.
+    pub server_token: Option<String>,
 }
 
 impl Default for Config {
@@ -67,6 +78,9 @@ impl Default for Config {
             show_done: false,
             notifications: false,
             start_at_login: false,
+            server_enabled: false,
+            server_bind: DEFAULT_SERVER_BIND.to_string(),
+            server_token: None,
         }
     }
 }
@@ -81,6 +95,16 @@ impl Config {
                 self.state_path = None;
             }
         }
+        self.server_bind = self.server_bind.trim().to_string();
+        if self.server_bind.is_empty() {
+            self.server_bind = DEFAULT_SERVER_BIND.to_string();
+        }
+        self.server_token = self
+            .server_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string);
         self
     }
 
@@ -135,6 +159,31 @@ mod tests {
         assert_eq!(c.collapse_style, CollapseStyle::Single);
         assert_eq!(c.poll_ms, 1500);
         assert!(c.state_path.is_none());
+        assert!(!c.server_enabled, "the embedded hub is off by default");
+        assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
+        assert!(c.server_token.is_none());
+    }
+
+    #[test]
+    fn server_fields_parse_and_sanitize() {
+        let c: Config = serde_json::from_str(
+            r#"{"server_enabled":true,"server_bind":"  0.0.0.0:9000  ","server_token":"  s3cret  "}"#,
+        )
+        .unwrap();
+        assert!(c.server_enabled);
+        assert_eq!(c.server_bind.trim(), "0.0.0.0:9000");
+        let c = c.sanitized();
+        assert_eq!(c.server_bind, "0.0.0.0:9000");
+        assert_eq!(c.server_token.as_deref(), Some("s3cret"));
+
+        let c = Config {
+            server_bind: "   ".to_string(),
+            server_token: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
+        assert!(c.server_token.is_none());
     }
 
     #[test]

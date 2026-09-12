@@ -509,6 +509,15 @@ body[data-collapse="triple_vertical"] .mini-triple {
   gap: 6px;
 }
 
+.field .hint {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.field input[readonly] {
+  color: var(--dim);
+}
+
 input[type="text"],
 input[type="number"],
 select {

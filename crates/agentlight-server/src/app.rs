@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         ));
 
     Router::new()
+        .route("/", get(routes::client))
         .route("/healthz", get(routes::healthz))
         .nest("/api/v1", api)
         .layer(TraceLayer::new_for_http())

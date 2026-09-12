@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::Html;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -33,6 +34,14 @@ pub struct CapabilityResponse {
     pub events: Vec<&'static str>,
     pub commands: Vec<&'static str>,
     pub auth: &'static str,
+}
+
+/// The self-contained, framework-free browser client served at `GET /`.
+const CLIENT_HTML: &str = include_str!("client.html");
+
+/// `GET /` — the built-in web client. Same-origin with the API, so no CORS.
+pub async fn client() -> Html<&'static str> {
+    Html(CLIENT_HTML)
 }
 
 /// `GET /healthz` — no auth.

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>AgentLight</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #14161d;
+        color: #e8eaf0;
+        font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 20px 16px;
+        border-bottom: 1px solid #3a3f4d;
+      }
+      .light {
+        flex: none;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: #5c6370;
+        transition: background 0.25s ease, box-shadow 0.25s ease;
+      }
+      .light.red {
+        background: #e06c75;
+        box-shadow: 0 0 20px rgba(224, 108, 117, 0.75);
+      }
+      .light.orange {
+        background: #e5c07b;
+        box-shadow: 0 0 20px rgba(229, 192, 123, 0.7);
+      }
+      .light.green {
+        background: #98c379;
+        box-shadow: 0 0 20px rgba(152, 195, 121, 0.7);
+      }
+      h1 {
+        margin: 0;
+        font-size: 18px;
+      }
+      #status {
+        margin-top: 2px;
+        color: #8a8d98;
+        font-size: 13px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 8px 12px 24px;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 12px;
+        margin-bottom: 8px;
+        border-radius: 10px;
+        background: #1d2029;
+        border: 1px solid #2b2f3a;
+      }
+      .dot {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #5c6370;
+      }
+      .dot.active {
+        background: #98c379;
+      }
+      .dot.inactive {
+        background: #e5c07b;
+      }
+      .dot.needs_help {
+        background: #e06c75;
+      }
+      .name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .meta {
+        flex: none;
+        color: #8a8d98;
+        font-size: 13px;
+      }
+      .empty {
+        padding: 0 16px;
+        color: #8a8d98;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="light" id="light"></div>
+      <div>
+        <h1>AgentLight</h1>
+        <div id="status">connecting…</div>
+      </div>
+    </header>
+    <ul id="sessions"></ul>
+    <p class="empty" id="empty" hidden>No sessions.</p>
+    <script>
+      (function () {
+        "use strict";
+        var token = new URLSearchParams(location.search).get("token") || "";
+        var lastRevision = -1;
+        var light = document.getElementById("light");
+        var status = document.getElementById("status");
+        var list = document.getElementById("sessions");
+        var empty = document.getElementById("empty");
+
+        function headers() {
+          return token ? { Authorization: "Bearer " + token } : {};
+        }
+
+        function render(snapshot) {
+          if (!snapshot) return;
+          light.className = "light " + (snapshot.aggregate || "gray");
+          var counts = snapshot.counts || {};
+          status.textContent = snapshot.ok
+            ? snapshot.aggregate + " · " + (counts.total || 0) + " sessions"
+            : snapshot.error || "waiting for clawlight…";
+          var sessions = snapshot.sessions || [];
+          empty.hidden = sessions.length > 0;
+          list.textContent = "";
+          sessions.forEach(function (s) {
+            var li = document.createElement("li");
+            var dot = document.createElement("span");
+            dot.className = "dot " + (s.status || "");
+            var name = document.createElement("span");
+            name.className = "name";
+            name.textContent = s.name || s.session_id || "?";
+            var meta = document.createElement("span");
+            meta.className = "meta";
+            meta.textContent = s.status_label || s.status || "";
+            li.appendChild(dot);
+            li.appendChild(name);
+            li.appendChild(meta);
+            list.appendChild(li);
+          });
+        }
+
+        function refresh() {
+          return fetch("/api/v1/snapshot", { headers: headers() })
+            .then(function (response) {
+              if (!response.ok) throw new Error("HTTP " + response.status);
+              return response.json();
+            })
+            .then(render);
+        }
+
+        refresh().catch(function (error) {
+          status.textContent = "error: " + error.message;
+        });
+
+        var events = new EventSource(
+          "/api/v1/events" + (token ? "?token=" + encodeURIComponent(token) : "")
+        );
+        events.addEventListener("update", function (event) {
+          var update = JSON.parse(event.data);
+          if (update.revision <= lastRevision) return;
+          lastRevision = update.revision;
+          render(update.snapshot);
+        });
+        events.addEventListener("lagged", function () {
+          refresh().catch(function () {});
+        });
+        events.onerror = function () {
+          status.textContent = "disconnected — retrying…";
+        };
+      })();
+    </script>
+  </body>
+</html>

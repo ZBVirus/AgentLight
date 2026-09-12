@@ -108,6 +108,24 @@
               <input type="number" id="set-poll" min="250" max="60000" step="250" />
             </label>
 
+            <label class="field inline">
+              <input type="checkbox" id="set-server-enabled" />
+              <span>Serve to other devices</span>
+            </label>
+            <label class="field">
+              <span>Bind address</span>
+              <input type="text" id="set-server-bind" placeholder="127.0.0.1:8787" />
+            </label>
+            <label class="field">
+              <span>Access token</span>
+              <input type="text" id="set-server-token" placeholder="optional secret" />
+            </label>
+            <div class="field">
+              <span>Open on another device</span>
+              <input type="text" id="set-server-url" readonly />
+              <small class="hint">The device must be on the same network. Use 0.0.0.0:8787 to accept LAN connections.</small>
+            </div>
+
             <div class="settings-foot">
               <button type="button" class="ghost" id="btn-settings-back">Back</button>
               <button type="submit" class="primary" id="btn-save">Save</button>

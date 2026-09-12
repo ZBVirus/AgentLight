@@ -22,8 +22,12 @@ framing around them, not a second model.
 ## Authentication
 
 - Optional static bearer token. When the server is configured with a token, every
-  `/api/v1/*` request must send `Authorization: Bearer <token>`.
-- `GET /healthz` is always open, so it can be probed before authenticating.
+  `/api/v1/*` request must send `Authorization: Bearer <token>`, or supply it as
+  a `?token=<token>` query parameter. The query form exists for browser
+  `EventSource`, which cannot set request headers. Token comparison is
+  constant-time for both.
+- `GET /healthz` and `GET /` are always open, so the built-in client can load
+  before the user supplies a token.
 - Missing or invalid token: `401` with the error shape below. Token comparison
   is constant-time.
 
@@ -41,6 +45,13 @@ Every error response is JSON:
 | `bad_request` | 400 | Malformed body, unknown command, or no source to target. |
 | `command_failed` | 409 | The source could not apply the command (e.g. unreadable state). |
 | `internal_error` | 500 | Unexpected server failure. |
+
+## `GET /`
+
+The built-in, self-contained web client: a single HTML document with inline CSS
+and JavaScript that reads the token from `location.search`, fetches
+`/api/v1/snapshot`, and subscribes to `/api/v1/events`. No auth, no build step,
+no third-party assets. It is same-origin with the API, so no CORS is required.
 
 ## `GET /healthz`
 
@@ -174,5 +185,10 @@ failed to parse.
 (`AGENTLIGHT_BIND`), and auth is disabled unless `AGENTLIGHT_TOKEN` is set.
 `AGENTLIGHT_STATE_PATH` points at clawlight's `state.json` and
 `AGENTLIGHT_POLL_MS` sets the watcher backstop. LAN exposure is an explicit
-opt-in; use a VPN for off-LAN access. The pairing-code flow and embedding the
-server in the desktop shell are deferred (Phase 3 steps 3.2 and 3.3).
+opt-in; use a VPN for off-LAN access.
+
+The same server can be embedded in the desktop app with
+`agentlight_server::start(engine, config) -> ServerHandle`, which runs its own
+Tokio runtime on a background thread and returns the bound address. The
+pairing-code flow (Phase 3 step 3.2) remains deferred; until it lands, clients
+use the static bearer token.

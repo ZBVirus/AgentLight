@@ -21,5 +21,6 @@ tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 agentlight-core = { path = "../crates/agentlight-core" }
+agentlight-server = { path = "../crates/agentlight-server" }
 serde = { workspace = true }
 serde_json = { workspace = true }

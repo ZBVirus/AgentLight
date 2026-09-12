@@ -12,6 +12,13 @@
 
 #![forbid(unsafe_code)]
 
+use std::net::SocketAddr;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use tokio::sync::watch;
+
 mod app;
 mod auth;
 pub mod config;
@@ -26,6 +33,129 @@ pub use error::ApiError;
 /// stay within a version and clients ignore unknown fields.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// How long a shutdown waits for in-flight connections to drain before the
+/// runtime force-closes them. Long-lived SSE clients never drain on their own.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
+/// A running embedded server.
+///
+/// The desktop is not async, so [`start`] owns a multi-thread Tokio runtime on
+/// a background thread. Dropping the handle stops the server; call
+/// [`shutdown`](Self::shutdown) to stop it explicitly and wait for the thread.
+pub struct ServerHandle {
+    addr: SocketAddr,
+    shutdown: Option<watch::Sender<bool>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ServerHandle {
+    /// The actual bound address. With a `:0` bind this is the OS-chosen port.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Ask the server to stop and wait for its thread to exit.
+    pub fn shutdown(&mut self) {
+        if let Some(sender) = self.shutdown.take() {
+            let _ = sender.send(true);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// Start the server against an existing engine on a background thread.
+///
+/// Binds `config.bind` (port 0 picks a free port) and reports the real address
+/// through [`ServerHandle::addr`]. The returned handle must be kept alive for
+/// the server to keep running.
+pub fn start(
+    engine: agentlight_core::Engine,
+    config: ServerConfig,
+) -> std::io::Result<ServerHandle> {
+    let token_required = config.token.is_some();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (addr_tx, addr_rx) = mpsc::channel::<std::io::Result<SocketAddr>>();
+
+    let thread = std::thread::Builder::new()
+        .name("agentlight-server".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = addr_tx.send(Err(error));
+                    return;
+                }
+            };
+
+            runtime.block_on(async move {
+                let state = AppState::new(engine, config.token.clone());
+                let listener = match tokio::net::TcpListener::bind(config.bind).await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = addr_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let bound = match listener.local_addr() {
+                    Ok(addr) => addr,
+                    Err(error) => {
+                        let _ = addr_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let _ = addr_tx.send(Ok(bound));
+                tracing::info!(
+                    address = %bound,
+                    token = if token_required { "required" } else { "disabled" },
+                    "agentlight-server listening"
+                );
+
+                // Graceful shutdown stops accepting and lets short requests
+                // finish. `wait_for_shutdown` races it so a long-lived SSE
+                // client cannot keep the drain (and the thread) alive forever;
+                // `runtime.shutdown_timeout` then forces remaining tasks down.
+                let graceful = {
+                    let mut rx = shutdown_rx.clone();
+                    async move {
+                        let _ = rx.changed().await;
+                    }
+                };
+                let serve = axum::serve(listener, router(state)).with_graceful_shutdown(graceful);
+                tokio::select! {
+                    _ = serve => {}
+                    _ = wait_for_shutdown(shutdown_rx) => {}
+                }
+            });
+
+            runtime.shutdown_timeout(SHUTDOWN_GRACE);
+        })?;
+
+    let addr = addr_rx
+        .recv()
+        .map_err(|_| std::io::Error::other("server thread exited before binding"))??;
+
+    Ok(ServerHandle {
+        addr,
+        shutdown: Some(shutdown_tx),
+        thread: Some(thread),
+    })
+}
+
+async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
+    let _ = rx.changed().await;
+}
+
 /// Build the router, bind it, and serve until the process exits.
 pub async fn serve(config: ServerConfig) -> std::io::Result<()> {
     let app = app(&config);
@@ -36,4 +166,45 @@ pub async fn serve(config: ServerConfig) -> std::io::Result<()> {
         "agentlight-server listening"
     );
     axum::serve(listener, app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentlight_core::{Config, Engine};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    fn get(addr: SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut body = String::new();
+        stream.read_to_string(&mut body).unwrap();
+        body
+    }
+
+    #[test]
+    fn embed_start_binds_port_zero_and_shuts_down() {
+        let engine = Engine::new(Config::default());
+        let config = ServerConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            token: None,
+            core: Config::default(),
+        };
+        let mut handle = start(engine, config).unwrap();
+        assert_eq!(handle.addr().ip().to_string(), "127.0.0.1");
+        assert_ne!(handle.addr().port(), 0);
+
+        let health = get(handle.addr(), "/healthz");
+        assert!(health.contains("\"status\":\"ok\""), "{health}");
+
+        let client = get(handle.addr(), "/");
+        assert!(client.contains("<!doctype html>"), "{client}");
+
+        handle.shutdown();
+    }
 }

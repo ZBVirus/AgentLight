@@ -2,6 +2,11 @@
 //!
 //! `/healthz` stays open so a supervisor or load balancer can probe liveness
 //! without a secret. When no token is configured, every route is open.
+//!
+//! The token is accepted either as `Authorization: Bearer <token>` or as a
+//! `token` query parameter. The query form exists for `EventSource`, which
+//! cannot set request headers from the browser. Comparison stays
+//! constant-time for both forms.
 
 use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
@@ -20,17 +25,70 @@ pub async fn require_token(
     next: Next,
 ) -> Result<Response, ApiError> {
     if let Some(expected) = state.token() {
-        let provided = request
+        let header = request
             .headers()
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix(BEARER_PREFIX));
+            .and_then(|value| value.strip_prefix(BEARER_PREFIX))
+            .map(str::to_string);
+        let provided = header.or_else(|| token_from_query(request.uri().query()));
         match provided {
             Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {}
             _ => return Err(ApiError::unauthorized("missing or invalid bearer token")),
         }
     }
     Ok(next.run(request).await)
+}
+
+/// Pull `token` out of a query string, percent-decoding the value.
+fn token_from_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next() == Some("token") {
+            return parts.next().map(percent_decode);
+        }
+    }
+    None
+}
+
+/// Minimal `application/x-www-form-urlencoded` value decoder: `%XX` escapes
+/// plus `+` for space. Tokens with unusual characters survive `encodeURIComponent`.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                    out.push(hi << 4 | lo);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Compare without early-exit so token length and content do not leak timing.
@@ -55,5 +113,21 @@ mod tests {
         assert!(!constant_time_eq(b"secret", b"secrez"));
         assert!(!constant_time_eq(b"secret", b"secret-longer"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn token_from_query_decodes_the_value() {
+        assert_eq!(token_from_query(Some("token=abc")), Some("abc".into()));
+        assert_eq!(
+            token_from_query(Some("a=1&token=abc&b=2")),
+            Some("abc".into())
+        );
+        assert_eq!(
+            token_from_query(Some("token=a%2Bb%20c")),
+            Some("a+b c".into())
+        );
+        assert_eq!(token_from_query(Some("token")), None);
+        assert_eq!(token_from_query(Some("other=abc")), None);
+        assert_eq!(token_from_query(None), None);
     }
 }

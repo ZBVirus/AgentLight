@@ -4,6 +4,7 @@
 //! `agentlight-core`. This layer only wires the engine to a window, a tray
 //! icon, and IPC commands.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +16,8 @@ use agentlight_core::{
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
-    WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, RunEvent, State,
+    WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -37,6 +38,8 @@ struct AppState {
     /// Last position we placed the window at programmatically. Lets a real
     /// user drag be told apart from our own clamping move.
     applied_position: Mutex<Option<PhysicalPosition<i32>>>,
+    /// Opt-in embedded HTTP hub over the same engine. Stopped on exit.
+    server: Mutex<Option<agentlight_server::ServerHandle>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +63,14 @@ fn set_config(
     config: Config,
 ) -> Result<Config, String> {
     let config = config.sanitized();
+    let previous = current_config(&state);
+
+    // Reject a bad bind before persisting or stopping the running server, so
+    // the old handle keeps serving and the typo never lands on disk.
+    if config.server_enabled {
+        parse_server_bind(&config.server_bind)?;
+    }
+
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
 
     if let Some(window) = app.get_webview_window("main") {
@@ -70,6 +81,7 @@ fn set_config(
     *state.config.lock().unwrap() = config.clone();
     state.engine.set_config(config.clone());
     restart_source(&state.engine, &config);
+    restart_server(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(config)
 }
@@ -110,13 +122,17 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     let path = chosen.into_path().map_err(|e| e.to_string())?;
     let path_string = path.to_string_lossy().to_string();
 
-    let mut config = current_config(&state);
+    let previous = current_config(&state);
+    let mut config = previous.clone();
     config.state_path = Some(path_string.clone());
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config.clone();
 
     state.engine.set_config(config.clone());
     restart_source(&state.engine, &config);
+    // The hub shares the engine, so a source change needs no rebind; only a
+    // server-field change restarts it.
+    restart_server(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(Some(path_string))
 }
@@ -255,6 +271,56 @@ fn restart_source(engine: &Engine, config: &Config) {
     engine.replace_source(Arc::new(ClawlightFileSource::from_config(config)));
 }
 
+fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
+    value
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid server bind \"{value}\": {error}"))
+}
+
+/// Start the embedded hub over the shared engine and remember the handle.
+fn start_server(app: &AppHandle, state: &AppState, config: &Config) -> Result<(), String> {
+    let bind = parse_server_bind(&config.server_bind)?;
+    let server_config =
+        agentlight_server::ServerConfig::new(bind, config.server_token.clone(), config.clone());
+    let handle = agentlight_server::start((*state.engine).clone(), server_config)
+        .map_err(|error| format!("could not start server: {error}"))?;
+    eprintln!(
+        "agentlight: embedded server listening on http://{}/",
+        handle.addr()
+    );
+    *state.server.lock().unwrap() = Some(handle);
+    let _ = app.emit("server-changed", ());
+    Ok(())
+}
+
+/// Stop the embedded hub if one is running.
+fn stop_server(state: &AppState) {
+    if let Some(mut handle) = state.server.lock().unwrap().take() {
+        handle.shutdown();
+    }
+}
+
+/// Restart the hub only when a server field changed. The engine is shared, so
+/// a `state_path` change alone must not churn the socket.
+fn restart_server(
+    app: &AppHandle,
+    state: &AppState,
+    previous: &Config,
+    config: &Config,
+) -> Result<(), String> {
+    let changed = previous.server_enabled != config.server_enabled
+        || previous.server_bind != config.server_bind
+        || previous.server_token != config.server_token;
+    if !changed {
+        return Ok(());
+    }
+    stop_server(state);
+    if config.server_enabled {
+        start_server(app, state, config)?;
+    }
+    Ok(())
+}
+
 /// Forward an engine update: the wire snapshot to the frontend, and any
 /// notification edges to a desktop toast.
 fn emit_update(app: &AppHandle, update: &Update) {
@@ -364,7 +430,7 @@ pub fn run() {
     let config = agentlight_core::load_config(&config_path);
     let engine = Arc::new(Engine::new(config.clone()));
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // Must be registered first so a second launch forwards to this one.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
@@ -390,6 +456,7 @@ pub fn run() {
             window_mode: Mutex::new("mini".to_string()),
             mini_anchor: Mutex::new(None),
             applied_position: Mutex::new(None),
+            server: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -421,6 +488,13 @@ pub fn run() {
                 emit_update(&sink_handle, &update);
             }));
             engine.add_source(Arc::new(ClawlightFileSource::from_config(&config)));
+
+            if config.server_enabled {
+                let state = handle.state::<AppState>();
+                if let Err(error) = start_server(&handle, &state, &config) {
+                    eprintln!("agentlight: embedded server not started: {error}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -434,6 +508,12 @@ pub fn run() {
                     .store(false, Ordering::SeqCst);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running AgentLight");
+        .build(tauri::generate_context!())
+        .expect("error while building AgentLight");
+
+    app.run(|app_handle, event| {
+        if let RunEvent::Exit = event {
+            stop_server(&app_handle.state::<AppState>());
+        }
+    });
 }

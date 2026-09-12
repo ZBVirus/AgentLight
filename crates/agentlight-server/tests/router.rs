@@ -234,6 +234,68 @@ async fn unknown_command_is_a_bad_request() {
 }
 
 #[tokio::test]
+async fn root_serves_the_built_in_client() {
+    let (engine, _) = engine_with_sessions();
+    let app = router(AppState::new(engine, Some("secret".into())));
+
+    let response = app
+        .oneshot(request(Method::GET, "/", None, None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(content_type.starts_with("text/html"));
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("<!doctype html>"));
+    assert!(body.contains("EventSource"));
+}
+
+#[tokio::test]
+async fn query_token_is_accepted() {
+    let (engine, _) = engine_with_sessions();
+    let app = router(AppState::new(engine, Some("secret".into())));
+
+    let response = app
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/snapshot?token=secret",
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn query_token_is_rejected_when_wrong() {
+    let (engine, _) = engine_with_sessions();
+    let app = router(AppState::new(engine, Some("secret".into())));
+
+    let response = app
+        .oneshot(request(
+            Method::GET,
+            "/api/v1/snapshot?token=nope",
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn events_opens_an_sse_stream() {
     let (engine, _) = engine_with_sessions();
     let app = router(AppState::new(engine, None));
