@@ -64,7 +64,7 @@ binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
 
 ## How it reads state
 
-- Resolution order for the state file: `AGENTLIGHT_STATE_PATH` env var, then
+- Resolution order for the state file: `AGENTLIGHT_STATE_FILE` env var, then
   `state_path` in the config, then `%USERPROFILE%\.claude\clawlight\state.json`.
   If the file is missing or unreadable the window says so and offers a picker.
 - The file is watched with `notify`, with a poll backstop (default 1500 ms) for
@@ -156,7 +156,7 @@ can be edited by hand.
 | `notifications`  | `false`           | Desktop notification when a session needs help.    |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 
-Environment override: `AGENTLIGHT_STATE_PATH`. Window size and position are
+Environment override: `AGENTLIGHT_STATE_FILE`. Window size and position are
 persisted automatically by `tauri-plugin-window-state`.
 
 ## Pointing the container at a host folder

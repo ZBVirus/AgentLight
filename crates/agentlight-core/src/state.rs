@@ -286,7 +286,7 @@ pub fn aggregate(state: &HookState, yellow_mode: YellowMode) -> Aggregate {
     )
 }
 
-/// Default state path, in resolution order: `AGENTLIGHT_STATE_PATH`, then the
+/// Default state path, in resolution order: `AGENTLIGHT_STATE_FILE`, then the
 /// config's `state_path`, then `~/.claude/clawlight/state.json`.
 pub fn default_state_path() -> PathBuf {
     if let Some(path) = env_state_path() {
@@ -300,7 +300,7 @@ pub fn default_state_path() -> PathBuf {
 }
 
 fn env_state_path() -> Option<PathBuf> {
-    std::env::var_os("AGENTLIGHT_STATE_PATH")
+    std::env::var_os("AGENTLIGHT_STATE_FILE")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
 }

@@ -268,7 +268,7 @@ failed to parse.
 
 `agentlight-server` binds `127.0.0.1:8787` unless overridden
 (`AGENTLIGHT_BIND`), and admin auth is disabled unless `AGENTLIGHT_TOKEN` is set
-(its SHA-256 hash is what the server keeps). `AGENTLIGHT_STATE_PATH` points at
+(its SHA-256 hash is what the server keeps). `AGENTLIGHT_STATE_FILE` points at
 clawlight's `state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json` in the working directory)
 is where paired devices persist. The pairing code is logged at startup so a

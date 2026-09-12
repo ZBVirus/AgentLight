@@ -2,7 +2,7 @@
 //!
 //! Configuration is environment-only so the process is container-friendly:
 //! `AGENTLIGHT_BIND` (`127.0.0.1:8787`), `AGENTLIGHT_TOKEN` (unset disables
-//! auth; hashed at startup), `AGENTLIGHT_STATE_PATH` (clawlight `state.json`),
+//! auth; hashed at startup), `AGENTLIGHT_STATE_FILE` (clawlight `state.json`),
 //! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_FILE` (`devices.json`
 //! in the working directory). No config file is read.
 
@@ -23,7 +23,7 @@ fn server_config() -> ServerConfig {
     let admin_token_hash = env_non_empty("AGENTLIGHT_TOKEN").map(|token| hash_token(&token));
 
     let mut core = Config::default();
-    if let Some(path) = env_non_empty("AGENTLIGHT_STATE_PATH") {
+    if let Some(path) = env_non_empty("AGENTLIGHT_STATE_FILE") {
         core.state_path = Some(path);
     }
     if let Some(poll_ms) = env_parse("AGENTLIGHT_POLL_MS") {
