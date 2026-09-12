@@ -45,6 +45,7 @@ name = "agentlight-hub-client"
 version = "0.3.0"
 dependencies = [
  "agentlight-core",
+ "agentlight-source-events",
  "chrono",
  "minreq",
  "serde",

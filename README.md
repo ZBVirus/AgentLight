@@ -79,6 +79,26 @@ another desktop with its embedded server enabled).
 Status text follows the chosen source: a hub that cannot be reached says so
 ("Could not reach the hub"), instead of talking about a state file.
 
+## Push from an agent (no file)
+
+A hub can also run in **events mode** (`AGENTLIGHT_SOURCE=events`), where agents
+report session state directly instead of writing a shared `state.json`. The
+producer side ships two pieces:
+
+- `agentlight-hook` — a CLI that reads a `SessionEvent` (or a batch) from stdin
+  or `--json` and POSTs it to `POST /api/v1/ingest`.
+- A reference **opencode plugin** that forwards `session` / `tool` / `permission`
+  events to the hub.
+
+```bash
+export AGENTLIGHT_SOURCE=events AGENTLIGHT_TOKEN=secret
+agentlight-server &
+echo '{"session_id":"abc","status":"active","name":"Fix auth"}' | agentlight-hook
+```
+
+See [`docs/plugin.md`](docs/plugin.md) for hub setup, the hook, plugin install,
+the `SessionEvent` schema, and the token security note.
+
 ## How it reads state
 
 - Resolution order for the state file: `AGENTLIGHT_STATE_FILE` env var, then

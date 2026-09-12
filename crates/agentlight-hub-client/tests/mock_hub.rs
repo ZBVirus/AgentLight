@@ -17,6 +17,7 @@ use agentlight_core::{
     SessionKey, SourceCommand, SourceEvent, SourceHealth, SourceId, SourceKind, StateSource, Status,
 };
 use agentlight_hub_client::{HubClient, HubConfig, HubSource};
+use agentlight_source_events::SessionEvent;
 
 const SNAPSHOT_NEEDS_HELP: &str = r#"{
   "ok": true,
@@ -90,6 +91,8 @@ struct MockState {
     snapshot_body: String,
     command_status: u16,
     command_body: String,
+    ingest_status: u16,
+    ingest_body: String,
 }
 
 struct MockHub {
@@ -110,6 +113,8 @@ impl MockHub {
             snapshot_body: SNAPSHOT_ACTIVE.to_string(),
             command_status: 200,
             command_body: "{\"revision\":1}".to_string(),
+            ingest_status: 200,
+            ingest_body: "{\"accepted\":0}".to_string(),
         }));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -161,6 +166,12 @@ impl MockHub {
         state.command_body = body.into();
     }
 
+    fn set_ingest(&self, status: u16, body: impl Into<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.ingest_status = status;
+        state.ingest_body = body.into();
+    }
+
     fn recorded(&self) -> Vec<Recorded> {
         self.requests.lock().unwrap().clone()
     }
@@ -186,6 +197,7 @@ fn handle_connection(
         match request.path.as_str() {
             "/api/v1/snapshot" => (state.snapshot_status, state.snapshot_body.clone()),
             "/api/v1/commands" => (state.command_status, state.command_body.clone()),
+            "/api/v1/ingest" => (state.ingest_status, state.ingest_body.clone()),
             _ => (404, "{\"error\":{\"code\":\"not_found\"}}".to_string()),
         }
     };
@@ -454,6 +466,66 @@ fn unreachable_hub_reports_hub_wording_through_the_engine() {
     assert!(!error.contains("state file"), "{error}");
     assert_eq!(snapshot.source_kind, "hub");
     assert_eq!(snapshot.source_label, "http://127.0.0.1:1");
+}
+
+#[test]
+fn errors_propagate_from_the_hub() {
+    let hub = MockHub::start();
+    hub.set_command(500, "{\"error\":{\"code\":\"internal_error\"}}");
+    let source = HubSource::new(HubConfig::new(hub.base_url()).with_id("hub"));
+
+    let error = source
+        .command(SourceCommand::ClearDone)
+        .expect_err("a 500 should fail");
+    let message = error.to_string();
+    assert!(message.contains("500"), "{message}");
+}
+
+#[test]
+fn ingest_posts_events_and_parses_accepted() {
+    let hub = MockHub::start();
+    hub.set_ingest(200, "{\"accepted\":2}");
+    let client = HubClient::new(HubConfig::new(hub.base_url()).with_token("secret"));
+
+    let events = vec![
+        SessionEvent {
+            session_id: "s1".to_string(),
+            status: Status::NeedsHelp,
+            name: Some("Fix auth".to_string()),
+            project_path: Some("/work/agentlight".to_string()),
+            harness: Some("opencode".to_string()),
+            last_updated: Some("2026-09-12T10:00:00Z".to_string()),
+        },
+        SessionEvent {
+            session_id: "s2".to_string(),
+            status: Status::Active,
+            name: None,
+            project_path: None,
+            harness: None,
+            last_updated: None,
+        },
+    ];
+
+    let accepted = client.ingest(&events).expect("ingest");
+    assert_eq!(accepted, 2);
+
+    let requests = hub.recorded();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/api/v1/ingest");
+    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    assert_eq!(requests[0].header("authorization"), Some("Bearer secret"));
+
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).expect("json body");
+    let sent = body["events"].as_array().expect("events array");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0]["session_id"], "s1");
+    assert_eq!(sent[0]["status"], "needs_help");
+    assert_eq!(sent[0]["name"], "Fix auth");
+    assert_eq!(sent[0]["project_path"], "/work/agentlight");
+    assert_eq!(sent[0]["harness"], "opencode");
+    assert_eq!(sent[1]["session_id"], "s2");
+    assert_eq!(sent[1]["status"], "active");
 }
 
 #[test]

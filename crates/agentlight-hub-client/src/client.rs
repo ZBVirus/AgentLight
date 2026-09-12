@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use agentlight_core::Snapshot;
+use agentlight_source_events::SessionEvent;
 
 /// Default source id for a hub-backed source.
 pub const DEFAULT_HUB_ID: &str = "hub";
@@ -134,6 +135,17 @@ struct CommandResponse {
     revision: u64,
 }
 
+/// Body for `POST /api/v1/ingest`: the canonical pushed-event shape, unchanged.
+#[derive(Debug, Serialize)]
+struct IngestBody<'a> {
+    events: &'a [SessionEvent],
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestResponse {
+    accepted: usize,
+}
+
 /// Blocking HTTP client for one hub. Cheap to clone and safe to share.
 #[derive(Debug, Clone)]
 pub struct HubClient {
@@ -183,6 +195,25 @@ impl HubClient {
     /// produced by the hub's follow-up refresh.
     pub fn clear_done(&self) -> Result<u64, HubError> {
         self.post_command(&CommandBody::ClearDone)
+    }
+
+    /// `POST /api/v1/ingest` — upsert a batch of pushed [`SessionEvent`]s into a
+    /// hub running in events mode. Returns the hub's `accepted` count (the batch
+    /// length). Only meaningful against an events-mode hub; a file-mode hub
+    /// answers `400 bad_request`.
+    pub fn ingest(&self, events: &[SessionEvent]) -> Result<usize, HubError> {
+        let url = format!("{}/api/v1/ingest", self.base());
+        let payload = serde_json::to_string(&IngestBody { events })?;
+        let response = self
+            .authorize(minreq::post(url))
+            .with_header("Content-Type", "application/json")
+            .with_body(payload)
+            .with_timeout(REQUEST_TIMEOUT_SECS)
+            .send()?;
+        ensure_success(&response)?;
+        let body = response.as_str()?;
+        let parsed: IngestResponse = serde_json::from_str(body)?;
+        Ok(parsed.accepted)
     }
 
     fn post_command(&self, body: &CommandBody<'_>) -> Result<u64, HubError> {
