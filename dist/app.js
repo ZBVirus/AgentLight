@@ -42,7 +42,7 @@ function wire() {
       toast(`Pin failed: ${error}`);
     }
   });
-  $("btn-min").addEventListener("click", () => invoke && invoke("window_minimize"));
+  $("btn-min").addEventListener("click", () => setView("mini"));
   $("btn-hide").addEventListener("click", () => invoke && invoke("window_hide"));
 
   const browse = async () => {
