@@ -112,3 +112,39 @@ the window from the toast.
 - Light/dark theme toggle (v1 is dark only).
 - Tray menu entries for the state path and a manual refresh.
 - Optional compact mode: show only the light, hide the top bar until hover.
+
+## Future updates (recorded, not scheduled)
+
+Captured from product feedback. None of these are committed or started; decide
+and prioritize later.
+
+- **Collapsed view customization.** Let the user choose what the collapsed
+  window shows and which conditions map to which lights: per-condition colors,
+  which statuses light up, and possibly custom rules. Today the styles are
+  single, triple, and triple-vertical, with fixed colors.
+- **Collapsed view resizing.** Let the user resize the collapsed window to any
+  size they want, rather than the fixed size per style. Consider how the
+  expanded window behaves after a resize.
+- **Topmost over full-screen apps.** On Windows, another window can hide
+  AgentLight even with always-on-top, for example an exclusive or borderless
+  full-screen game such as Rocket League. Investigate the full-screen/topmost
+  interaction and whether a native topmost re-assert or a different window
+  style is needed.
+- **Plugin auto-starts the server.** Let the opencode plugin start the hub when
+  it is not running. Must work both for opencode on the host and for opencode
+  inside a container. Needs discovery of a running hub, spawn and permission
+  rules, and a decision on who owns the process lifecycle.
+- **`done` is never observed (bug).** Finished sessions, including subagent
+  sessions that have clearly stopped, are not labeled `done`, so "Clear done"
+  misses them. Decide whether the plugin should emit `done` on session end or
+  the client should infer it, and make finished sessions clearable.
+- **Right-click hide in collapsed mode.** Add a context menu on the collapsed
+  window with a "Hide" action that sends the app to the tray.
+- **Deferred engineering options.** From the architecture review:
+  - Tag and release the architecture line: hub, pairing, file or hub source,
+    ingest, and the plugin.
+  - Producer resync and heartbeat, plus an optional durable push source, so a
+    hub restart recovers state instead of waiting for the next event.
+  - Test the opencode plugin against a live opencode build and adjust the
+    event names if they differ.
+  - Move `HubSource` from polling to the hub's SSE stream.
