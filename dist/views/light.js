@@ -49,15 +49,17 @@ export function renderLight(snapshot) {
   if (!snapshot.ok) {
     setMiniState(null);
     const hub = snapshot.source_kind === "hub";
+    let fallback;
     if (hub) {
-      label.textContent = snapshot.exists
+      fallback = snapshot.exists
         ? "Could not reach the hub"
         : "Waiting for the hub…";
     } else {
-      label.textContent = snapshot.exists
+      fallback = snapshot.exists
         ? "Could not read state file"
         : "Waiting for clawlight…";
     }
+    label.textContent = snapshot.error || fallback;
     pick.classList.remove("hidden");
     return;
   }

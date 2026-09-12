@@ -1,0 +1,12 @@
+[package]
+name = "agentlight-source-events"
+description = "In-memory StateSource for pushed agent session events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlight-core = { path = "../agentlight-core" }
+serde.workspace = true
+chrono.workspace = true

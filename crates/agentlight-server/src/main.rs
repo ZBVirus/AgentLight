@@ -2,13 +2,14 @@
 //!
 //! Configuration is environment-only so the process is container-friendly:
 //! `AGENTLIGHT_BIND` (`127.0.0.1:8787`), `AGENTLIGHT_TOKEN` (unset disables
-//! auth; hashed at startup), `AGENTLIGHT_STATE_FILE` (clawlight `state.json`),
+//! auth; hashed at startup), `AGENTLIGHT_SOURCE` (`file`, or `events`/`ingest`
+//! for the push source), `AGENTLIGHT_STATE_FILE` (clawlight `state.json`),
 //! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_FILE` (`devices.json`
 //! in the working directory). No config file is read.
 
 use std::path::PathBuf;
 
-use agentlight_core::Config;
+use agentlight_core::{Config, SourceKind};
 use agentlight_server::{hash_token, serve, ServerConfig};
 
 #[tokio::main]
@@ -37,7 +38,14 @@ fn server_config() -> ServerConfig {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("devices.json"));
 
-    ServerConfig::new(bind, admin_token_hash, core.sanitized()).with_devices_path(devices_path)
+    let source_kind = match env_non_empty("AGENTLIGHT_SOURCE").as_deref() {
+        Some("events") | Some("ingest") => SourceKind::Push,
+        _ => SourceKind::File,
+    };
+
+    ServerConfig::new(bind, admin_token_hash, core.sanitized())
+        .with_source_kind(source_kind)
+        .with_devices_path(devices_path)
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

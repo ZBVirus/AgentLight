@@ -27,6 +27,8 @@ pub enum SourceKind {
     File,
     /// A remote AgentLight hub over HTTP.
     Hub,
+    /// Events pushed to an AgentLight hub rather than read from a file.
+    Push,
 }
 
 /// How an idle (`inactive`) session colors the aggregate when others still

@@ -13,7 +13,9 @@ export function renderDetail(snapshot) {
   if (!snapshot || !snapshot.ok) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    if (snapshot && snapshot.source_kind === "hub") {
+    if (snapshot && snapshot.error) {
+      empty.textContent = snapshot.error;
+    } else if (snapshot && snapshot.source_kind === "hub") {
       empty.textContent = snapshot.exists
         ? "Could not reach the hub."
         : "Not connected to a hub. Check Settings.";

@@ -168,8 +168,8 @@ Returns `agentlight_core::Snapshot` JSON:
 | `ok` | bool | The active source was read and parsed. |
 | `error` | string \| null | Waiting/read error when `ok` is false. Wording follows the source: a `file` source says "state file", a `hub` source says "hub". |
 | `state_path` | string | Resolved clawlight `state.json` path. |
-| `source_kind` | string | `file` \| `hub`. Additive; older payloads omit it and are treated as `file`. |
-| `source_label` | string | The active source location: a file path for `file`, a base URL for `hub`. Additive. |
+| `source_kind` | string | `file` \| `hub` \| `push`. Additive; older payloads omit it and are treated as `file`. |
+| `source_label` | string | The active source location: a file path for `file`, a base URL for `hub`, the source id (`events`) for `push`. Additive. |
 | `exists` | bool | The file exists (even if unreadable). |
 | `aggregate` | string | `red` \| `orange` \| `green` \| `gray`. |
 | `counts` | object | `needs_help`, `active`, `inactive`, `done`, `total`. |
@@ -197,8 +197,9 @@ Each session row:
 
 When `ok` is false the `error` string is source-aware: a file-backed engine
 reports `Waiting for clawlight state file` / `Could not read state file: …`,
-while a hub-backed engine reports `Waiting for the hub` /
-`Could not reach the hub: …`. Clients may show their own wording from
+a hub-backed engine reports `Waiting for the hub` / `Could not reach the hub: …`,
+and a push-backed engine reports `Waiting for agent events` /
+`Agent event source error: …`. Clients may show their own wording from
 `source_kind` instead of echoing `error`.
 
 ## `GET /api/v1/events`
@@ -274,12 +275,61 @@ yet; a client should consult future negotiation data before offering the
 actions. Writes preserve unknown fields and never overwrite a state file that
 failed to parse.
 
+## `POST /api/v1/ingest`
+
+Auth required (admin or device token). Available only when the server runs in
+events mode (`AGENTLIGHT_SOURCE=events`); in file mode it returns
+`400 bad_request`. It upserts a batch of pushed session events into the
+in-memory event source, keyed by `session_id`, and returns how many were
+accepted:
+
+```json
+{ "events": [
+  {
+    "session_id": "abc",
+    "status": "needs_help",
+    "name": "Fix auth",
+    "project_path": "/work/agentlight",
+    "harness": "opencode",
+    "last_updated": "2026-09-12T21:25:49Z"
+  }
+] }
+```
+
+Each event:
+
+| Field | Type | Notes |
+|---|---|---|
+| `session_id` | string | Required. Upsert key. |
+| `status` | string | Required. `active` \| `inactive` \| `needs_help` \| `done`. |
+| `name` | string \| null | Display name; falls back to `Session <id prefix>`. |
+| `project_path` | string \| null | Raw project path, empty when unknown. |
+| `harness` | string \| null | Reporting harness; its two-char badge is derived. |
+| `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
+
+Unknown fields on the envelope and on each event are ignored. Re-pushing a
+`session_id` replaces its prior status in place. The batch is a single change:
+subscribers to `/api/v1/events` see one `update` afterward. Response:
+
+```json
+{ "accepted": 1 }
+```
+
+`accepted` is the number of events in the batch, not the number that changed.
+Sessions are held in memory only; there is no file and no history, so a restart
+starts empty. `GET /api/v1/snapshot` reports `source_kind: "push"` and
+`source_label: "events"`, and before the first event `ok` is `false` with the
+error `Waiting for agent events`.
+
 ## Server defaults
 
 `agentlight-server` binds `127.0.0.1:8787` unless overridden
 (`AGENTLIGHT_BIND`), and admin auth is disabled unless `AGENTLIGHT_TOKEN` is set
-(its SHA-256 hash is what the server keeps). `AGENTLIGHT_STATE_FILE` points at
-clawlight's `state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
+(its SHA-256 hash is what the server keeps). `AGENTLIGHT_SOURCE` selects the
+session source: `file` (default) reads clawlight's `state.json`, while `events`
+(or `ingest`) serves sessions pushed to `POST /api/v1/ingest` and ignores
+`AGENTLIGHT_STATE_FILE`. `AGENTLIGHT_STATE_FILE` points at clawlight's
+`state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json` in the working directory)
 is where paired devices persist. The pairing code is logged at startup so a
 headless host can be paired. LAN exposure is an explicit opt-in; use a VPN for

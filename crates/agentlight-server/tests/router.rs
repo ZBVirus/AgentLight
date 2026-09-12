@@ -96,6 +96,8 @@ async fn snapshot_exposes_the_core_shape() {
         "ok",
         "error",
         "state_path",
+        "source_kind",
+        "source_label",
         "exists",
         "aggregate",
         "counts",

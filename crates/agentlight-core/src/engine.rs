@@ -306,6 +306,10 @@ impl Inner {
                     Some(format!("Could not read state file: {reason}"))
                 }
                 (SourceKind::File, None) => Some("Waiting for clawlight state file".to_string()),
+                (SourceKind::Push, Some(reason)) => {
+                    Some(format!("Agent event source error: {reason}"))
+                }
+                (SourceKind::Push, None) => Some("Waiting for agent events".to_string()),
             }
         };
 
@@ -316,6 +320,7 @@ impl Inner {
             None => match config.source_kind {
                 SourceKind::File => config.state_file().to_string_lossy().to_string(),
                 SourceKind::Hub => config.hub_url.clone(),
+                SourceKind::Push => "events".to_string(),
             },
         };
 
@@ -427,6 +432,7 @@ fn source_kind_str(kind: SourceKind) -> &'static str {
     match kind {
         SourceKind::File => "file",
         SourceKind::Hub => "hub",
+        SourceKind::Push => "push",
     }
 }
 
@@ -763,5 +769,40 @@ mod tests {
         assert_eq!(snapshot.error.as_deref(), Some("Waiting for the hub"));
         assert_eq!(snapshot.source_kind, "hub");
         assert_eq!(snapshot.source_label, "http://hub.local:8787");
+    }
+
+    #[test]
+    fn missing_push_source_says_waiting_for_agent_events() {
+        let engine = Engine::new(Config {
+            source_kind: SourceKind::Push,
+            ..Config::default()
+        });
+        let source = FixtureSource::new("events").with_kind(SourceKind::Push);
+        source.set_health(SourceHealth::Missing);
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        assert!(!snapshot.ok);
+        assert_eq!(snapshot.error.as_deref(), Some("Waiting for agent events"));
+        assert_eq!(snapshot.source_kind, "push");
+        assert_eq!(snapshot.source_label, "events");
+    }
+
+    #[test]
+    fn unreadable_push_source_says_agent_event_source() {
+        let engine = Engine::new(Config {
+            source_kind: SourceKind::Push,
+            ..Config::default()
+        });
+        let source = FixtureSource::new("events").with_kind(SourceKind::Push);
+        source.set_health(SourceHealth::Unreadable("queue overflow".to_string()));
+        engine.add_source(Arc::new(source));
+
+        let snapshot = engine.snapshot_now();
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("Agent event source error: queue overflow")
+        );
+        assert_eq!(snapshot.source_kind, "push");
     }
 }

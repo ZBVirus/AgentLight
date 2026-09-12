@@ -341,7 +341,9 @@ fn current_config(state: &State<'_, AppState>) -> Config {
 /// Build the configured source adapter: a local clawlight file or a remote hub.
 fn build_source(config: &Config) -> Arc<dyn StateSource> {
     match config.source_kind {
-        SourceKind::File => Arc::new(ClawlightFileSource::from_config(config)),
+        // Push is a server-only source; the desktop has no ingest surface, so
+        // an unexpected push selection falls back to the local file.
+        SourceKind::File | SourceKind::Push => Arc::new(ClawlightFileSource::from_config(config)),
         SourceKind::Hub => Arc::new(agentlight_hub_client::HubSource::new(
             agentlight_hub_client::HubConfig {
                 id: agentlight_hub_client::DEFAULT_HUB_ID.to_string(),

@@ -7,7 +7,8 @@ use axum::{middleware, Router};
 use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
 
-use agentlight_core::{ClawlightFileSource, Engine, Update, UpdateSink};
+use agentlight_core::{ClawlightFileSource, Engine, SourceKind, Update, UpdateSink};
+use agentlight_source_events::{EventPushSource, EVENTS_SOURCE_ID};
 
 use crate::auth;
 use crate::config::ServerConfig;
@@ -29,6 +30,9 @@ pub struct AppState {
     sender: broadcast::Sender<Update>,
     admin_token_hash: Option<String>,
     devices: Arc<DeviceStore>,
+    /// The push source when the server runs in events mode, so the ingest route
+    /// can reach it. `None` in file mode.
+    events: Option<Arc<EventPushSource>>,
 }
 
 impl AppState {
@@ -62,20 +66,34 @@ impl AppState {
             sender,
             admin_token_hash,
             devices: Arc::new(devices),
+            events: None,
         }
+    }
+
+    /// Attach the push source an events-mode engine was built with.
+    pub fn with_events(mut self, events: Option<Arc<EventPushSource>>) -> Self {
+        self.events = events;
+        self
     }
 
     /// Build the engine, source, and device store a config describes.
     pub fn from_config(config: &ServerConfig) -> Self {
+        let (engine, events) = build_engine_with_source(config);
         Self::with_devices(
-            build_engine(config),
+            engine,
             config.admin_token_hash.clone(),
             DeviceStore::load(config.devices_path.clone()),
         )
+        .with_events(events)
     }
 
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// The push source when this server is in events mode.
+    pub fn events(&self) -> Option<&Arc<EventPushSource>> {
+        self.events.as_ref()
     }
 
     /// The admin token's SHA-256 hex, if one is configured.
@@ -120,12 +138,24 @@ impl AppState {
     }
 }
 
-/// Build an engine with one [`ClawlightFileSource`]. Registration starts the
-/// source's watcher thread.
+/// Build an engine with one file [`ClawlightFileSource`]. Registration starts
+/// the source's watcher thread.
 pub fn build_engine(config: &ServerConfig) -> Engine {
+    build_engine_with_source(config).0
+}
+
+/// Build the engine for `config`, returning the push source when events mode is
+/// selected so the caller can keep it for the ingest route.
+pub fn build_engine_with_source(config: &ServerConfig) -> (Engine, Option<Arc<EventPushSource>>) {
     let engine = Engine::new(config.core.clone());
-    engine.add_source(Arc::new(ClawlightFileSource::from_config(&config.core)));
-    engine
+    if config.source_kind == SourceKind::Push {
+        let events = Arc::new(EventPushSource::new(EVENTS_SOURCE_ID));
+        engine.add_source(events.clone());
+        (engine, Some(events))
+    } else {
+        engine.add_source(Arc::new(ClawlightFileSource::from_config(&config.core)));
+        (engine, None)
+    }
 }
 
 /// Build the router from an existing state. Useful for tests and for embedding.
@@ -137,6 +167,7 @@ pub fn router(state: AppState) -> Router {
         .route("/snapshot", get(routes::snapshot))
         .route("/events", get(routes::events))
         .route("/commands", post(routes::commands))
+        .route("/ingest", post(routes::ingest))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_token,

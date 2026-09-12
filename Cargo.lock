@@ -56,6 +56,7 @@ name = "agentlight-server"
 version = "0.3.0"
 dependencies = [
  "agentlight-core",
+ "agentlight-source-events",
  "axum",
  "chrono",
  "rand",
@@ -69,6 +70,15 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agentlight-source-events"
+version = "0.3.0"
+dependencies = [
+ "agentlight-core",
+ "chrono",
+ "serde",
 ]
 
 [[package]]

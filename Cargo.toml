@@ -4,6 +4,7 @@ members = [
     "crates/agentlight-core",
     "crates/agentlight-hub-client",
     "crates/agentlight-server",
+    "crates/agentlight-source-events",
     "src-tauri",
 ]
 

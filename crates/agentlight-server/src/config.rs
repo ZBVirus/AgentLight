@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use agentlight_core::Config;
+use agentlight_core::{Config, SourceKind};
 
 /// Default loopback address. LAN exposure is an explicit opt-in.
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -24,6 +24,9 @@ pub struct ServerConfig {
     pub admin_token_hash: Option<String>,
     /// Where paired-device records live. `None` keeps them in memory only.
     pub devices_path: Option<PathBuf>,
+    /// Where session state comes from. [`SourceKind::Push`] serves events
+    /// POSTed to `/api/v1/ingest`; every other kind reads a clawlight file.
+    pub source_kind: SourceKind,
     /// State source and display policy.
     pub core: Config,
 }
@@ -36,6 +39,7 @@ impl Default for ServerConfig {
                 .expect("DEFAULT_BIND is a valid socket address"),
             admin_token_hash: None,
             devices_path: None,
+            source_kind: SourceKind::File,
             core: Config::default(),
         }
     }
@@ -49,6 +53,7 @@ impl ServerConfig {
             bind,
             admin_token_hash,
             devices_path: None,
+            source_kind: SourceKind::File,
             core,
         }
     }
@@ -56,6 +61,12 @@ impl ServerConfig {
     /// Point the server at a specific clawlight `state.json`.
     pub fn with_state_path(mut self, path: impl Into<String>) -> Self {
         self.core.state_path = Some(path.into());
+        self
+    }
+
+    /// Choose the session source: `file` or `events`/push.
+    pub fn with_source_kind(mut self, source_kind: SourceKind) -> Self {
+        self.source_kind = source_kind;
         self
     }
 
@@ -76,7 +87,14 @@ mod tests {
         assert_eq!(config.bind.to_string(), DEFAULT_BIND);
         assert!(config.admin_token_hash.is_none());
         assert!(config.devices_path.is_none());
+        assert_eq!(config.source_kind, SourceKind::File);
         assert!(config.core.state_path.is_none());
+    }
+
+    #[test]
+    fn with_source_kind_switches_to_events() {
+        let config = ServerConfig::default().with_source_kind(SourceKind::Push);
+        assert_eq!(config.source_kind, SourceKind::Push);
     }
 
     #[test]

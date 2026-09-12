@@ -27,7 +27,7 @@ mod devices;
 mod error;
 mod routes;
 
-pub use app::{app, build_engine, router, AppState};
+pub use app::{app, build_engine, build_engine_with_source, router, AppState};
 pub use config::ServerConfig;
 pub use devices::{hash_token, DeviceInfo, DeviceStore, PairInfo};
 pub use error::ApiError;

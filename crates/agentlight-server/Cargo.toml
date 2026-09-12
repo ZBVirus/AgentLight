@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 agentlight-core = { path = "../agentlight-core" }
+agentlight-source-events = { path = "../agentlight-source-events" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

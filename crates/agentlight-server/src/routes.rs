@@ -16,6 +16,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
 use agentlight_core::{SessionKey, Snapshot, SourceCommand, SourceId, Update};
+use agentlight_source_events::SessionEvent;
 
 use crate::app::AppState;
 use crate::devices::DeviceInfo;
@@ -202,4 +203,32 @@ pub async fn commands(
     .map_err(|e| ApiError::internal(format!("command task failed: {e}")))??;
 
     Ok(Json(CommandResponse { revision }))
+}
+
+/// Body for `POST /api/v1/ingest`. Unknown fields on the envelope and on each
+/// event are ignored.
+#[derive(Debug, Deserialize)]
+pub struct IngestRequest {
+    pub events: Vec<SessionEvent>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IngestResponse {
+    pub accepted: usize,
+}
+
+/// `POST /api/v1/ingest` — upsert a batch of pushed session events into the
+/// event source. Only available when the server runs in events mode; otherwise
+/// the request is a `400`.
+pub async fn ingest(
+    State(state): State<AppState>,
+    payload: Result<Json<IngestRequest>, JsonRejection>,
+) -> Result<Json<IngestResponse>, ApiError> {
+    let Json(request) =
+        payload.map_err(|rejection| ApiError::bad_request(rejection.body_text()))?;
+    let events = state
+        .events()
+        .ok_or_else(|| ApiError::bad_request("this server is not in events mode"))?;
+    let accepted = events.apply(&request.events);
+    Ok(Json(IngestResponse { accepted }))
 }
