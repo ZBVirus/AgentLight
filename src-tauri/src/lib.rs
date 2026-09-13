@@ -1,36 +1,43 @@
 //! Tauri shell for AgentLight.
 //!
-//! All state parsing, aggregation, and file writes live in `agentlight-core`.
-//! This layer only wires that logic to a window, a tray icon, a file watcher,
-//! and IPC commands.
+//! All state parsing, aggregation, watching, and notification policy live in
+//! `agentlight-core`. This layer only wires the engine to a window, a tray
+//! icon, and IPC commands.
 
-use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use agentlight_core::{Config, Snapshot, Status};
+use agentlight_core::{
+    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
+    StateSource, Update, CLAWLIGHT_SOURCE_ID,
+};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
-    WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, RunEvent, State,
+    WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
-// Required in scope for `RecommendedWatcher::watch`.
-use notify::Watcher;
+/// The embedded server's state, as shown in the settings view.
+#[derive(serde::Serialize)]
+struct ServerStatus {
+    enabled: bool,
+    url: Option<String>,
+    admin_token_set: bool,
+    pairing_code: Option<String>,
+    pairing_expires_at: Option<String>,
+    devices: Vec<agentlight_server::DeviceInfo>,
+}
 
 /// Shared app state managed by Tauri.
 struct AppState {
+    /// Owns source lifecycle, merge, retention, and notification edges.
+    engine: Arc<Engine>,
     config: Mutex<Config>,
     config_path: PathBuf,
-    /// Bumped whenever the watcher should be rebuilt. Older watcher threads see
-    /// a stale value and exit.
-    generation: AtomicU64,
-    /// Last seen status per session, for edge-triggered notifications.
-    previous: Mutex<HashMap<String, Status>>,
     /// Whether the window is currently shown. Tracked explicitly because
     /// `Window::is_visible` reads a cache that can lag after `hide()`.
     visible: AtomicBool,
@@ -42,6 +49,8 @@ struct AppState {
     /// Last position we placed the window at programmatically. Lets a real
     /// user drag be told apart from our own clamping move.
     applied_position: Mutex<Option<PhysicalPosition<i32>>>,
+    /// Opt-in embedded HTTP hub over the same engine. Stopped on exit.
+    server: Mutex<Option<agentlight_server::ServerHandle>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -50,8 +59,7 @@ struct AppState {
 
 #[tauri::command]
 fn get_snapshot(state: State<'_, AppState>) -> Snapshot {
-    let config = current_config(&state);
-    agentlight_core::build_snapshot(&config.state_file(), &config)
+    state.engine.snapshot_now()
 }
 
 #[tauri::command]
@@ -65,7 +73,28 @@ fn set_config(
     state: State<'_, AppState>,
     config: Config,
 ) -> Result<Config, String> {
+    // The settings view is write-only for the admin token: a non-empty legacy
+    // `server_token` is the user typing a new secret, so hash it here and drop
+    // the plaintext before anything is persisted.
+    let mut config = config;
+    if let Some(token) = config.server_token.take() {
+        let token = token.trim();
+        if !token.is_empty() {
+            config.server_token_hash = Some(agentlight_server::hash_token(token));
+        }
+    }
     let config = config.sanitized();
+    let previous = current_config(&state);
+
+    // Reject a bad bind before doing anything else.
+    if config.server_enabled {
+        parse_server_bind(&config.server_bind)?;
+    }
+
+    // Apply the server transition before persisting. A failed start keeps the
+    // previous handle and leaves the persisted `server_enabled` untouched.
+    apply_server_change(&app, &state, &previous, &config)?;
+
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
 
     if let Some(window) = app.get_webview_window("main") {
@@ -74,33 +103,81 @@ fn set_config(
     apply_autostart(&app, config.start_at_login);
 
     *state.config.lock().unwrap() = config.clone();
-    restart_watcher(&app);
+    state.engine.set_config(config.clone());
+    if source_fields_changed(&previous, &config) {
+        restart_source(&state.engine, &config);
+    }
     let _ = app.emit("config-changed", &config);
     Ok(config)
 }
 
 #[tauri::command]
-fn clear_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<bool, String> {
-    let path = current_config(&state).state_file();
-    let removed = agentlight_core::clear_session(&path, &session_id).map_err(|e| e.to_string())?;
-    if removed {
-        emit_snapshot(&app);
+fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    // Use whatever source the engine is currently reading so Remove works in
+    // both file and hub mode.
+    let source = state
+        .engine
+        .source_id()
+        .unwrap_or_else(|| SourceId::new(CLAWLIGHT_SOURCE_ID));
+    let key = SessionKey::new(source, session_id);
+    let existed = state.engine.has_session(&key);
+    state
+        .engine
+        .dispatch(SourceCommand::RemoveSession(key))
+        .map_err(|e| e.to_string())?;
+    if existed {
+        state.engine.refresh();
+    }
+    Ok(existed)
+}
+
+#[tauri::command]
+fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
+    let removed = state.engine.clear_done().map_err(|e| e.to_string())?;
+    if removed > 0 {
+        state.engine.refresh();
     }
     Ok(removed)
 }
 
 #[tauri::command]
-fn clear_done(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
-    let path = current_config(&state).state_file();
-    let removed = agentlight_core::clear_done(&path).map_err(|e| e.to_string())?;
-    if removed > 0 {
-        emit_snapshot(&app);
+fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
+    let admin_token_set = current_config(&state).server_token_hash.is_some();
+    match state.server.lock().unwrap().as_ref() {
+        Some(handle) => {
+            let pair = handle.pair_info();
+            ServerStatus {
+                enabled: true,
+                url: Some(format!("http://{}/", handle.addr())),
+                admin_token_set,
+                pairing_code: Some(pair.code),
+                pairing_expires_at: Some(pair.expires_at),
+                devices: handle.devices(),
+            }
+        }
+        None => ServerStatus {
+            enabled: false,
+            url: None,
+            admin_token_set,
+            pairing_code: None,
+            pairing_expires_at: None,
+            devices: Vec::new(),
+        },
     }
-    Ok(removed)
+}
+
+#[tauri::command]
+fn regenerate_pairing(state: State<'_, AppState>) -> Result<agentlight_server::PairInfo, String> {
+    let server = state.server.lock().unwrap();
+    let handle = server.as_ref().ok_or("server is not running")?;
+    Ok(handle.regenerate_pairing())
+}
+
+#[tauri::command]
+fn revoke_device(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let server = state.server.lock().unwrap();
+    let handle = server.as_ref().ok_or("server is not running")?;
+    Ok(handle.revoke_device(&id))
 }
 
 // `async` here means Tauri runs the body on a worker thread. The blocking
@@ -116,12 +193,19 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     let path = chosen.into_path().map_err(|e| e.to_string())?;
     let path_string = path.to_string_lossy().to_string();
 
-    let mut config = current_config(&state);
+    let previous = current_config(&state);
+    let mut config = previous.clone();
     config.state_path = Some(path_string.clone());
+    // Choosing a file is an implicit switch back to file mode.
+    config.source_kind = SourceKind::File;
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config.clone();
 
-    restart_watcher(&app);
+    state.engine.set_config(config.clone());
+    restart_source(&state.engine, &config);
+    // The hub shares the engine, so a source change needs no rebind; only a
+    // server-field change restarts it.
+    apply_server_change(&app, &state, &previous, &config)?;
     let _ = app.emit("config-changed", &config);
     Ok(Some(path_string))
 }
@@ -142,6 +226,7 @@ fn set_always_on_top(
         config.always_on_top = enabled;
         agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
         *state.config.lock().unwrap() = config.clone();
+        state.engine.set_config(config.clone());
         let _ = app.emit("config-changed", &config);
     }
     Ok(())
@@ -253,6 +338,171 @@ fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
+/// Build the configured source adapter: a local clawlight file or a remote hub.
+fn build_source(config: &Config) -> Arc<dyn StateSource> {
+    match config.source_kind {
+        // Push is a server-only source; the desktop has no ingest surface, so
+        // an unexpected push selection falls back to the local file.
+        SourceKind::File | SourceKind::Push => Arc::new(ClawlightFileSource::from_config(config)),
+        SourceKind::Hub => Arc::new(agentlight_hub_client::HubSource::new(
+            agentlight_hub_client::HubConfig {
+                id: agentlight_hub_client::DEFAULT_HUB_ID.to_string(),
+                base_url: config.hub_url.clone(),
+                token: config.hub_token.clone(),
+                poll_ms: config.poll_ms,
+            },
+        )),
+    }
+}
+
+/// Rebuild the source for the current config. `set_source` drops the previous
+/// adapter (stopping its watcher/poll thread) even when the new one has a
+/// different id, as when switching between the file and hub sources.
+fn restart_source(engine: &Engine, config: &Config) {
+    engine.set_source(build_source(config));
+}
+
+/// Whether a config change alters where or how fast state is read, so the
+/// source adapter must be rebuilt. Display-only fields (yellow mode, retention,
+/// notifications) do not need a new source.
+fn source_fields_changed(previous: &Config, config: &Config) -> bool {
+    previous.source_kind != config.source_kind
+        || previous.state_path != config.state_path
+        || previous.hub_url != config.hub_url
+        || previous.hub_token != config.hub_token
+        || previous.poll_ms != config.poll_ms
+}
+
+fn parse_server_bind(value: &str) -> Result<SocketAddr, String> {
+    value
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid server bind \"{value}\": {error}"))
+}
+
+/// Start the embedded hub over the shared engine and return its handle. Does
+/// not touch the current handle or emit an event; callers decide what to do on
+/// success or failure so a failed start cannot drop a working server.
+fn start_server_handle(
+    state: &AppState,
+    config: &Config,
+) -> Result<agentlight_server::ServerHandle, String> {
+    let bind = parse_server_bind(&config.server_bind)?;
+    let mut server_config = agentlight_server::ServerConfig::new(
+        bind,
+        config.server_token_hash.clone(),
+        config.clone(),
+    );
+    // Keep paired devices beside the config so they survive server restarts.
+    server_config.devices_path = state
+        .config_path
+        .parent()
+        .map(|dir| dir.join("devices.json"));
+    let handle = agentlight_server::start((*state.engine).clone(), server_config)
+        .map_err(|error| format!("could not start server: {error}"))?;
+    eprintln!(
+        "agentlight: embedded server listening on http://{}/",
+        handle.addr()
+    );
+    Ok(handle)
+}
+
+/// Stop the embedded hub if one is running.
+fn stop_server(state: &AppState) {
+    if let Some(mut handle) = state.server.lock().unwrap().take() {
+        handle.shutdown();
+    }
+}
+
+fn emit_server_changed(app: &AppHandle) {
+    let _ = app.emit("server-changed", ());
+}
+
+/// Apply a server start/stop/restart described by `config`, keeping the
+/// persisted flag and the live handle consistent.
+///
+/// A failed start is never fatal to a running server: when the bind address is
+/// unchanged the old handle is restored on a failed restart, and when the
+/// address changes the new server is bound before the old one is stopped. The
+/// caller persists the config only if this returns `Ok`, so the on-disk
+/// `server_enabled` never changes on a failed start.
+fn apply_server_change(
+    app: &AppHandle,
+    state: &AppState,
+    previous: &Config,
+    config: &Config,
+) -> Result<(), String> {
+    let changed = previous.server_enabled != config.server_enabled
+        || previous.server_bind != config.server_bind
+        || previous.server_token_hash != config.server_token_hash;
+    // Also start when the config wants the server but no handle is live (for
+    // example a failed startup). Otherwise Start would be a no-op.
+    let running = state.server.lock().unwrap().is_some();
+    if !changed && running == config.server_enabled {
+        return Ok(());
+    }
+
+    if !config.server_enabled {
+        stop_server(state);
+        emit_server_changed(app);
+        return Ok(());
+    }
+
+    // Restarting on the same address must free it before rebinding, so keep the
+    // previous config to restore the server if the new one cannot bind.
+    let same_bind_live = running && previous.server_bind == config.server_bind;
+    if same_bind_live {
+        stop_server(state);
+        match start_server_handle(state, config) {
+            Ok(server) => {
+                *state.server.lock().unwrap() = Some(server);
+                emit_server_changed(app);
+                Ok(())
+            }
+            Err(error) => {
+                match start_server_handle(state, previous) {
+                    Ok(server) => *state.server.lock().unwrap() = Some(server),
+                    Err(restore_error) => eprintln!(
+                        "agentlight: could not restore server after a failed restart: {restore_error}"
+                    ),
+                }
+                emit_server_changed(app);
+                Err(error)
+            }
+        }
+    } else {
+        // A different address, or nothing running: bind first so a failure
+        // leaves any existing server untouched.
+        match start_server_handle(state, config) {
+            Ok(server) => {
+                stop_server(state);
+                *state.server.lock().unwrap() = Some(server);
+                emit_server_changed(app);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Forward an engine update: the wire snapshot to the frontend, and any
+/// notification edges to a desktop toast.
+fn emit_update(app: &AppHandle, update: &Update) {
+    let _ = app.emit("state-changed", &update.snapshot);
+    if update.notifications.is_empty() {
+        return;
+    }
+    use tauri_plugin_notification::NotificationExt;
+
+    for notification in &update.notifications {
+        let _ = app
+            .notification()
+            .builder()
+            .title(notification.title.as_str())
+            .body(notification.body.as_str())
+            .show();
+    }
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -297,108 +547,6 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     }
 }
 
-fn file_signature(path: &Path) -> Option<(u64, u128)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()?
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    Some((metadata.len(), modified))
-}
-
-/// Rebuild the snapshot and push it to the frontend, with edge-triggered
-/// notifications on the side.
-fn emit_snapshot(app: &AppHandle) {
-    let config = current_config(&app.state::<AppState>());
-    let snapshot = agentlight_core::build_snapshot(&config.state_file(), &config);
-    maybe_notify(app, &config, &snapshot);
-    let _ = app.emit("state-changed", &snapshot);
-}
-
-fn maybe_notify(app: &AppHandle, config: &Config, snapshot: &Snapshot) {
-    if !config.notifications {
-        return;
-    }
-    use tauri_plugin_notification::NotificationExt;
-
-    let state = app.state::<AppState>();
-    let mut previous = state.previous.lock().unwrap();
-
-    for session in &snapshot.sessions {
-        if session.status == Status::NeedsHelp
-            && previous.get(&session.session_id) != Some(&Status::NeedsHelp)
-        {
-            let _ = app
-                .notification()
-                .builder()
-                .title("AgentLight")
-                .body(format!("\"{}\" needs help", session.name))
-                .show();
-        }
-    }
-
-    previous.clear();
-    for session in &snapshot.sessions {
-        previous.insert(session.session_id.clone(), session.status);
-    }
-}
-
-/// Bump the generation and start a fresh watcher for the current config.
-fn restart_watcher(app: &AppHandle) {
-    app.state::<AppState>()
-        .generation
-        .fetch_add(1, Ordering::SeqCst);
-    spawn_watcher(app.clone());
-}
-
-/// Watch the state file. `notify` gives instant updates where the filesystem
-/// supports it; a `recv_timeout` poll is the backstop for network/bind-mount
-/// filesystems (for example a Windows host reading a container volume) that
-/// emit no events at all.
-fn spawn_watcher(app: AppHandle) {
-    let (config, generation) = {
-        let state = app.state::<AppState>();
-        let config = state.config.lock().unwrap().clone();
-        let generation = state.generation.load(Ordering::SeqCst);
-        (config, generation)
-    };
-    let path = config.state_file();
-    let poll = config.poll_ms.max(250);
-
-    std::thread::spawn(move || {
-        let directory = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let mut watcher = notify::recommended_watcher(move |_| {
-            let _ = tx.send(());
-        })
-        .ok();
-        if let Some(watcher) = watcher.as_mut() {
-            let _ = watcher.watch(&directory, notify::RecursiveMode::NonRecursive);
-        }
-
-        let mut last = file_signature(&path);
-        emit_snapshot(&app);
-
-        loop {
-            if app.state::<AppState>().generation.load(Ordering::SeqCst) != generation {
-                break;
-            }
-            let _ = rx.recv_timeout(Duration::from_millis(poll));
-            let signature = file_signature(&path);
-            if signature != last {
-                last = signature;
-                emit_snapshot(&app);
-            }
-        }
-    });
-}
-
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -436,6 +584,16 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Whether the config file on disk still carries the legacy plaintext admin
+/// token. Used once at startup to persist the migrated, hashed config.
+fn legacy_plaintext_token_present(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.get("server_token").cloned())
+        .is_some_and(|token| token.is_string())
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -443,8 +601,15 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let config_path = agentlight_core::config_path();
     let config = agentlight_core::load_config(&config_path);
+    if legacy_plaintext_token_present(&config_path) {
+        // `load_config` already hashed the plaintext into `server_token_hash`;
+        // write the sanitized config back so the file no longer holds the
+        // secret. Best-effort: a read-only config dir keeps the old file.
+        let _ = agentlight_core::save_config(&config_path, &config);
+    }
+    let engine = Arc::new(Engine::new(config.clone()));
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // Must be registered first so a second launch forwards to this one.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
@@ -463,14 +628,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_notification::init())
         .manage(AppState {
+            engine: engine.clone(),
             config: Mutex::new(config.clone()),
             config_path,
-            generation: AtomicU64::new(0),
-            previous: Mutex::new(HashMap::new()),
             visible: AtomicBool::new(true),
             window_mode: Mutex::new("mini".to_string()),
             mini_anchor: Mutex::new(None),
             applied_position: Mutex::new(None),
+            server: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -478,6 +643,9 @@ pub fn run() {
             set_config,
             clear_session,
             clear_done,
+            get_server_status,
+            regenerate_pairing,
+            revoke_device,
             pick_state_file,
             set_always_on_top,
             resize_window,
@@ -494,7 +662,24 @@ pub fn run() {
             apply_autostart(handle, config.start_at_login);
 
             setup_tray(handle)?;
-            spawn_watcher(handle.clone());
+
+            // Register the update sink before starting the source so the
+            // initial file change is delivered on startup.
+            let sink_handle = handle.clone();
+            engine.subscribe(Arc::new(move |update: Update| {
+                emit_update(&sink_handle, &update);
+            }));
+            engine.add_source(build_source(&config));
+
+            if config.server_enabled {
+                let state = handle.state::<AppState>();
+                match start_server_handle(&state, &config) {
+                    // The persisted flag is the user's preference and is left
+                    // untouched when a startup bind fails; next launch retries.
+                    Ok(server) => *state.server.lock().unwrap() = Some(server),
+                    Err(error) => eprintln!("agentlight: embedded server not started: {error}"),
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -508,6 +693,12 @@ pub fn run() {
                     .store(false, Ordering::SeqCst);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running AgentLight");
+        .build(tauri::generate_context!())
+        .expect("error while building AgentLight");
+
+    app.run(|app_handle, event| {
+        if let RunEvent::Exit = event {
+            stop_server(&app_handle.state::<AppState>());
+        }
+    });
 }

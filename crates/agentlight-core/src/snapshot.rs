@@ -2,13 +2,13 @@
 //! the Tauri layer) so it is unit-testable on any host.
 
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::session::{load_sessions, DisplaySession, DONE_RETENTION};
 use crate::state::{self, aggregate, reap_stale, HookState, Load, STALE_AFTER_HOURS};
 
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Counts {
     pub needs_help: usize,
     pub active: usize,
@@ -17,13 +17,21 @@ pub struct Counts {
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Whether the state file was read and parsed. `false` means missing or
     /// unreadable; the UI shows a waiting/error state instead of stale data.
     pub ok: bool,
     pub error: Option<String>,
     pub state_path: String,
+    /// Backing-store kind for the active source: `"file"` or `"hub"`. Additive;
+    /// older payloads omit it and are treated as `"file"`.
+    #[serde(default = "default_source_kind")]
+    pub source_kind: String,
+    /// Human-readable location for the active source: a file path or hub URL.
+    /// Additive; older payloads omit it.
+    #[serde(default)]
+    pub source_label: String,
     pub exists: bool,
     /// `red` | `orange` | `green` | `gray`.
     pub aggregate: String,
@@ -32,6 +40,10 @@ pub struct Snapshot {
     /// Echoed so the UI can render the active mode without a second call.
     pub yellow_mode: String,
     pub generated_at: String,
+}
+
+fn default_source_kind() -> String {
+    "file".to_string()
 }
 
 fn count(state: &HookState) -> Counts {
@@ -58,6 +70,8 @@ pub fn build_snapshot_at(
         ok: false,
         error: None,
         state_path: state_path.to_string_lossy().to_string(),
+        source_kind: "file".to_string(),
+        source_label: state_path.to_string_lossy().to_string(),
         exists: state_path.exists(),
         aggregate: "gray".to_string(),
         counts: Counts::default(),

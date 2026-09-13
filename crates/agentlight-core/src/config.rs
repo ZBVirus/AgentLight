@@ -7,8 +7,29 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::state::{self, Error, Result};
+
+/// Default bind address for the opt-in embedded hub. Loopback; LAN exposure is
+/// an explicit opt-in.
+pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:8787";
+
+/// Default remote hub address. Matches `agentlight-server`'s loopback default.
+pub const DEFAULT_HUB_URL: &str = "http://127.0.0.1:8787";
+
+/// Where the desktop reads session state from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A local clawlight `state.json`. Default.
+    #[default]
+    File,
+    /// A remote AgentLight hub over HTTP.
+    Hub,
+    /// Events pushed to an AgentLight hub rather than read from a file.
+    Push,
+}
 
 /// How an idle (`inactive`) session colors the aggregate when others still
 /// work. Mirrors clawlight's `YellowMode`.
@@ -50,10 +71,35 @@ pub struct Config {
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
     pub show_done: bool,
+    /// Where session state comes from: `file` (default) or `hub`.
+    pub source_kind: SourceKind,
+    /// Base URL of the remote hub, e.g. `http://127.0.0.1:8787`. Used only when
+    /// [`source_kind`](Self::source_kind) is [`SourceKind::Hub`].
+    pub hub_url: String,
+    /// Bearer token sent to the remote hub, if one is required.
+    ///
+    /// This is a **client credential**: the hub validates it, so unlike the
+    /// server's admin token it must be sent verbatim and cannot be stored as a
+    /// hash. It therefore stays plaintext in `config.json`; protect that file
+    /// as you would any secret. It is never logged.
+    pub hub_token: Option<String>,
     /// Fire a desktop notification when a session needs help.
     pub notifications: bool,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
+    /// Serve the engine over HTTP on the LAN. Off by default.
+    pub server_enabled: bool,
+    /// Address the embedded server binds. Defaults to
+    /// [`DEFAULT_SERVER_BIND`] (`127.0.0.1:8787`).
+    pub server_bind: String,
+    /// SHA-256 hex of the admin bearer token for the embedded server. `None`
+    /// disables admin auth. The plaintext is never persisted.
+    pub server_token_hash: Option<String>,
+    /// Legacy plaintext admin token. Read-only: [`Config::sanitized`] hashes it
+    /// into [`server_token_hash`](Self::server_token_hash) and clears it, and it
+    /// is never serialized back to disk.
+    #[serde(default, skip_serializing)]
+    pub server_token: Option<String>,
 }
 
 impl Default for Config {
@@ -65,10 +111,30 @@ impl Default for Config {
             collapse_style: CollapseStyle::Single,
             poll_ms: 1500,
             show_done: false,
+            source_kind: SourceKind::File,
+            hub_url: DEFAULT_HUB_URL.to_string(),
+            hub_token: None,
             notifications: false,
             start_at_login: false,
+            server_enabled: false,
+            server_bind: DEFAULT_SERVER_BIND.to_string(),
+            server_token_hash: None,
+            server_token: None,
         }
     }
+}
+
+/// SHA-256 hex of a token. Identical to the server's implementation so a config
+/// migrated here compares equal to one the server hashed.
+pub fn hash_token(token: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(token.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 impl Config {
@@ -81,6 +147,36 @@ impl Config {
                 self.state_path = None;
             }
         }
+        self.hub_url = self.hub_url.trim().to_string();
+        if self.hub_url.is_empty() {
+            self.hub_url = DEFAULT_HUB_URL.to_string();
+        }
+        // The hub token is a client credential and cannot be hashed, so it is
+        // kept plaintext; only trim it and drop an empty value.
+        self.hub_token = self
+            .hub_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string);
+        self.server_bind = self.server_bind.trim().to_string();
+        if self.server_bind.is_empty() {
+            self.server_bind = DEFAULT_SERVER_BIND.to_string();
+        }
+        // Migrate a legacy plaintext token to its hash, then drop the plaintext
+        // so it cannot be serialized back to disk.
+        if let Some(token) = self.server_token.take() {
+            let token = token.trim();
+            if !token.is_empty() {
+                self.server_token_hash = Some(hash_token(token));
+            }
+        }
+        self.server_token_hash = self
+            .server_token_hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|hash| !hash.is_empty())
+            .map(str::to_string);
         self
     }
 
@@ -135,6 +231,156 @@ mod tests {
         assert_eq!(c.collapse_style, CollapseStyle::Single);
         assert_eq!(c.poll_ms, 1500);
         assert!(c.state_path.is_none());
+        assert_eq!(
+            c.source_kind,
+            SourceKind::File,
+            "the file source is default"
+        );
+        assert_eq!(c.hub_url, DEFAULT_HUB_URL);
+        assert!(c.hub_token.is_none());
+        assert!(!c.server_enabled, "the embedded hub is off by default");
+        assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
+        assert!(c.server_token_hash.is_none());
+        assert!(c.server_token.is_none());
+    }
+
+    #[test]
+    fn server_fields_parse_and_sanitize() {
+        let c: Config = serde_json::from_str(
+            r#"{"server_enabled":true,"server_bind":"  0.0.0.0:9000  ","server_token":"  s3cret  "}"#,
+        )
+        .unwrap();
+        assert!(c.server_enabled);
+        assert_eq!(c.server_bind.trim(), "0.0.0.0:9000");
+        assert_eq!(c.server_token.as_deref(), Some("  s3cret  "));
+        let c = c.sanitized();
+        assert_eq!(c.server_bind, "0.0.0.0:9000");
+        assert_eq!(c.server_token_hash, Some(hash_token("s3cret")));
+        assert!(c.server_token.is_none(), "legacy plaintext is dropped");
+
+        let c = Config {
+            server_bind: "   ".to_string(),
+            server_token: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert_eq!(c.server_bind, DEFAULT_SERVER_BIND);
+        assert!(c.server_token.is_none());
+        assert!(c.server_token_hash.is_none());
+    }
+
+    #[test]
+    fn server_enabled_defaults_off_and_true_roundtrips() {
+        assert!(
+            !Config::default().server_enabled,
+            "serving to other devices is off unless turned on"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        let on = Config {
+            server_enabled: true,
+            ..Config::default()
+        };
+        save(&path, &on).unwrap();
+        assert!(
+            load(&path).server_enabled,
+            "an opt-in must survive a save/load round trip"
+        );
+
+        let off = Config {
+            server_enabled: false,
+            ..Config::default()
+        };
+        save(&path, &off).unwrap();
+        assert!(
+            !load(&path).server_enabled,
+            "an opt-out must survive a save/load round trip"
+        );
+    }
+
+    #[test]
+    fn source_fields_parse_and_sanitize() {
+        let c: Config = serde_json::from_str(
+            r#"{"source_kind":"hub","hub_url":"  http://10.0.0.5:9999  ","hub_token":"  s3cret  "}"#,
+        )
+        .unwrap();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "  http://10.0.0.5:9999  ");
+        assert_eq!(c.hub_token.as_deref(), Some("  s3cret  "));
+        let c = c.sanitized();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "http://10.0.0.5:9999");
+        assert_eq!(c.hub_token.as_deref(), Some("s3cret"));
+
+        let c = Config {
+            hub_url: "   ".to_string(),
+            hub_token: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert_eq!(c.hub_url, DEFAULT_HUB_URL);
+        assert!(c.hub_token.is_none());
+    }
+
+    #[test]
+    fn hub_token_roundtrips_as_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        let c = Config {
+            source_kind: SourceKind::Hub,
+            hub_url: "http://hub.local:8787".to_string(),
+            hub_token: Some("client-secret".to_string()),
+            ..Config::default()
+        };
+        save(&path, &c).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("client-secret"),
+            "a client credential cannot be hashed and is stored plaintext"
+        );
+        assert_eq!(load(&path), c);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let c: Config = serde_json::from_str(
+            r#"{"source_kind":"hub","hub_url":"http://h:1","future_field":42}"#,
+        )
+        .unwrap();
+        assert_eq!(c.source_kind, SourceKind::Hub);
+        assert_eq!(c.hub_url, "http://h:1");
+        assert!(c.always_on_top);
+    }
+
+    #[test]
+    fn legacy_plaintext_token_is_hashed_and_never_serialized() {
+        let c: Config = serde_json::from_str(r#"{"server_token":"hunter2"}"#).unwrap();
+        assert_eq!(c.server_token.as_deref(), Some("hunter2"));
+        let c = c.sanitized();
+        assert_eq!(c.server_token_hash, Some(hash_token("hunter2")));
+        assert!(c.server_token.is_none());
+
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("hunter2"), "plaintext must not be written");
+        assert!(json.contains(&hash_token("hunter2")));
+    }
+
+    #[test]
+    fn load_migrates_legacy_plaintext_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AgentLight").join("config.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"server_enabled":true,"server_token":"hunter2"}"#).unwrap();
+
+        let config = load(&path);
+        assert_eq!(config.server_token_hash, Some(hash_token("hunter2")));
+        assert!(config.server_token.is_none());
+
+        save(&path, &config).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("hunter2"), "plaintext must not remain: {raw}");
+        assert!(raw.contains(&hash_token("hunter2")));
     }
 
     #[test]

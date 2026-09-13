@@ -4,7 +4,7 @@
 //! of the shared state file does not have those indexes).
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::{HookState, Status};
 
@@ -12,7 +12,9 @@ use crate::state::{HookState, Status};
 /// clawlight.
 pub const DONE_RETENTION: usize = 5;
 
-#[derive(Debug, Clone, Serialize)]
+/// The hub wire contract is this exact type; `Deserialize` lets remote clients
+/// parse `GET /api/v1/snapshot` back into the canonical shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplaySession {
     pub session_id: String,
     pub name: String,
@@ -36,7 +38,7 @@ pub fn harness_badge(harness: &str) -> String {
     trimmed.chars().take(2).collect::<String>().to_lowercase()
 }
 
-fn project_short_name(project_path: &str) -> String {
+pub fn project_short_name(project_path: &str) -> String {
     if project_path.is_empty() {
         return "unknown".to_string();
     }
@@ -122,6 +124,24 @@ fn parse_ts(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Map a normalized [`crate::source::Session`] back to the display row the
+/// frontend consumes. The engine calls this after merging and retention.
+pub fn display_session(model: &crate::source::Session) -> DisplaySession {
+    let project_path = model.project.clone().unwrap_or_default();
+    DisplaySession {
+        session_id: model.key.session_id.clone(),
+        name: model.name.clone(),
+        status: model.status,
+        status_label: model.status.label().to_string(),
+        project_name: project_short_name(&project_path),
+        project_path,
+        harness: model.harness.clone(),
+        harness_badge: model.badge.clone(),
+        last_updated: model.last_updated.clone(),
+        is_done: model.is_done,
+    }
 }
 
 #[cfg(test)]

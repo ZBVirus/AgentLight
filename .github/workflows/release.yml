@@ -45,6 +45,9 @@ jobs:
         shell: pwsh
         run: Copy-Item target/release/agentlight.exe "target/release/AgentLight_${{ github.event.inputs.tag || github.ref_name }}_x64_portable.exe"
 
+      - name: Build server
+        run: cargo build -p agentlight-server --release
+
       # Raw .exe downloads trip Chrome Safe Browsing for unsigned, low-reputation
       # binaries. Zips download cleanly, so ship both and a checksum file.
       - name: Package zips and checksums
@@ -52,6 +55,7 @@ jobs:
         run: |
           $tag = "${{ github.event.inputs.tag || github.ref_name }}"
           Compress-Archive -Path target/release/agentlight.exe -DestinationPath "target/release/agentlight-$tag-windows-x64.zip" -Force
+          Compress-Archive -Path target/release/agentlight-server.exe -DestinationPath "target/release/agentlight-server-$tag-windows-x64.zip" -Force
           $nsis = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
           Compress-Archive -Path $nsis.FullName -DestinationPath "target/release/agentlight-$tag-windows-x64-setup.zip" -Force
           $files = @(Get-ChildItem target/release/*.exe) + @(Get-ChildItem target/release/*.zip)

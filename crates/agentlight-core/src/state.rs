@@ -249,12 +249,17 @@ impl Aggregate {
     }
 }
 
-pub fn aggregate(state: &HookState, yellow_mode: YellowMode) -> Aggregate {
+/// Aggregate a stream of statuses. Shared by the clawlight [`HookState`] path
+/// and the normalized engine path so the rule lives in exactly one place.
+pub fn aggregate_statuses(
+    statuses: impl IntoIterator<Item = Status>,
+    yellow_mode: YellowMode,
+) -> Aggregate {
     let mut needs_help = 0usize;
     let mut active = 0usize;
     let mut inactive = 0usize;
-    for session in state.sessions.values() {
-        match session.status {
+    for status in statuses {
+        match status {
             Status::NeedsHelp => needs_help += 1,
             Status::Active => active += 1,
             Status::Inactive => inactive += 1,
@@ -274,7 +279,14 @@ pub fn aggregate(state: &HookState, yellow_mode: YellowMode) -> Aggregate {
     }
 }
 
-/// Default state path, in resolution order: `AGENTLIGHT_STATE_PATH`, then the
+pub fn aggregate(state: &HookState, yellow_mode: YellowMode) -> Aggregate {
+    aggregate_statuses(
+        state.sessions.values().map(|session| session.status),
+        yellow_mode,
+    )
+}
+
+/// Default state path, in resolution order: `AGENTLIGHT_STATE_FILE`, then the
 /// config's `state_path`, then `~/.claude/clawlight/state.json`.
 pub fn default_state_path() -> PathBuf {
     if let Some(path) = env_state_path() {
@@ -288,7 +300,7 @@ pub fn default_state_path() -> PathBuf {
 }
 
 fn env_state_path() -> Option<PathBuf> {
-    std::env::var_os("AGENTLIGHT_STATE_PATH")
+    std::env::var_os("AGENTLIGHT_STATE_FILE")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
 }

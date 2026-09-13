@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>AgentLight</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #14161d;
+        color: #e8eaf0;
+        font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 20px 16px;
+        border-bottom: 1px solid #3a3f4d;
+      }
+      .light {
+        flex: none;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: #5c6370;
+        transition: background 0.25s ease, box-shadow 0.25s ease;
+      }
+      .light.red {
+        background: #e06c75;
+        box-shadow: 0 0 20px rgba(224, 108, 117, 0.75);
+      }
+      .light.orange {
+        background: #e5c07b;
+        box-shadow: 0 0 20px rgba(229, 192, 123, 0.7);
+      }
+      .light.green {
+        background: #98c379;
+        box-shadow: 0 0 20px rgba(152, 195, 121, 0.7);
+      }
+      h1 {
+        margin: 0;
+        font-size: 18px;
+      }
+      #status {
+        margin-top: 2px;
+        color: #8a8d98;
+        font-size: 13px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 8px 12px 24px;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 12px;
+        margin-bottom: 8px;
+        border-radius: 10px;
+        background: #1d2029;
+        border: 1px solid #2b2f3a;
+      }
+      .dot {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #5c6370;
+      }
+      .dot.active {
+        background: #98c379;
+      }
+      .dot.inactive {
+        background: #e5c07b;
+      }
+      .dot.needs_help {
+        background: #e06c75;
+      }
+      .name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .meta {
+        flex: none;
+        color: #8a8d98;
+        font-size: 13px;
+      }
+      .empty {
+        padding: 0 16px;
+        color: #8a8d98;
+      }
+      .pair {
+        max-width: 420px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      .pair h2 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+      .pair p.hint {
+        margin: 0 0 8px;
+        color: #8a8d98;
+        font-size: 14px;
+      }
+      .pair label {
+        display: block;
+        margin: 16px 0 6px;
+        color: #b9bcc8;
+        font-size: 14px;
+      }
+      .pair input {
+        width: 100%;
+        padding: 12px;
+        color: #e8eaf0;
+        background: #1d2029;
+        border: 1px solid #3a3f4d;
+        border-radius: 10px;
+        font: inherit;
+      }
+      .pair input:focus {
+        outline: 2px solid #61afef;
+        outline-offset: 1px;
+      }
+      #pair-code {
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+      }
+      #pair-button {
+        width: 100%;
+        margin-top: 18px;
+        padding: 13px;
+        color: #14161d;
+        background: #98c379;
+        border: 0;
+        border-radius: 10px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #pair-button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      #pair-error {
+        margin: 14px 0 0;
+        color: #e06c75;
+        font-size: 14px;
+      }
+      #forget-bar {
+        padding: 8px 16px 24px;
+        text-align: center;
+      }
+      #forget {
+        padding: 10px;
+        color: #8a8d98;
+        background: none;
+        border: 0;
+        font: inherit;
+        font-size: 14px;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="light" id="light" hidden></div>
+      <div>
+        <h1>AgentLight</h1>
+        <div id="status" hidden>connecting…</div>
+      </div>
+    </header>
+
+    <form class="pair" id="pair-panel" hidden>
+      <h2>Pair this device</h2>
+      <p class="hint">Enter the pairing code shown on the host.</p>
+      <label for="pair-code">Pairing code</label>
+      <input
+        id="pair-code"
+        name="code"
+        type="text"
+        maxlength="8"
+        autocomplete="one-time-code"
+        autocapitalize="characters"
+        autocorrect="off"
+        spellcheck="false"
+        placeholder="XXXXXXXX"
+        required
+      />
+      <label for="pair-name">Device name</label>
+      <input id="pair-name" name="device_name" type="text" value="My device" />
+      <button id="pair-button" type="submit">Pair</button>
+      <p id="pair-error" role="alert" hidden></p>
+    </form>
+
+    <div id="state" hidden>
+      <ul id="sessions"></ul>
+      <p class="empty" id="empty" hidden>No sessions.</p>
+    </div>
+
+    <div id="forget-bar" hidden>
+      <button id="forget" type="button">Forget this device</button>
+    </div>
+
+    <script>
+      (function () {
+        "use strict";
+        var TOKEN_KEY = "agentlight.token";
+        var CODE_LENGTH = 8;
+        var DEFAULT_NAME = "My device";
+
+        var queryToken = new URLSearchParams(location.search).get("token") || "";
+        var storedToken = "";
+        try {
+          storedToken = localStorage.getItem(TOKEN_KEY) || "";
+        } catch (error) {
+          storedToken = "";
+        }
+        // A token in the URL wins over anything remembered locally; it means
+        // the page was opened with an explicit credential and needs no pairing.
+        var token = queryToken || storedToken;
+        var lastRevision = -1;
+        var events = null;
+
+        var light = document.getElementById("light");
+        var status = document.getElementById("status");
+        var list = document.getElementById("sessions");
+        var empty = document.getElementById("empty");
+        var state = document.getElementById("state");
+        var forgetBar = document.getElementById("forget-bar");
+        var forgetButton = document.getElementById("forget");
+        var panel = document.getElementById("pair-panel");
+        var codeInput = document.getElementById("pair-code");
+        var nameInput = document.getElementById("pair-name");
+        var pairButton = document.getElementById("pair-button");
+        var errorLine = document.getElementById("pair-error");
+
+        function headers() {
+          return token ? { Authorization: "Bearer " + token } : {};
+        }
+
+        function render(snapshot) {
+          if (!snapshot) return;
+          light.className = "light " + (snapshot.aggregate || "gray");
+          var counts = snapshot.counts || {};
+          status.textContent = snapshot.ok
+            ? snapshot.aggregate + " · " + (counts.total || 0) + " sessions"
+            : snapshot.error || "waiting for clawlight…";
+          var sessions = snapshot.sessions || [];
+          empty.hidden = sessions.length > 0;
+          list.textContent = "";
+          sessions.forEach(function (s) {
+            var li = document.createElement("li");
+            var dot = document.createElement("span");
+            dot.className = "dot " + (s.status || "");
+            var name = document.createElement("span");
+            name.className = "name";
+            name.textContent = s.name || s.session_id || "?";
+            var meta = document.createElement("span");
+            meta.className = "meta";
+            meta.textContent = s.status_label || s.status || "";
+            li.appendChild(dot);
+            li.appendChild(name);
+            li.appendChild(meta);
+            list.appendChild(li);
+          });
+        }
+
+        function refresh() {
+          return fetch("/api/v1/snapshot", { headers: headers() })
+            .then(function (response) {
+              if (!response.ok) throw new Error("HTTP " + response.status);
+              return response.json();
+            })
+            .then(render);
+        }
+
+        function showState() {
+          panel.hidden = true;
+          state.hidden = false;
+          light.hidden = false;
+          status.hidden = false;
+          forgetBar.hidden = false;
+        }
+
+        function showPairing(message) {
+          state.hidden = true;
+          light.hidden = true;
+          status.hidden = true;
+          forgetBar.hidden = true;
+          panel.hidden = false;
+          setError(message || "");
+          codeInput.focus();
+        }
+
+        function setError(message) {
+          errorLine.textContent = message;
+          errorLine.hidden = !message;
+        }
+
+        function connect() {
+          if (events) events.close();
+          events = new EventSource(
+            "/api/v1/events" + (token ? "?token=" + encodeURIComponent(token) : "")
+          );
+          events.addEventListener("update", function (event) {
+            var update = JSON.parse(event.data);
+            if (update.revision <= lastRevision) return;
+            lastRevision = update.revision;
+            render(update.snapshot);
+          });
+          events.addEventListener("lagged", function () {
+            refresh().catch(function () {});
+          });
+          events.onerror = function () {
+            status.textContent = "disconnected — retrying…";
+          };
+        }
+
+        function start() {
+          showState();
+          lastRevision = -1;
+          refresh().catch(function (error) {
+            status.textContent = "error: " + error.message;
+          });
+          connect();
+        }
+
+        function submitPair(event) {
+          event.preventDefault();
+          var code = codeInput.value.trim().toUpperCase();
+          var deviceName = nameInput.value.trim() || DEFAULT_NAME;
+          if (code.length !== CODE_LENGTH) {
+            setError("The pairing code is " + CODE_LENGTH + " characters.");
+            codeInput.focus();
+            return;
+          }
+          setError("");
+          pairButton.disabled = true;
+          pairButton.textContent = "Pairing…";
+          fetch("/api/v1/pair", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code: code, device_name: deviceName }),
+          })
+            .then(function (response) {
+              return response
+                .json()
+                .catch(function () {
+                  return {};
+                })
+                .then(function (body) {
+                  if (!response.ok) {
+                    var message = body && body.error && body.error.message;
+                    throw new Error(message || "code expired or wrong");
+                  }
+                  return body;
+                });
+            })
+            .then(function (body) {
+              if (!body || !body.token) {
+                throw new Error("pairing response was missing a token");
+              }
+              token = body.token;
+              try {
+                localStorage.setItem(TOKEN_KEY, token);
+              } catch (error) {
+                // Storage may be unavailable (private mode); the session still
+                // works until the page is reloaded.
+              }
+              codeInput.value = "";
+              start();
+            })
+            .catch(function (error) {
+              setError(error.message || "code expired or wrong");
+            })
+            .then(function () {
+              pairButton.disabled = false;
+              pairButton.textContent = "Pair";
+            });
+        }
+
+        function forget() {
+          try {
+            localStorage.removeItem(TOKEN_KEY);
+          } catch (error) {
+            // Nothing to clear.
+          }
+          token = "";
+          lastRevision = -1;
+          if (events) {
+            events.close();
+            events = null;
+          }
+          list.textContent = "";
+          light.className = "light";
+          showPairing("");
+        }
+
+        panel.addEventListener("submit", submitPair);
+        codeInput.addEventListener("input", function () {
+          var upper = codeInput.value.toUpperCase();
+          if (upper !== codeInput.value) codeInput.value = upper;
+        });
+        forgetButton.addEventListener("click", forget);
+
+        if (token) {
+          start();
+        } else {
+          showPairing("");
+        }
+      })();
+    </script>
+  </body>
+</html>

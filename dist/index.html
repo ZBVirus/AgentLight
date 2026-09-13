@@ -17,7 +17,7 @@
           <button class="icon-btn" id="btn-pin" title="Toggle always on top" aria-label="Toggle always on top">
             <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M9.5 1.5 14.5 6.5 12.4 7.1 9.6 9.9 10 13.6 8.6 15 5 11.4 2 14.4 1.6 14 4.6 11 1 7.4 2.4 6 6.1 6.4 8.9 3.6Z"/></svg>
           </button>
-          <button class="icon-btn" id="btn-min" title="Minimize" aria-label="Minimize">
+          <button class="icon-btn" id="btn-min" title="Collapse" aria-label="Collapse">
             <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="3" y="7.4" width="10" height="1.2" rx="0.6"/></svg>
           </button>
           <button class="icon-btn close" id="btn-hide" title="Hide to tray" aria-label="Hide to tray">
@@ -62,12 +62,33 @@
           </div>
           <form class="form" id="settings-form">
             <label class="field">
+              <span>Source</span>
+              <select id="set-source-kind">
+                <option value="file">Local state file</option>
+                <option value="hub">Remote AgentLight hub</option>
+              </select>
+              <small class="hint">Where sessions are read from. The embedded server below is independent: this widget can host a hub and read from one at the same time.</small>
+            </label>
+
+            <label class="field" id="set-file-fields">
               <span>State file</span>
               <div class="row">
                 <input type="text" id="set-state-path" placeholder="C:\Users\you\clawlight\state.json" />
                 <button type="button" class="ghost" id="btn-browse">Browse</button>
               </div>
             </label>
+
+            <div id="set-hub-fields">
+              <label class="field">
+                <span>Hub URL</span>
+                <input type="text" id="set-hub-url" placeholder="http://127.0.0.1:8787" />
+              </label>
+              <label class="field">
+                <span>Hub token (optional)</span>
+                <input type="password" id="set-hub-token" placeholder="Bearer token required by the hub" />
+                <small class="hint">Stored in plaintext in config.json because it must be sent to the hub; unlike the server admin token it cannot be hashed.</small>
+              </label>
+            </div>
 
             <label class="field inline">
               <input type="checkbox" id="set-top" />
@@ -108,6 +129,45 @@
               <input type="number" id="set-poll" min="250" max="60000" step="250" />
             </label>
 
+            <div class="field">
+              <span>Serve to other devices</span>
+              <div class="row">
+                <button type="button" class="primary" id="btn-server-toggle">Start server</button>
+                <small class="hint" id="set-server-status">Stopped</small>
+              </div>
+            </div>
+            <label class="field">
+              <span>Bind address</span>
+              <input type="text" id="set-server-bind" placeholder="127.0.0.1:8787" />
+            </label>
+            <label class="field">
+              <span>Admin token (optional)</span>
+              <div class="row">
+                <input type="text" id="set-server-token" placeholder="Type a new secret to set one" />
+                <button type="button" class="ghost" id="btn-server-token-clear">Clear</button>
+              </div>
+              <small class="hint" id="set-server-token-hint"></small>
+            </label>
+            <div class="field">
+              <span>Open on another device</span>
+              <input type="text" id="set-server-url" readonly />
+              <small class="hint" id="set-server-url-hint">The device must be on the same network. Use 0.0.0.0:8787 to accept LAN connections.</small>
+            </div>
+
+            <div class="field">
+              <span>Pairing code</span>
+              <div class="pair-code" id="set-pair-code">—</div>
+              <div class="pair-actions">
+                <small class="hint" id="set-pair-hint"></small>
+                <button type="button" class="ghost" id="btn-new-code">New code</button>
+              </div>
+            </div>
+            <div class="field">
+              <span>Paired devices</span>
+              <ul class="devices" id="set-devices"></ul>
+              <small class="hint" id="set-devices-empty">No devices paired yet.</small>
+            </div>
+
             <div class="settings-foot">
               <button type="button" class="ghost" id="btn-settings-back">Back</button>
               <button type="submit" class="primary" id="btn-save">Save</button>
@@ -119,6 +179,6 @@
       <div class="toast hidden" id="toast"></div>
     </div>
 
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

@@ -1,9 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/agentlight-core", "src-tauri"]
+members = [
+    "crates/agentlight-core",
+    "crates/agentlight-hub-client",
+    "crates/agentlight-server",
+    "crates/agentlight-source-events",
+    "src-tauri",
+]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ZBVirus/AgentLight"
@@ -12,6 +18,16 @@ repository = "https://github.com/ZBVirus/AgentLight"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.9"
+sha2 = "0.10"
 fs4 = { version = "0.13", features = ["sync"] }
 dirs = "6"
+notify = "8"
 tempfile = "3"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

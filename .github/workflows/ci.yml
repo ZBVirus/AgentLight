@@ -3,7 +3,15 @@ name: ci
 on:
   push:
     branches: ["main", "feat/**"]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
 
 env:
@@ -23,9 +31,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy -p agentlight-core --all-targets -- -D warnings
+        run: cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p agentlight-core
+        run: cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client
 
   windows:
     name: windows app build
@@ -53,3 +61,13 @@ jobs:
           name: agentlight-windows-portable
           if-no-files-found: warn
           path: target/release/AgentLight-portable.exe
+
+      - name: Build server
+        run: cargo build -p agentlight-server --release
+
+      - name: Upload server exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentlight-server-windows
+          if-no-files-found: warn
+          path: target/release/agentlight-server.exe

@@ -1,0 +1,17 @@
+[package]
+name = "agentlight-hub-client"
+description = "Blocking HTTP client and StateSource adapter for a remote AgentLight hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlight-core = { path = "../agentlight-core" }
+agentlight-source-events = { path = "../agentlight-source-events" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+# Plain HTTP only: no default features means no TLS stack. See `docs/protocol.md`
+# ("TLS is not part of this version"); the LAN is the trust boundary.
+minreq = { version = "3", default-features = false }

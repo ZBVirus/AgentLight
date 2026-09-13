@@ -506,7 +506,77 @@ body[data-collapse="triple_vertical"] .mini-triple {
 
 .field .row {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+.field .hint {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.field input[readonly] {
+  color: var(--dim);
+}
+
+.pair-code {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-align: center;
+  user-select: all;
+}
+
+.pair-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.devices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg-soft);
+}
+
+.device-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.device-name {
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-sub {
+  color: var(--dim);
+  font-size: 11px;
 }
 
 input[type="text"],
