@@ -44,8 +44,12 @@ struct AppState {
     /// Which view owns the window right now (`mini`, `detail`, or `settings`).
     window_mode: Mutex<String>,
     /// Top-left of the collapsed window, restored when expanding did not move
-    /// it. `None` until the first expand.
+    /// it. `None` until the first collapse.
     mini_anchor: Mutex<Option<PhysicalPosition<i32>>>,
+    /// Work area of the monitor the collapsed window calls home. Kept so an
+    /// expand/collapse pair stays on that monitor even when the grown window
+    /// would otherwise overlap a neighbouring one.
+    mini_home: Mutex<Option<Rect>>,
     /// Last position we placed the window at programmatically. Lets a real
     /// user drag be told apart from our own clamping move.
     applied_position: Mutex<Option<PhysicalPosition<i32>>>,
@@ -232,11 +236,13 @@ fn set_always_on_top(
     Ok(())
 }
 
-/// Resize the window for a view and keep it inside the monitor work area.
+/// Resize the window for a view and keep it inside the right monitor work area.
 ///
 /// `mode` is the target view. Going back to `mini` restores the position the
 /// collapsed window had before expanding, unless the user dragged the window
-/// in the meantime. Expanding clamps so the larger window stays on screen.
+/// in the meantime. Expanding clamps so the larger window stays on the monitor
+/// the collapsed window called home, rather than following the grown window
+/// onto a neighbouring monitor.
 #[tauri::command]
 fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
     let Some(window) = app.get_webview_window("main") else {
@@ -253,59 +259,185 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
             (Some(now), Some(applied)) => now != applied,
             _ => true,
         };
-        let _ = window.set_size(logical);
         let desired = if moved {
             current
         } else {
             *state.mini_anchor.lock().unwrap()
         };
-        if let Some(desired) = desired.or(current) {
-            let placed = clamp_to_work_area(&window, desired, target);
+        let Some(desired) = desired.or(current) else {
+            *state.window_mode.lock().unwrap() = "mini".to_string();
+            return;
+        };
+        // Pick the home monitor from the collapsed rectangle, not the expanded
+        // one, so a window parked near a seam stays put.
+        let collapsed = Rect::new(desired.x, desired.y, target.width, target.height);
+        let home = work_area_for(&window, collapsed).unwrap_or(collapsed);
+        let (x, y) = clamp_rect((desired.x, desired.y), (target.width, target.height), home);
+        let placed = PhysicalPosition::new(x, y);
+        let _ = window.set_size(logical);
+        let _ = window.set_position(placed);
+        *state.mini_anchor.lock().unwrap() = Some(placed);
+        *state.mini_home.lock().unwrap() = Some(home);
+        *state.applied_position.lock().unwrap() = Some(placed);
+        *state.window_mode.lock().unwrap() = "mini".to_string();
+        return;
+    }
+
+    let was_mini = *state.window_mode.lock().unwrap() == "mini";
+    let current = window.outer_position().ok();
+    // Expanding from `mini` stays on the collapsed window's monitor; every
+    // other view change stays on whichever monitor the window already uses.
+    let home = if was_mini {
+        let collapsed = current.and_then(|position| {
+            window
+                .outer_size()
+                .ok()
+                .map(|size| Rect::new(position.x, position.y, size.width, size.height))
+        });
+        match collapsed {
+            Some(rect) => {
+                *state.mini_anchor.lock().unwrap() = Some(PhysicalPosition::new(rect.x, rect.y));
+                let home = work_area_for(&window, rect).unwrap_or(rect);
+                *state.mini_home.lock().unwrap() = Some(home);
+                Some(home)
+            }
+            None => *state.mini_home.lock().unwrap(),
+        }
+    } else {
+        current_work_area(&window).or_else(|| *state.mini_home.lock().unwrap())
+    };
+
+    let _ = window.set_size(logical);
+    if let (Some(home), Some(current)) = (home, current) {
+        let (x, y) = clamp_rect((current.x, current.y), (target.width, target.height), home);
+        let placed = PhysicalPosition::new(x, y);
+        if placed != current {
             let _ = window.set_position(placed);
             *state.applied_position.lock().unwrap() = Some(placed);
         }
-        *state.window_mode.lock().unwrap() = "mini".to_string();
-    } else {
-        if *state.window_mode.lock().unwrap() == "mini" {
-            if let Ok(position) = window.outer_position() {
-                *state.mini_anchor.lock().unwrap() = Some(position);
-            }
-        }
-        let _ = window.set_size(logical);
-        if let Ok(current) = window.outer_position() {
-            let placed = clamp_to_work_area(&window, current, target);
-            if placed != current {
-                let _ = window.set_position(placed);
-                *state.applied_position.lock().unwrap() = Some(placed);
-            }
-        }
-        *state.window_mode.lock().unwrap() = mode;
+    }
+    *state.window_mode.lock().unwrap() = mode;
+}
+
+/// Work area (position + size) of the monitor a window rectangle belongs to:
+/// the one with the largest overlap. Ties go to the monitor under the window's
+/// top-left corner, then to `fallback`.
+fn select_home_area(window_rect: Rect, monitors: &[Rect], fallback: Rect) -> Rect {
+    let Some(max_overlap) = monitors
+        .iter()
+        .map(|monitor| overlap_area(window_rect, *monitor))
+        .max()
+    else {
+        return fallback;
+    };
+    let candidates: Vec<Rect> = monitors
+        .iter()
+        .copied()
+        .filter(|monitor| overlap_area(window_rect, *monitor) == max_overlap)
+        .collect();
+    if let [only] = candidates.as_slice() {
+        return *only;
+    }
+    let mut containing = candidates
+        .iter()
+        .copied()
+        .filter(|monitor| monitor.contains(window_rect.x, window_rect.y));
+    let first = containing.next();
+    match (first, containing.next()) {
+        (Some(only), None) => only,
+        _ => fallback,
     }
 }
 
-/// Pull `desired` inside the current monitor work area, leaving the window
-/// fully visible. Falls back to the primary monitor when needed.
-fn clamp_to_work_area(
-    window: &WebviewWindow,
-    desired: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
-) -> PhysicalPosition<i32> {
-    let monitor = window
+/// Intersection area of two rectangles, `0` when they do not overlap.
+fn overlap_area(a: Rect, b: Rect) -> i64 {
+    let width = (a.right().min(b.right()) as i64) - (a.x.max(b.x) as i64);
+    let height = (a.bottom().min(b.bottom()) as i64) - (a.y.max(b.y) as i64);
+    width.max(0) * height.max(0)
+}
+
+/// Pull `desired` inside `area`, keeping the top-left edge when it already fits
+/// so a growing window extends right and down before it shifts.
+fn clamp_rect(desired: (i32, i32), size: (u32, u32), area: Rect) -> (i32, i32) {
+    let max_x = (area.right() - size.0 as i32).max(area.x);
+    let max_y = (area.bottom() - size.1 as i32).max(area.y);
+    (
+        desired.0.clamp(area.x, max_x),
+        desired.1.clamp(area.y, max_y),
+    )
+}
+
+/// Work area of the monitor that owns `window_rect`, falling back to the
+/// primary monitor.
+fn work_area_for(window: &WebviewWindow, window_rect: Rect) -> Option<Rect> {
+    let monitors: Vec<Rect> = window
+        .available_monitors()
+        .ok()
+        .unwrap_or_default()
+        .iter()
+        .map(work_area_rect)
+        .collect();
+    let primary = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| work_area_rect(&monitor));
+    let fallback = primary.or_else(|| monitors.first().copied())?;
+    Some(select_home_area(window_rect, &monitors, fallback))
+}
+
+/// Work area of the monitor the window currently sits on, falling back to the
+/// primary monitor.
+fn current_work_area(window: &WebviewWindow) -> Option<Rect> {
+    window
         .current_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.primary_monitor().ok().flatten());
-    let Some(monitor) = monitor else {
-        return desired;
-    };
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .map(|monitor| work_area_rect(&monitor))
+}
+
+fn work_area_rect(monitor: &tauri::Monitor) -> Rect {
     let area = monitor.work_area();
-    let left = area.position.x;
-    let top = area.position.y;
-    let right = area.position.x + area.size.width as i32;
-    let bottom = area.position.y + area.size.height as i32;
-    let max_x = (right - size.width as i32).max(left);
-    let max_y = (bottom - size.height as i32).max(top);
-    PhysicalPosition::new(desired.x.clamp(left, max_x), desired.y.clamp(top, max_y))
+    Rect::new(
+        area.position.x,
+        area.position.y,
+        area.size.width,
+        area.size.height,
+    )
+}
+
+/// Integer rectangle used by the window-placement helpers. Kept GUI-free so the
+/// overlap/tie/clamp rules are easy to reason about and unit test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl Rect {
+    fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn right(&self) -> i32 {
+        self.x.saturating_add(self.width as i32)
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y.saturating_add(self.height as i32)
+    }
+
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
 }
 
 #[tauri::command]
@@ -634,6 +766,7 @@ pub fn run() {
             visible: AtomicBool::new(true),
             window_mode: Mutex::new("mini".to_string()),
             mini_anchor: Mutex::new(None),
+            mini_home: Mutex::new(None),
             applied_position: Mutex::new(None),
             server: Mutex::new(None),
         })
@@ -701,4 +834,78 @@ pub fn run() {
             stop_server(&app_handle.state::<AppState>());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
+        Rect::new(x, y, width, height)
+    }
+
+    fn side_by_side() -> (Rect, Rect) {
+        (rect(0, 0, 1920, 1080), rect(1920, 0, 1920, 1080))
+    }
+
+    #[test]
+    fn overlap_is_zero_when_disjoint() {
+        assert_eq!(
+            overlap_area(rect(0, 0, 100, 100), rect(200, 0, 100, 100)),
+            0
+        );
+        assert_eq!(
+            overlap_area(rect(0, 0, 100, 100), rect(50, 50, 100, 100)),
+            2500
+        );
+    }
+
+    #[test]
+    fn home_prefers_the_monitor_with_most_overlap() {
+        let (left, right) = side_by_side();
+        // Fully on the left monitor, hard against the seam.
+        let window = rect(1800, 100, 120, 88);
+        assert_eq!(select_home_area(window, &[left, right], right), left);
+    }
+
+    #[test]
+    fn tie_follows_the_top_left_corner_over_the_fallback() {
+        let (left, right) = side_by_side();
+        // Straddles the seam with 20px on each monitor; top-left is on `left`.
+        let window = rect(1900, 100, 40, 40);
+        assert_eq!(select_home_area(window, &[left, right], right), left);
+    }
+
+    #[test]
+    fn outside_every_monitor_falls_back_to_primary() {
+        let (left, right) = side_by_side();
+        let window = rect(9000, 9000, 88, 88);
+        assert_eq!(select_home_area(window, &[left, right], right), right);
+    }
+
+    #[test]
+    fn exact_boundary_is_deterministic() {
+        let (left, right) = side_by_side();
+        let window = rect(1920, 100, 88, 88);
+        let first = select_home_area(window, &[left, right], left);
+        assert_eq!(first, select_home_area(window, &[left, right], left));
+        assert_eq!(first, right);
+    }
+
+    #[test]
+    fn expand_keeps_the_left_edge_until_it_overflows() {
+        let home = rect(0, 0, 1920, 1080);
+        // Already inside: left edge is preserved.
+        assert_eq!(clamp_rect((100, 200), (420, 548), home), (100, 200));
+        // Overflows the right edge: shift left just enough to fit.
+        assert_eq!(clamp_rect((1600, 200), (420, 548), home), (1500, 200));
+        // Overflows the bottom edge: shift up just enough to fit.
+        assert_eq!(clamp_rect((100, 900), (420, 548), home), (100, 532));
+    }
+
+    #[test]
+    fn collapse_restores_the_anchor_clamped_to_home() {
+        let home = rect(0, 0, 1920, 1080);
+        assert_eq!(clamp_rect((-50, -50), (88, 88), home), (0, 0));
+    }
 }
