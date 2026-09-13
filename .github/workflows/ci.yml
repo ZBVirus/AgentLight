@@ -1,11 +1,10 @@
 name: ci
 
 on:
-  # Runs on pull requests into the integration/release branches, and on demand.
-  # Feature-branch pushes do not trigger it: test locally, then open a PR (or
-  # use workflow_dispatch) when you want CI.
+  # Runs on pull requests into any branch, so stacked PRs get CI, and on demand.
+  # Branch pushes never trigger it: test locally, then open a PR (or use
+  # workflow_dispatch) when you want CI.
   pull_request:
-    branches: ["main", "develop"]
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
