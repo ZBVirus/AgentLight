@@ -150,18 +150,37 @@ main {
   cursor: grabbing;
 }
 
+.mini-single,
+.mini-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
 .mini-triple {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
+.mini-label {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.view.mini.no-labels .mini-label {
+  display: none;
+}
+
 body[data-collapse="single"] .mini-triple {
   display: none;
 }
 
-body[data-collapse="triple"] #mini-light,
-body[data-collapse="triple_vertical"] #mini-light {
+body[data-collapse="triple"] #mini-single,
+body[data-collapse="triple_vertical"] #mini-single {
   display: none;
 }
 
@@ -189,25 +208,25 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .mini-light.on.red {
-  border-color: rgba(224, 108, 117, 0.65);
+  border-color: var(--mini-red, rgba(224, 108, 117, 0.65));
 }
 .mini-light.on.red .core {
-  background: var(--red);
-  box-shadow: 0 0 12px rgba(224, 108, 117, 0.75);
+  background: var(--mini-red, var(--red));
+  box-shadow: 0 0 12px var(--mini-red, rgba(224, 108, 117, 0.75));
 }
 .mini-light.on.orange {
-  border-color: rgba(229, 192, 123, 0.6);
+  border-color: var(--mini-orange, rgba(229, 192, 123, 0.6));
 }
 .mini-light.on.orange .core {
-  background: var(--yellow);
-  box-shadow: 0 0 12px rgba(229, 192, 123, 0.7);
+  background: var(--mini-orange, var(--yellow));
+  box-shadow: 0 0 12px var(--mini-orange, rgba(229, 192, 123, 0.7));
 }
 .mini-light.on.green {
-  border-color: rgba(152, 195, 121, 0.6);
+  border-color: var(--mini-green, rgba(152, 195, 121, 0.6));
 }
 .mini-light.on.green .core {
-  background: var(--green);
-  box-shadow: 0 0 12px rgba(152, 195, 121, 0.7);
+  background: var(--mini-green, var(--green));
+  box-shadow: 0 0 12px var(--mini-green, rgba(152, 195, 121, 0.7));
 }
 
 /* Mini context menu ------------------------------------------------------ */
@@ -273,19 +292,19 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .light.red .light-core {
-  background: var(--red);
-  box-shadow: 0 0 18px rgba(224, 108, 117, 0.75);
+  background: var(--mini-red, var(--red));
+  box-shadow: 0 0 18px var(--mini-red, rgba(224, 108, 117, 0.75));
 }
 .light.orange .light-core {
-  background: var(--yellow);
-  box-shadow: 0 0 18px rgba(229, 192, 123, 0.7);
+  background: var(--mini-orange, var(--yellow));
+  box-shadow: 0 0 18px var(--mini-orange, rgba(229, 192, 123, 0.7));
 }
 .light.green .light-core {
-  background: var(--green);
-  box-shadow: 0 0 18px rgba(152, 195, 121, 0.7);
+  background: var(--mini-green, var(--green));
+  box-shadow: 0 0 18px var(--mini-green, rgba(152, 195, 121, 0.7));
 }
 .light.gray .light-core {
-  background: #5c6370;
+  background: var(--mini-gray, #5c6370);
   box-shadow: none;
 }
 
@@ -631,6 +650,30 @@ select:focus {
 
 input[type="checkbox"] {
   accent-color: var(--accent);
+}
+
+.mini-colors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.color-field input[type="color"] {
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  cursor: pointer;
 }
 
 .ghost {
