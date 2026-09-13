@@ -6,8 +6,9 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use agentlight_core::{
     ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
@@ -53,6 +54,18 @@ struct AppState {
     /// Last position we placed the window at programmatically. Lets a real
     /// user drag be told apart from our own clamping move.
     applied_position: Mutex<Option<PhysicalPosition<i32>>>,
+    /// Logical size of the last programmatic expand/collapse resize. A
+    /// `Resized` event matching it is ours and must not be persisted as a user
+    /// resize.
+    programmatic_resize: Mutex<Option<(f64, f64)>>,
+    /// Ignore `Resized` events until this instant; covers the brief window
+    /// while a programmatic resize (including the resizable-style toggle) is
+    /// still settling.
+    resize_guard_until: Mutex<Option<Instant>>,
+    /// Newest collapsed size seen from a user resize, awaiting persistence.
+    pending_mini_size: Mutex<Option<(f64, f64)>>,
+    /// Bumped on every user resize so the debounce saver can coalesce a drag.
+    resize_generation: AtomicU64,
     /// Opt-in embedded HTTP hub over the same engine. Stopped on exit.
     server: Mutex<Option<agentlight_server::ServerHandle>>,
 }
@@ -249,11 +262,20 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
-    let logical = LogicalSize::new(width, height);
-    let target: PhysicalSize<u32> = logical.to_physical(scale);
     let state = app.state::<AppState>();
+    *state.resize_guard_until.lock().unwrap() = Some(Instant::now() + RESIZE_GUARD);
 
     if mode == "mini" {
+        // A persisted collapsed size wins over the built-in style size the
+        // frontend passes, so the user's last drag survives restarts.
+        let config = current_config(&state);
+        let (width, height) = match (config.mini_width, config.mini_height) {
+            (Some(width), Some(height)) => (width, height),
+            _ => (width, height),
+        };
+        let logical = LogicalSize::new(width, height);
+        let target: PhysicalSize<u32> = logical.to_physical(scale);
+
         let current = window.outer_position().ok();
         let moved = match (current, *state.applied_position.lock().unwrap()) {
             (Some(now), Some(applied)) => now != applied,
@@ -274,6 +296,9 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         let home = work_area_for(&window, collapsed).unwrap_or(collapsed);
         let (x, y) = clamp_rect((desired.x, desired.y), (target.width, target.height), home);
         let placed = PhysicalPosition::new(x, y);
+        *state.programmatic_resize.lock().unwrap() = Some((width, height));
+        // Only the collapsed window is user-resizable.
+        let _ = window.set_resizable(true);
         let _ = window.set_size(logical);
         let _ = window.set_position(placed);
         *state.mini_anchor.lock().unwrap() = Some(placed);
@@ -283,6 +308,8 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         return;
     }
 
+    let logical = LogicalSize::new(width, height);
+    let target: PhysicalSize<u32> = logical.to_physical(scale);
     let was_mini = *state.window_mode.lock().unwrap() == "mini";
     let current = window.outer_position().ok();
     // Expanding from `mini` stays on the collapsed window's monitor; every
@@ -307,6 +334,9 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         current_work_area(&window).or_else(|| *state.mini_home.lock().unwrap())
     };
 
+    *state.programmatic_resize.lock().unwrap() = Some((width, height));
+    // Expanded views keep their fixed size; only the collapsed window resizes.
+    let _ = window.set_resizable(false);
     let _ = window.set_size(logical);
     if let (Some(home), Some(current)) = (home, current) {
         let (x, y) = clamp_rect((current.x, current.y), (target.width, target.height), home);
@@ -468,6 +498,97 @@ fn quit_app(app: AppHandle) {
 
 fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
+}
+
+/// How long a collapsed resize must be quiet before it is written to disk.
+const RESIZE_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How long to ignore `Resized` events after a programmatic resize.
+const RESIZE_GUARD: Duration = Duration::from_millis(300);
+/// How often the opt-in topmost re-assert fires.
+const TOPMOST_REASSERT_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Record a user resize of the collapsed window as the pending size to persist.
+/// Ignored for expanded views and for our own programmatic resizes.
+fn note_user_resize(scale: f64, state: &AppState, size: PhysicalSize<u32>) {
+    if *state.window_mode.lock().unwrap() != "mini" {
+        return;
+    }
+    if let Some(until) = *state.resize_guard_until.lock().unwrap() {
+        if Instant::now() < until {
+            return;
+        }
+    }
+    let logical = size.to_logical::<f64>(scale);
+    let programmatic = *state.programmatic_resize.lock().unwrap();
+    if let Some((width, height)) = programmatic {
+        if size_matches(width, logical.width) && size_matches(height, logical.height) {
+            return;
+        }
+        // A different size means the user has taken over; stop ignoring ours.
+        *state.programmatic_resize.lock().unwrap() = None;
+    }
+    *state.pending_mini_size.lock().unwrap() = Some((logical.width, logical.height));
+    state.resize_generation.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Whether two logical sizes are the same within a sub-pixel tolerance.
+fn size_matches(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1.0
+}
+
+/// Background saver for the collapsed window size. Coalesces a drag into one
+/// write: it wakes on a fixed interval and only persists the newest pending
+/// size once the generation has stopped changing. Detached; ends with the
+/// process.
+fn spawn_resize_persister(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut saved = 0u64;
+        loop {
+            std::thread::sleep(RESIZE_SAVE_DEBOUNCE);
+            let state = app.state::<AppState>();
+            if *state.window_mode.lock().unwrap() != "mini" {
+                continue;
+            }
+            let generation = state.resize_generation.load(Ordering::SeqCst);
+            if generation == saved {
+                continue;
+            }
+            let Some((width, height)) = *state.pending_mini_size.lock().unwrap() else {
+                continue;
+            };
+            let mut config = current_config(&state);
+            if config.mini_width == Some(width) && config.mini_height == Some(height) {
+                saved = generation;
+                continue;
+            }
+            config.mini_width = Some(width);
+            config.mini_height = Some(height);
+            match agentlight_core::save_config(&state.config_path, &config) {
+                Ok(()) => {
+                    *state.config.lock().unwrap() = config.clone();
+                    state.engine.set_config(config);
+                    saved = generation;
+                }
+                Err(error) => eprintln!("agentlight: could not save collapsed size: {error}"),
+            }
+        }
+    });
+}
+
+/// Keep re-asserting always-on-top so the widget stays above borderless or
+/// exclusive full-screen apps. A no-op unless both `topmost_reassert` and
+/// `always_on_top` are set. Detached; ends with the process.
+fn spawn_topmost_reassert(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TOPMOST_REASSERT_INTERVAL);
+        let config = current_config(&app.state::<AppState>());
+        if !(config.topmost_reassert && config.always_on_top) {
+            continue;
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_always_on_top(true);
+        }
+    });
 }
 
 /// Build the configured source adapter: a local clawlight file or a remote hub.
@@ -768,6 +889,10 @@ pub fn run() {
             mini_anchor: Mutex::new(None),
             mini_home: Mutex::new(None),
             applied_position: Mutex::new(None),
+            programmatic_resize: Mutex::new(None),
+            resize_guard_until: Mutex::new(None),
+            pending_mini_size: Mutex::new(None),
+            resize_generation: AtomicU64::new(0),
             server: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -791,10 +916,22 @@ pub fn run() {
 
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_always_on_top(config.always_on_top);
+                // Treat the startup size as ours so its `Resized` event is not
+                // mistaken for the user dragging the collapsed window.
+                if let Ok(size) = window.inner_size() {
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    let logical = size.to_logical::<f64>(scale);
+                    let state = handle.state::<AppState>();
+                    *state.programmatic_resize.lock().unwrap() =
+                        Some((logical.width, logical.height));
+                }
             }
             apply_autostart(handle, config.start_at_login);
 
             setup_tray(handle)?;
+
+            spawn_resize_persister(handle.clone());
+            spawn_topmost_reassert(handle.clone());
 
             // Register the update sink before starting the source so the
             // initial file change is delivered on startup.
@@ -815,9 +952,9 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // The widget lives in the tray: closing the window hides it.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
                 window
@@ -825,6 +962,12 @@ pub fn run() {
                     .visible
                     .store(false, Ordering::SeqCst);
             }
+            WindowEvent::Resized(size) => {
+                let state = window.state::<AppState>();
+                let scale = window.scale_factor().unwrap_or(1.0);
+                note_user_resize(scale, &state, *size);
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building AgentLight");

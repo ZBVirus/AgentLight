@@ -56,7 +56,7 @@ pub enum CollapseStyle {
     TripleVertical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Absolute path to clawlight's `state.json`. `None` uses the default.
@@ -67,6 +67,25 @@ pub struct Config {
     pub yellow_mode: YellowMode,
     /// Layout of the collapsed window.
     pub collapse_style: CollapseStyle,
+    /// Custom color for the red (needs help / aggregate red) collapsed light.
+    /// Any CSS color; `None` keeps the built-in palette.
+    pub mini_red: Option<String>,
+    /// Custom color for the orange (idle / aggregate orange) collapsed light.
+    pub mini_orange: Option<String>,
+    /// Custom color for the green (working / aggregate green) collapsed light.
+    pub mini_green: Option<String>,
+    /// Custom color for the gray (no live sessions) collapsed light.
+    pub mini_gray: Option<String>,
+    /// Show the text labels beside the collapsed lights.
+    pub mini_show_labels: bool,
+    /// Persisted width of the collapsed window, in logical pixels. `None` uses
+    /// the fixed size for the selected style.
+    pub mini_width: Option<f64>,
+    /// Persisted height of the collapsed window, in logical pixels.
+    pub mini_height: Option<f64>,
+    /// Periodically re-assert always-on-top so the widget stays above
+    /// borderless full-screen apps that push it behind. Opt-in, Windows-only.
+    pub topmost_reassert: bool,
     /// Fallback poll interval, in milliseconds, for the file watcher.
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
@@ -109,6 +128,14 @@ impl Default for Config {
             always_on_top: true,
             yellow_mode: YellowMode::AnyInactive,
             collapse_style: CollapseStyle::Single,
+            mini_red: None,
+            mini_orange: None,
+            mini_green: None,
+            mini_gray: None,
+            mini_show_labels: true,
+            mini_width: None,
+            mini_height: None,
+            topmost_reassert: false,
             poll_ms: 1500,
             show_done: false,
             source_kind: SourceKind::File,
@@ -142,6 +169,26 @@ impl Config {
     /// pathological watcher interval.
     pub fn sanitized(mut self) -> Self {
         self.poll_ms = self.poll_ms.clamp(250, 60_000);
+        for color in [
+            &mut self.mini_red,
+            &mut self.mini_orange,
+            &mut self.mini_green,
+            &mut self.mini_gray,
+        ] {
+            *color = color
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
+        self.mini_width = self
+            .mini_width
+            .filter(|width| width.is_finite())
+            .map(|width| width.clamp(40.0, 2000.0));
+        self.mini_height = self
+            .mini_height
+            .filter(|height| height.is_finite())
+            .map(|height| height.clamp(24.0, 2000.0));
         if let Some(path) = &self.state_path {
             if path.trim().is_empty() {
                 self.state_path = None;
@@ -381,6 +428,29 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("hunter2"), "plaintext must not remain: {raw}");
         assert!(raw.contains(&hash_token("hunter2")));
+    }
+
+    #[test]
+    fn mini_customization_parses_sanitizes_and_clamps() {
+        let c: Config = serde_json::from_str(
+            r#"{"mini_red":"  #ff0000  ","mini_gray":"   ","mini_show_labels":false,"mini_width":10.0,"mini_height":99999.0}"#,
+        )
+        .unwrap();
+        assert_eq!(c.mini_red.as_deref(), Some("  #ff0000  "));
+        let c = c.sanitized();
+        assert_eq!(c.mini_red.as_deref(), Some("#ff0000"));
+        assert!(
+            c.mini_gray.is_none(),
+            "a blank color falls back to built-in"
+        );
+        assert!(!c.mini_show_labels);
+        assert_eq!(c.mini_width, Some(40.0), "a too-small width clamps up");
+        assert_eq!(c.mini_height, Some(2000.0), "a huge height clamps down");
+
+        let defaults = Config::default();
+        assert!(defaults.mini_show_labels);
+        assert!(defaults.mini_width.is_none());
+        assert!(!defaults.topmost_reassert);
     }
 
     #[test]

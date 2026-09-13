@@ -219,6 +219,10 @@ can be edited by hand.
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
+| `mini_red` / `mini_orange` / `mini_green` / `mini_gray` | *(built-in)* | Custom collapsed-light colors (any CSS color). |
+| `mini_show_labels` | `true`          | Show labels beside the collapsed lights.           |
+| `mini_width` / `mini_height` | *(style size)* | Persisted collapsed-window size in logical px. |
+| `topmost_reassert` | `false`         | Re-assert always-on-top for full-screen apps.      |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
 | `notifications`  | `false`           | Desktop notification when a session needs help.    |

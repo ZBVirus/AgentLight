@@ -28,11 +28,23 @@
 
       <main id="main">
         <section class="view mini" id="view-mini" title="Click to expand · drag to move">
-          <div class="light" id="mini-light"><span class="light-core"></span></div>
+          <div class="mini-single" id="mini-single">
+            <div class="light" id="mini-light"><span class="light-core"></span></div>
+            <span class="mini-label" id="mini-label"></span>
+          </div>
           <div class="mini-triple" id="mini-triple">
-            <span class="mini-light red" id="mini-red"><span class="core"></span></span>
-            <span class="mini-light orange" id="mini-orange"><span class="core"></span></span>
-            <span class="mini-light green" id="mini-green"><span class="core"></span></span>
+            <span class="mini-item">
+              <span class="mini-light red" id="mini-red"><span class="core"></span></span>
+              <span class="mini-label">needs help</span>
+            </span>
+            <span class="mini-item">
+              <span class="mini-light orange" id="mini-orange"><span class="core"></span></span>
+              <span class="mini-label">paused</span>
+            </span>
+            <span class="mini-item">
+              <span class="mini-light green" id="mini-green"><span class="core"></span></span>
+              <span class="mini-label">working</span>
+            </span>
           </div>
         </section>
 
@@ -122,6 +134,34 @@
                 <option value="triple">Three lights, horizontal</option>
                 <option value="triple_vertical">Three lights, vertical (traffic light)</option>
               </select>
+            </label>
+
+            <div class="field">
+              <span>Collapsed colors</span>
+              <div class="mini-colors">
+                <label class="color-field">
+                  <input type="color" id="set-mini-red" />
+                  <span>Red</span>
+                </label>
+                <label class="color-field">
+                  <input type="color" id="set-mini-orange" />
+                  <span>Orange</span>
+                </label>
+                <label class="color-field">
+                  <input type="color" id="set-mini-green" />
+                  <span>Green</span>
+                </label>
+                <label class="color-field">
+                  <input type="color" id="set-mini-gray" />
+                  <span>Gray</span>
+                </label>
+              </div>
+              <small class="hint">Each color is used by the collapsed lights in every style. Leaving the built-in color keeps the default palette.</small>
+            </div>
+
+            <label class="field inline">
+              <input type="checkbox" id="set-mini-show-labels" />
+              <span>Show labels in the collapsed view</span>
             </label>
 
             <label class="field">

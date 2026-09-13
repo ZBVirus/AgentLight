@@ -2,7 +2,7 @@
 
 import { invoke } from "./ipc.js";
 import { MINI_SIZES, SIZES } from "./format.js";
-import { renderLight } from "../views/light.js";
+import { renderLight, applyMiniTheme } from "../views/light.js";
 import { renderDetail } from "../views/detail.js";
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +25,7 @@ export function collapseStyle() {
 
 export function applyCollapseStyle() {
   document.body.dataset.collapse = collapseStyle();
+  applyMiniTheme(config);
   if (view === "mini") setView("mini");
 }
 

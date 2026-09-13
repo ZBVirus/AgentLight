@@ -17,6 +17,19 @@ const $ = (id) => document.getElementById(id);
 const DEFAULT_SERVER_BIND = "127.0.0.1:8787";
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 
+// Built-in collapsed palette, matching the CSS custom properties. A color
+// input seeded with one of these is treated as "not customized" on save so the
+// config keeps its null and the palette stays future-proof.
+const MINI_BUILTIN = {
+  red: "#e06c75",
+  orange: "#e5c07b",
+  green: "#98c379",
+  gray: "#5c6370",
+};
+
+const MINI_COLORS = ["red", "orange", "green", "gray"];
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
 // Whether the persisted config carries an admin token hash. Lets the token
 // hint explain that a secret is set without ever putting the hash in the input.
 let adminTokenSet = false;
@@ -74,6 +87,15 @@ export function populateSettings() {
   $("set-show-done").checked = !!config.show_done;
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
   $("set-collapse-style").value = config.collapse_style || "single";
+  // A color input only understands #rrggbb, so seed the built-in hex when the
+  // config carries nothing (or a color the picker cannot represent).
+  for (const key of MINI_COLORS) {
+    const value = config[`mini_${key}`];
+    $(`set-mini-${key}`).value = HEX_COLOR.test(value || "")
+      ? value
+      : MINI_BUILTIN[key];
+  }
+  $("set-mini-show-labels").checked = config.mini_show_labels !== false;
   $("set-poll").value = config.poll_ms || 1500;
   $("set-server-bind").value = config.server_bind || DEFAULT_SERVER_BIND;
   // The admin token is write-only: never render the stored hash back here.
@@ -220,6 +242,13 @@ async function clearAdminToken() {
   await refreshServerStatus();
 }
 
+// A color input always holds a value, so "customized" means it differs from the
+// built-in hex. Returning null keeps the built-in palette for that light.
+function miniColorValue(key) {
+  const value = $(`set-mini-${key}`).value.trim();
+  return value && value.toLowerCase() !== MINI_BUILTIN[key] ? value : null;
+}
+
 export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
@@ -235,6 +264,11 @@ export async function saveSettings(event) {
     show_done: $("set-show-done").checked,
     yellow_mode: $("set-yellow-mode").value,
     collapse_style: $("set-collapse-style").value,
+    mini_red: miniColorValue("red"),
+    mini_orange: miniColorValue("orange"),
+    mini_green: miniColorValue("green"),
+    mini_gray: miniColorValue("gray"),
+    mini_show_labels: $("set-mini-show-labels").checked,
     poll_ms: Number($("set-poll").value) || 1500,
   });
   try {

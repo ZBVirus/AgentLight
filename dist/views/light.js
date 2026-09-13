@@ -4,6 +4,33 @@ import { AGG_LABEL } from "../lib/format.js";
 
 const $ = (id) => document.getElementById(id);
 
+// Mirrors the config field names to the CSS custom properties consumed by the
+// collapsed light rules. Setting them on #view-mini keeps the detail light on
+// the built-in palette.
+const MINI_COLOR_VARS = [
+  ["mini_red", "--mini-red"],
+  ["mini_orange", "--mini-orange"],
+  ["mini_green", "--mini-green"],
+  ["mini_gray", "--mini-gray"],
+];
+
+// Apply the user's collapsed-view customization: the four light colors become
+// custom properties (falling back to the built-in palette in CSS) and the
+// no-labels class hides the captions beside the collapsed lights.
+export function applyMiniTheme(config) {
+  const mini = $("view-mini");
+  if (!mini) return;
+  for (const [field, variable] of MINI_COLOR_VARS) {
+    const value = config && config[field];
+    if (value) mini.style.setProperty(variable, value);
+    else mini.style.removeProperty(variable);
+  }
+  mini.classList.toggle(
+    "no-labels",
+    !!(config && config.mini_show_labels === false),
+  );
+}
+
 export function setLights(color) {
   for (const el of document.querySelectorAll(".light")) {
     el.classList.remove("red", "orange", "green", "gray");
@@ -31,6 +58,11 @@ function chip(colorClass, label) {
 
 export function renderLight(snapshot) {
   const label = $("agg-label");
+  const miniLabel = $("mini-label");
+  const setLabel = (text) => {
+    label.textContent = text;
+    if (miniLabel) miniLabel.textContent = text;
+  };
   const chips = $("chips");
   const pick = $("btn-pick");
   chips.replaceChildren();
@@ -38,13 +70,13 @@ export function renderLight(snapshot) {
   if (!snapshot) {
     setLights("gray");
     setMiniState(null);
-    label.textContent = "Starting…";
+    setLabel("Starting…");
     pick.classList.add("hidden");
     return;
   }
 
   setLights(snapshot.aggregate || "gray");
-  label.textContent = AGG_LABEL[snapshot.aggregate] || "No sessions";
+  setLabel(AGG_LABEL[snapshot.aggregate] || "No sessions");
 
   if (!snapshot.ok) {
     setMiniState(null);
@@ -59,7 +91,7 @@ export function renderLight(snapshot) {
         ? "Could not read state file"
         : "Waiting for clawlight…";
     }
-    label.textContent = snapshot.error || fallback;
+    setLabel(snapshot.error || fallback);
     pick.classList.remove("hidden");
     return;
   }
