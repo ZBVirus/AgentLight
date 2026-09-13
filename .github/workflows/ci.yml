@@ -14,6 +14,11 @@ on:
       - ".gitignore"
   workflow_dispatch:
 
+# A newer push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -47,39 +52,49 @@ jobs:
       - name: Test plugin
         run: node --test plugins/opencode/test/agentlight.test.js
 
-  windows:
-    name: windows app build
+  # The app and the server build in parallel. They share one cargo cache so the
+  # second warm run reuses the common dependencies. Artifacts use the fast `ci`
+  # profile; the release workflow builds the optimized binaries.
+  windows-app:
+    name: windows app (portable exe)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-cargo
 
-      - name: Test core
-        run: cargo test -p agentlight-core
-
-      # Compile-check the Tauri app and produce a portable exe. The NSIS
-      # installer is produced by the release workflow.
       - name: Build app
-        run: cargo build -p agentlight --release
+        run: cargo build -p agentlight --profile ci
 
       - name: Stage portable exe
         shell: pwsh
-        run: Copy-Item target/release/agentlight.exe target/release/AgentLight-portable.exe
+        run: Copy-Item target/ci/agentlight.exe target/ci/AgentLight-portable.exe
 
       - name: Upload portable exe
         uses: actions/upload-artifact@v4
         with:
           name: agentlight-windows-portable
           if-no-files-found: warn
-          path: target/release/AgentLight-portable.exe
+          path: target/ci/AgentLight-portable.exe
+
+  windows-server:
+    name: windows server exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-cargo
 
       - name: Build server
-        run: cargo build -p agentlight-server --release
+        run: cargo build -p agentlight-server --profile ci
 
       - name: Upload server exe
         uses: actions/upload-artifact@v4
         with:
           name: agentlight-server-windows
           if-no-files-found: warn
-          path: target/release/agentlight-server.exe
+          path: target/ci/agentlight-server.exe

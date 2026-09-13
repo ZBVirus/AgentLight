@@ -31,3 +31,12 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Fast profile for CI and local test builds. Not used for releases, which keep
+# the optimized `release` profile.
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+strip = true
