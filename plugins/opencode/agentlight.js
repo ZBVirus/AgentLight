@@ -14,11 +14,17 @@
 //
 // Mapping (opencode -> AgentLight `status`):
 //   session.status busy / retry      -> active      (working)
-//   session.status idle, session.idle-> inactive    (paused)
+//   session.status idle, session.idle
+//     main session                   -> inactive    (paused, waiting on you)
+//     subagent (has a parentID)      -> done        (it has no more turns)
 //   permission.asked / .updated      -> needs_help  (waiting on you)
 //   permission.replied               -> active      (you answered, it resumes)
 //   session.error                    -> needs_help
 //   session.deleted                  -> done
+//
+// A finished subagent does not emit `session.deleted`; it only goes idle, so
+// idle on a tool-spawned child session is reported as `done`. An idle event
+// while a permission is pending is not "finished": it stays `needs_help`.
 //
 // Status is forwarded with a short per-session coalescing window so bursts of
 // events collapse into the latest state.
@@ -37,10 +43,12 @@ export const AgentLightPlugin = async ({ directory, client }) => {
   const token = process.env.AGENTLIGHT_TOKEN || "";
   const ingestUrl = `${hubUrl}/api/v1/ingest`;
 
-  // sessionID -> { name, projectPath }
+  // sessionID -> { name, projectPath, parentID }
   const sessions = new Map();
   // sessionID -> { event, timer }
   const pending = new Map();
+  // sessionID -> waiting on a permission reply; idle must not mark it done.
+  const awaitingPermission = new Set();
 
   const log = async (level, message, extra) => {
     try {
@@ -109,7 +117,38 @@ export const AgentLightPlugin = async ({ directory, client }) => {
     sessions.set(info.id, {
       name: info.title || null,
       projectPath: info.directory || null,
+      parentID: info.parentID || null,
     });
+  };
+
+  // A session created by a tool (a subagent) carries a `parentID`. It runs to
+  // completion without waiting on the user, so idle means finished. Fall back
+  // to asking opencode when an event arrives before `session.created`.
+  const isSubagent = async (sessionID) => {
+    const known = sessions.get(sessionID);
+    if (known) return Boolean(known.parentID);
+    try {
+      const result = await client.session.get({ path: { id: sessionID } });
+      const info = result && result.data;
+      if (info) {
+        remember(info);
+        return Boolean(info.parentID);
+      }
+    } catch (error) {
+      await log("warn", `could not read session ${sessionID}`, {
+        error: String(error && error.message ? error.message : error),
+      });
+    }
+    return false;
+  };
+
+  const reportIdle = async (sessionID) => {
+    if (!sessionID) return;
+    if (awaitingPermission.has(sessionID)) {
+      report(sessionID, "needs_help");
+      return;
+    }
+    report(sessionID, (await isSubagent(sessionID)) ? "done" : "inactive");
   };
 
   const handleEvent = async (event) => {
@@ -122,18 +161,24 @@ export const AgentLightPlugin = async ({ directory, client }) => {
       case "session.deleted":
         if (props.info) {
           remember(props.info);
+          awaitingPermission.delete(props.info.id);
           report(props.info.id, "done");
         } else if (props.sessionID) {
+          awaitingPermission.delete(props.sessionID);
           report(props.sessionID, "done");
         }
         break;
       case "session.status": {
         const status = props.status && props.status.type;
-        report(props.sessionID, status === "idle" ? "inactive" : "active");
+        if (status === "idle") {
+          await reportIdle(props.sessionID);
+        } else {
+          report(props.sessionID, "active");
+        }
         break;
       }
       case "session.idle":
-        report(props.sessionID, "inactive");
+        await reportIdle(props.sessionID);
         break;
       case "session.error":
         report(props.sessionID, "needs_help");
@@ -141,9 +186,11 @@ export const AgentLightPlugin = async ({ directory, client }) => {
       // opencode's SDK has used both names for the "waiting for approval" event.
       case "permission.asked":
       case "permission.updated":
+        if (props.sessionID) awaitingPermission.add(props.sessionID);
         report(props.sessionID, "needs_help");
         break;
       case "permission.replied":
+        if (props.sessionID) awaitingPermission.delete(props.sessionID);
         report(props.sessionID, "active");
         break;
       default:
