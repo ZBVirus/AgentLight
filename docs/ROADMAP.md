@@ -163,6 +163,14 @@ decide and prioritize later.
   clearable.
 - **Right-click hide in collapsed mode. Planned.** Add a context menu on the
   collapsed window with a "Hide" action that sends the app to the tray.
+- **Stay on the same monitor when expanding/collapsing. Planned.** Bug: when the
+  collapsed window sits just left of the boundary between two monitors,
+  expanding it grows to the right and lands on the second monitor; collapsing
+  then leaves it to the right of the boundary. The window should keep the
+  monitor it was on unless the user moved it. Open question: what to do when the
+  window straddles the boundary so it is visible on both monitors? Candidate
+  rule: remember the monitor that holds the most of the window (or the anchor
+  corner), and snap the resize origin to that monitor's edge.
 - **Deferred engineering options. Planned.** From the architecture review:
   - Tag and release the architecture line: hub, pairing, file or hub source,
     ingest, and the plugin.
