@@ -26,6 +26,9 @@ pub struct DisplaySession {
     pub harness_badge: Option<String>,
     pub last_updated: String,
     pub is_done: bool,
+    /// Optional deep link back to the session in its harness UI.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// Short badge for a harness: `oc`, `cx`, `co`, …; `None` for Claude Code
@@ -94,6 +97,7 @@ pub fn load_sessions(
                 harness,
                 last_updated: session.last_updated.clone().unwrap_or_default(),
                 is_done: session.status == Status::Done,
+                url: None,
             }
         })
         .collect();
@@ -141,6 +145,7 @@ pub fn display_session(model: &crate::source::Session) -> DisplaySession {
         harness_badge: model.badge.clone(),
         last_updated: model.last_updated.clone(),
         is_done: model.is_done,
+        url: model.url.clone(),
     }
 }
 
