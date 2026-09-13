@@ -227,6 +227,50 @@ fn pick_state_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<
     Ok(Some(path_string))
 }
 
+// Same reason as `pick_state_file`: the blocking native dialog must not run on
+// the main thread. The chosen path is returned to the caller, which owns
+// persisting it.
+#[tauri::command]
+async fn pick_sound_file(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    app.dialog()
+        .file()
+        .add_filter("WAV audio", &["wav"])
+        .blocking_pick_file()
+        .and_then(|chosen| chosen.into_path().ok())
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+/// Open an `http`/`https` URL in the OS default browser without waiting for it
+/// to exit. Any other scheme is rejected.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let scheme = url.trim().to_ascii_lowercase();
+    if !(scheme.starts_with("http://") || scheme.starts_with("https://")) {
+        return Err("only http:// and https:// URLs can be opened".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    let spawned = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn();
+
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(&url).spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening a browser is not supported on this platform",
+    ));
+
+    spawned.map(|_| ()).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn set_always_on_top(
     app: AppHandle,
@@ -737,23 +781,69 @@ fn apply_server_change(
     }
 }
 
-/// Forward an engine update: the wire snapshot to the frontend, and any
-/// notification edges to a desktop toast.
+/// Forward an engine update: the wire snapshot to the frontend, any
+/// notification edges to a desktop toast, and any alarm edges to sound.
 fn emit_update(app: &AppHandle, update: &Update) {
     let _ = app.emit("state-changed", &update.snapshot);
-    if update.notifications.is_empty() {
-        return;
-    }
-    use tauri_plugin_notification::NotificationExt;
 
-    for notification in &update.notifications {
-        let _ = app
-            .notification()
-            .builder()
-            .title(notification.title.as_str())
-            .body(notification.body.as_str())
-            .show();
+    if !update.notifications.is_empty() {
+        use tauri_plugin_notification::NotificationExt;
+
+        for notification in &update.notifications {
+            let _ = app
+                .notification()
+                .builder()
+                .title(notification.title.as_str())
+                .body(notification.body.as_str())
+                .show();
+        }
     }
+
+    // Alarms are independent of the notification toggle: the engine already
+    // applies `alarm_trigger`, this layer only honors the enable flag.
+    if !update.alarms.is_empty() {
+        let config = current_config(&app.state::<AppState>());
+        if config.alarms_enabled {
+            play_alarm(config.alarm_sound);
+        }
+    }
+}
+
+/// Play the attention alarm on a detached thread so the engine's update sink
+/// never blocks on process spawn or sound playback.
+///
+/// Windows-only playback, with no extra crates: a custom file goes through
+/// PowerShell's `Media.SoundPlayer`, the default through the console beep.
+/// Everywhere else this is a no-op.
+fn play_alarm(sound: Option<String>) {
+    std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        {
+            use std::process::Command;
+
+            let script = match sound {
+                // Single-quote the path for PowerShell and escape any embedded
+                // single quote by doubling it.
+                Some(path) => {
+                    let escaped = path.replace('\'', "''");
+                    format!("(New-Object Media.SoundPlayer -ArgumentList '{escaped}').PlaySync()")
+                }
+                None => "[console]::beep(880,150)".to_string(),
+            };
+            let _ = Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .spawn();
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = sound;
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!("agentlight: alarm sound is only implemented on Windows");
+            });
+        }
+    });
 }
 
 fn show_window(app: &AppHandle) {
@@ -905,6 +995,8 @@ pub fn run() {
             regenerate_pairing,
             revoke_device,
             pick_state_file,
+            pick_sound_file,
+            open_url,
             set_always_on_top,
             resize_window,
             window_minimize,
