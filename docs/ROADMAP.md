@@ -161,6 +161,16 @@ decide and prioritize later.
   "Clear done" misses them. Decide whether the plugin should emit `done` on
   session end or the client should infer it, and make finished sessions
   clearable.
+- **Remove session fails in hub source mode (bug). Planned.** With the desktop
+  set to source `hub`, removing a session from the expanded view returns HTTP
+  `409 command_failed` with `unreadable state file: no source can handle the
+  command`. Cause: `HubSource` forwards `remove_session` with `source =
+  DEFAULT_HUB_ID` (`"hub"`), but the hub engine's source id is `"local"` in file
+  mode or `"events"` in push mode, so `Engine::dispatch` finds no matching
+  source and returns `Error::Unreadable`, which the server maps to `409`. Fix:
+  omit `source` so the server defaults to its first source, or use the source id
+  learned from the hub snapshot. `clear_done` already works, because the hub
+  defaults to its first source.
 - **Right-click hide in collapsed mode. Planned.** Add a context menu on the
   collapsed window with a "Hide" action that sends the app to the tray.
 - **Stay on the same monitor when expanding/collapsing. Planned.** Bug: when the
