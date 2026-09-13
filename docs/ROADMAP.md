@@ -155,11 +155,11 @@ decide and prioritize later.
   hub when it is not running. Must work both for opencode on the host and for
   opencode inside a container. Needs discovery of a running hub, spawn and
   permission rules, and a decision on who owns the process lifecycle.
-- **`done` is never observed (bug). Planned.** Finished sessions, including
-  subagent sessions that have clearly stopped, are not labeled `done`, so
-  "Clear done" misses them. Decide whether the plugin should emit `done` on
-  session end or the client should infer it, and make finished sessions
-  clearable.
+- **`done` is never observed (bug). Fixed in v0.4.0.** Finished sessions,
+  including subagents, only went idle, so "Clear done" missed them. The plugin
+  now reports idle on a session with a `parentID` (a subagent) as `done`, and
+  keeps an idle session that is waiting on a permission as `needs_help`.
+  Covered by `plugins/opencode/test/agentlight.test.js`.
 - **Right-click hide in collapsed mode. Planned.** Add a context menu on the
   collapsed window with a "Hide" action that sends the app to the tray.
 - **Stay on the same monitor when expanding/collapsing. Planned.** Bug: when the

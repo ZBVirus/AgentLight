@@ -109,11 +109,19 @@ Mapping (opencode → AgentLight):
 | opencode event | `status` |
 |---|---|
 | `session.status` `busy` / `retry` | `active` (working) |
-| `session.status` `idle`, `session.idle` | `inactive` (paused) |
+| `session.status` `idle`, `session.idle` (main session) | `inactive` (paused) |
+| `session.status` `idle`, `session.idle` (subagent, has `parentID`) | `done` |
 | `permission.asked` / `permission.updated` | `needs_help` (waiting on you) |
 | `permission.replied` | `active` (resumes) |
 | `session.error` | `needs_help` |
 | `session.deleted` | `done` |
+
+A finished subagent never emits `session.deleted`; it only goes idle. The plugin
+therefore reports idle on a session that has a `parentID` as `done`, so "Clear
+done" can drop it, while a top-level idle session stays `inactive`. An idle
+event while a permission is still pending stays `needs_help`. This mapping is
+covered by `plugins/opencode/test/agentlight.test.js` (run `node --test
+plugins/opencode/test/agentlight.test.js`).
 
 `name` and `project_path` come from the session (`title`, `directory`);
 `harness` is `opencode` and `last_updated` is stamped at send time. Transient
