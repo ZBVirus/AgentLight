@@ -139,18 +139,20 @@ one per session, and click-to-open the window from the toast.
 **Status: Planned.** Captured from product feedback. None of these are started;
 decide and prioritize later.
 
-- **Collapsed view customization. Planned.** Let the user choose what the
-  collapsed window shows and which conditions map to which lights:
-  per-condition colors, which statuses light up, and possibly custom rules.
-  Today the styles are single, triple, and triple-vertical, with fixed colors.
-- **Collapsed view resizing. Planned.** Let the user resize the collapsed
-  window to any size they want, rather than the fixed size per style. Consider
-  how the expanded window behaves after a resize.
-- **Topmost over full-screen apps. Planned.** On Windows, another window can
-  hide AgentLight even with always-on-top, for example an exclusive or
-  borderless full-screen game such as Rocket League. Investigate the
-  full-screen/topmost interaction and whether a native topmost re-assert or a
-  different window style is needed.
+- **Collapsed view customization. Done (v0.5 line).** Settings now has the four
+  collapsed-light colors (`mini_red` / `mini_orange` / `mini_green` /
+  `mini_gray`, any CSS color) and a labels toggle (`mini_show_labels`). The
+  colors apply to all three styles; leaving the built-in color keeps the
+  default palette. Per-status custom rules are still open.
+- **Collapsed view resizing. Done (v0.5 line).** Only the collapsed window is
+  user-resizable; its size persists to `mini_width` / `mini_height` and is
+  restored on restart. Expanded views keep their fixed sizes. Saves are
+  coalesced so a drag writes at most once per ~500 ms.
+- **Topmost over full-screen apps. Done (v0.5 line).** Opt-in
+  `topmost_reassert` re-asserts always-on-top every ~3 s (while `always_on_top`
+  is on) so a borderless/exclusive full-screen app cannot push the widget
+  behind. Windows is the target; a dedicated native `SetWindowPos` re-assert
+  may still be needed if the Tauri call proves insufficient.
 - **Plugin auto-starts the server. Done (v0.5 line).** Opt-in via
   `AGENTLIGHT_AUTOSTART_BIN`: the plugin probes `/healthz`, and if the hub is
   unreachable it spawns that binary detached, waits for health, and never owns
