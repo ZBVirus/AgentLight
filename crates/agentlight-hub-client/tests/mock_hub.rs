@@ -549,6 +549,45 @@ fn ingest_posts_events_and_parses_accepted() {
 }
 
 #[test]
+fn ingest_snapshot_sets_mode_and_upsert_omits_it() {
+    let hub = MockHub::start();
+    hub.set_ingest(200, "{\"accepted\":1}");
+    let client = HubClient::new(HubConfig::new(hub.base_url()));
+
+    let event = SessionEvent {
+        session_id: "s1".to_string(),
+        status: Status::Active,
+        name: None,
+        project_path: None,
+        harness: None,
+        last_updated: None,
+    };
+
+    let accepted = client
+        .ingest_snapshot(std::slice::from_ref(&event))
+        .expect("snapshot ingest");
+    assert_eq!(accepted, 1);
+
+    let requests = hub.recorded();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/api/v1/ingest");
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).expect("json body");
+    assert_eq!(body["mode"], "snapshot");
+    assert_eq!(body["events"][0]["session_id"], "s1");
+
+    client
+        .ingest(std::slice::from_ref(&event))
+        .expect("upsert ingest");
+
+    let requests = hub.recorded();
+    assert_eq!(requests.len(), 2);
+    let body: serde_json::Value = serde_json::from_str(&requests[1].body).expect("json body");
+    assert!(body.get("mode").is_none(), "{body}");
+    assert_eq!(body["events"][0]["session_id"], "s1");
+}
+
+#[test]
 fn subscribe_fires_when_snapshot_changes() {
     let hub = MockHub::start();
     hub.set_snapshot(200, SNAPSHOT_ACTIVE);

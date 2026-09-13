@@ -1,6 +1,7 @@
 //! Engine wiring and the router.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::routing::{delete, get, post};
 use axum::{middleware, Router};
@@ -149,7 +150,13 @@ pub fn build_engine(config: &ServerConfig) -> Engine {
 pub fn build_engine_with_source(config: &ServerConfig) -> (Engine, Option<Arc<EventPushSource>>) {
     let engine = Engine::new(config.core.clone());
     if config.source_kind == SourceKind::Push {
-        let events = Arc::new(EventPushSource::new(EVENTS_SOURCE_ID));
+        let mut events = EventPushSource::with_store(EVENTS_SOURCE_ID, config.events_path.clone());
+        if config.heartbeat_ms > 0 {
+            events = events.with_stale_after(Some(Duration::from_millis(
+                config.heartbeat_ms.saturating_mul(4),
+            )));
+        }
+        let events = Arc::new(events);
         engine.add_source(events.clone());
         (engine, Some(events))
     } else {

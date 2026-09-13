@@ -78,6 +78,10 @@ async fn healthz_is_open_and_negotiates() {
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["capabilities"]["auth"], "bearer");
     assert_eq!(body["capabilities"]["events"][0], "sse");
+    assert_eq!(
+        body["capabilities"]["ingest"],
+        json!(["upsert", "snapshot"])
+    );
 }
 
 #[tokio::test]

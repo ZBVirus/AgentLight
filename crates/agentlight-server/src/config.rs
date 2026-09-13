@@ -24,6 +24,12 @@ pub struct ServerConfig {
     pub admin_token_hash: Option<String>,
     /// Where paired-device records live. `None` keeps them in memory only.
     pub devices_path: Option<PathBuf>,
+    /// Where the push source persists its live set. `None` keeps it in memory
+    /// only; ignored unless `source_kind` is [`SourceKind::Push`].
+    pub events_path: Option<PathBuf>,
+    /// Producer heartbeat interval, in milliseconds. `0` disables the stale
+    /// check; when set, the stale window is four times this value.
+    pub heartbeat_ms: u64,
     /// Where session state comes from. [`SourceKind::Push`] serves events
     /// POSTed to `/api/v1/ingest`; every other kind reads a clawlight file.
     pub source_kind: SourceKind,
@@ -39,6 +45,8 @@ impl Default for ServerConfig {
                 .expect("DEFAULT_BIND is a valid socket address"),
             admin_token_hash: None,
             devices_path: None,
+            events_path: None,
+            heartbeat_ms: 0,
             source_kind: SourceKind::File,
             core: Config::default(),
         }
@@ -53,6 +61,8 @@ impl ServerConfig {
             bind,
             admin_token_hash,
             devices_path: None,
+            events_path: None,
+            heartbeat_ms: 0,
             source_kind: SourceKind::File,
             core,
         }
@@ -75,6 +85,18 @@ impl ServerConfig {
         self.devices_path = Some(path.into());
         self
     }
+
+    /// Persist the push source's live set at `path`.
+    pub fn with_events_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.events_path = Some(path.into());
+        self
+    }
+
+    /// Set the producer heartbeat interval. `0` disables the stale check.
+    pub fn with_heartbeat_ms(mut self, heartbeat_ms: u64) -> Self {
+        self.heartbeat_ms = heartbeat_ms;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +109,8 @@ mod tests {
         assert_eq!(config.bind.to_string(), DEFAULT_BIND);
         assert!(config.admin_token_hash.is_none());
         assert!(config.devices_path.is_none());
+        assert!(config.events_path.is_none());
+        assert_eq!(config.heartbeat_ms, 0);
         assert_eq!(config.source_kind, SourceKind::File);
         assert!(config.core.state_path.is_none());
     }
@@ -110,5 +134,20 @@ mod tests {
     fn with_state_path_sets_the_core_path() {
         let config = ServerConfig::default().with_state_path("/tmp/state.json");
         assert_eq!(config.core.state_path.as_deref(), Some("/tmp/state.json"));
+    }
+
+    #[test]
+    fn with_events_path_sets_the_push_store() {
+        let config = ServerConfig::default().with_events_path("/tmp/push-state.json");
+        assert_eq!(
+            config.events_path.as_deref(),
+            Some(std::path::Path::new("/tmp/push-state.json"))
+        );
+    }
+
+    #[test]
+    fn with_heartbeat_ms_sets_the_window() {
+        let config = ServerConfig::default().with_heartbeat_ms(30_000);
+        assert_eq!(config.heartbeat_ms, 30_000);
     }
 }

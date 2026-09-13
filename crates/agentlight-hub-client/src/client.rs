@@ -136,9 +136,12 @@ struct CommandResponse {
     revision: u64,
 }
 
-/// Body for `POST /api/v1/ingest`: the canonical pushed-event shape, unchanged.
+/// Body for `POST /api/v1/ingest`: the canonical pushed-event shape. `mode` is
+/// omitted for the default upsert so the body is unchanged from before.
 #[derive(Debug, Serialize)]
 struct IngestBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'a str>,
     events: &'a [SessionEvent],
 }
 
@@ -203,8 +206,19 @@ impl HubClient {
     /// length). Only meaningful against an events-mode hub; a file-mode hub
     /// answers `400 bad_request`.
     pub fn ingest(&self, events: &[SessionEvent]) -> Result<usize, HubError> {
+        self.post_ingest(events, None)
+    }
+
+    /// `POST /api/v1/ingest` with `"mode":"snapshot"` — the batch is the
+    /// producer's authoritative live set, so the hub prunes push-source
+    /// sessions absent from it. Returns the hub's `accepted` count.
+    pub fn ingest_snapshot(&self, events: &[SessionEvent]) -> Result<usize, HubError> {
+        self.post_ingest(events, Some("snapshot"))
+    }
+
+    fn post_ingest(&self, events: &[SessionEvent], mode: Option<&str>) -> Result<usize, HubError> {
         let url = format!("{}/api/v1/ingest", self.base());
-        let payload = serde_json::to_string(&IngestBody { events })?;
+        let payload = serde_json::to_string(&IngestBody { mode, events })?;
         let response = self
             .authorize(minreq::post(url))
             .with_header("Content-Type", "application/json")

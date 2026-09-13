@@ -9,8 +9,10 @@
 // `*.js`/`*.ts` in those directories at startup.
 //
 // Environment (read from the opencode process):
-//   AGENTLIGHT_HUB_URL  Hub base URL. Default http://127.0.0.1:8787
-//   AGENTLIGHT_TOKEN    Bearer token, if the hub requires auth. Never logged.
+//   AGENTLIGHT_HUB_URL       Hub base URL. Default http://127.0.0.1:8787
+//   AGENTLIGHT_TOKEN         Bearer token, if the hub requires auth. Never logged.
+//   AGENTLIGHT_HEARTBEAT_MS  Heartbeat snapshot interval in ms. Default 30000.
+//                            `0` disables the periodic snapshot.
 //
 // Mapping (opencode -> AgentLight `status`):
 //   session.status busy / retry      -> active      (working)
@@ -29,21 +31,40 @@
 // Status is forwarded with a short per-session coalescing window so bursts of
 // events collapse into the latest state.
 //
+// On top of those upserts the plugin sends a heartbeat **snapshot**:
+// `{ "mode": "snapshot", "events": [...] }`. A snapshot upserts the batch and
+// then prunes any hub-side session absent from it, so the hub can recover
+// last-known state after either side restarts. One snapshot is sent shortly
+// after startup, then every `AGENTLIGHT_HEARTBEAT_MS` (default 30000; `0`
+// disables the interval). The snapshot carries the live set: every session
+// that is not `done`, plus the newest five `done` sessions by update time.
+//
 // NOTE: this targets the documented plugin API and the event names in
-// `@opencode-ai/sdk` at the time of writing. It has not been run against a
-// live opencode build in this repository. If an event name or payload differs
-// in your version, adapt the `switch` in `handleEvent` below.
+// `@opencode-ai/sdk` at the time of writing, and has been validated against a
+// live opencode build. Other versions may rename events, so adapt the `switch`
+// in `handleEvent` below if an event name or payload differs.
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 const COALESCE_MS = 150;
+const DEFAULT_HEARTBEAT_MS = 30000;
+const MAX_DONE_SESSIONS = 5;
 const HARNESS = "opencode";
 
 export const AgentLightPlugin = async ({ directory, client }) => {
   const hubUrl = (process.env.AGENTLIGHT_HUB_URL || DEFAULT_HUB_URL).replace(/\/+$/, "");
   const token = process.env.AGENTLIGHT_TOKEN || "";
   const ingestUrl = `${hubUrl}/api/v1/ingest`;
+  const parsedHeartbeat = Number.parseInt(process.env.AGENTLIGHT_HEARTBEAT_MS ?? "", 10);
+  const heartbeatMs = Number.isNaN(parsedHeartbeat)
+    ? DEFAULT_HEARTBEAT_MS
+    : Math.max(0, parsedHeartbeat);
 
-  // sessionID -> { name, projectPath, parentID }
+  // Capture fetch at load so a heartbeat from this instance keeps using the
+  // transport it started with (and cannot reach the network after a test or
+  // sidecar swaps globals).
+  const postFetch = globalThis.fetch.bind(globalThis);
+
+  // sessionID -> { name, projectPath, parentID, status, updatedAt }
   const sessions = new Map();
   // sessionID -> { event, timer }
   const pending = new Map();
@@ -70,7 +91,7 @@ export const AgentLightPlugin = async ({ directory, client }) => {
       name: known.name || null,
       project_path: known.projectPath || directory || null,
       harness: HARNESS,
-      last_updated: now(),
+      last_updated: known.updatedAt || now(),
     };
   };
 
@@ -99,8 +120,16 @@ export const AgentLightPlugin = async ({ directory, client }) => {
     }
   };
 
+  // Record the last-known status and when it was seen, so a heartbeat can sort
+  // recent `done` sessions and resend what the hub may have missed.
+  const touch = (sessionID, status) => {
+    const known = sessions.get(sessionID) || {};
+    sessions.set(sessionID, { ...known, status, updatedAt: now() });
+  };
+
   const report = (sessionID, status) => {
     if (!sessionID) return;
+    touch(sessionID, status);
     const event = buildEvent(sessionID, status);
     const existing = pending.get(sessionID);
     if (existing) clearTimeout(existing.timer);
@@ -114,11 +143,49 @@ export const AgentLightPlugin = async ({ directory, client }) => {
 
   const remember = (info) => {
     if (!info || !info.id) return;
+    const known = sessions.get(info.id) || {};
     sessions.set(info.id, {
+      ...known,
       name: info.title || null,
       projectPath: info.directory || null,
       parentID: info.parentID || null,
     });
+  };
+
+  const snapshotEvents = () => {
+    const live = [];
+    const done = [];
+    for (const [sessionID, info] of sessions) {
+      if (info.status === "done") done.push([sessionID, info]);
+      else live.push([sessionID, info]);
+    }
+    // Newest `done` first; ISO-8601 strings sort lexicographically.
+    done.sort((a, b) => String(b[1].updatedAt || "").localeCompare(String(a[1].updatedAt || "")));
+    return [...live, ...done.slice(0, MAX_DONE_SESSIONS)].map(([sessionID, info]) =>
+      buildEvent(sessionID, info.status || "inactive"),
+    );
+  };
+
+  const sendSnapshot = async () => {
+    const body = JSON.stringify({ mode: "snapshot", events: snapshotEvents() });
+
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    try {
+      const response = await postFetch(ingestUrl, { method: "POST", headers, body });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        await log("warn", "hub rejected snapshot", {
+          status: response.status,
+          body: text.slice(0, 200),
+        });
+      }
+    } catch (error) {
+      await log("error", `could not reach hub at ${hubUrl}`, {
+        error: String(error && error.message ? error.message : error),
+      });
+    }
   };
 
   // A session created by a tool (a subagent) carries a `parentID`. It runs to
@@ -197,6 +264,21 @@ export const AgentLightPlugin = async ({ directory, client }) => {
         break;
     }
   };
+
+  // One snapshot shortly after startup, so a hub that restarted (or missed our
+  // events while it was down) resyncs to the current live set. Deferred a tick
+  // so sessions created during startup land in the first snapshot.
+  setTimeout(() => {
+    sendSnapshot();
+  }, 0);
+
+  if (heartbeatMs > 0) {
+    const heartbeat = setInterval(() => {
+      sendSnapshot();
+    }, heartbeatMs);
+    // Allow opencode to exit without waiting on the heartbeat.
+    if (heartbeat && typeof heartbeat.unref === "function") heartbeat.unref();
+  }
 
   return {
     event: async ({ event }) => {

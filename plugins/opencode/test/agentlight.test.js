@@ -17,7 +17,9 @@ async function harness(sessionInfo = {}) {
   const calls = [];
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
-    calls.push({ url, event: JSON.parse(options.body).events[0] });
+    const body = JSON.parse(options.body);
+    const events = body.events || [];
+    calls.push({ url, mode: body.mode, events, event: events[0] });
     return { ok: true, status: 200, text: async () => "" };
   };
 
@@ -31,9 +33,14 @@ async function harness(sessionInfo = {}) {
     calls,
     emit: (type, properties) => hooks.event({ event: { type, properties } }),
     lastStatus: () => {
-      const call = calls.at(-1);
-      return call && call.event.status;
+      for (let i = calls.length - 1; i >= 0; i--) {
+        const event = calls[i].event;
+        if (event && event.status) return event.status;
+      }
+      return undefined;
     },
+    snapshots: () => calls.filter((call) => call.mode === "snapshot"),
+    lastSnapshot: () => calls.filter((call) => call.mode === "snapshot").at(-1),
     restore: () => {
       globalThis.fetch = previousFetch;
     },
@@ -121,4 +128,67 @@ test("a busy session is active", async (t) => {
   await sleep(COALESCE_WAIT_MS);
 
   assert.equal(h.lastStatus(), "active");
+});
+
+test("a startup snapshot is sent with mode snapshot and includes a created session", async (t) => {
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.created", {
+    info: { id: "main", title: "Main", directory: "/work/project" },
+  });
+  await sleep(COALESCE_WAIT_MS);
+
+  const snapshot = h.snapshots()[0];
+  assert.ok(snapshot, "expected a startup snapshot");
+  assert.equal(snapshot.mode, "snapshot");
+  assert.ok(
+    snapshot.events.some((event) => event.session_id === "main"),
+    "snapshot should include the session created via session.created",
+  );
+});
+
+test("a snapshot keeps every non-done session and trims done to the newest five", async (t) => {
+  process.env.AGENTLIGHT_HEARTBEAT_MS = "20";
+  t.after(() => {
+    delete process.env.AGENTLIGHT_HEARTBEAT_MS;
+  });
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.created", {
+    info: { id: "live", title: "Live", directory: "/work/project" },
+  });
+  await h.emit("session.status", { sessionID: "live", status: { type: "busy" } });
+
+  for (let i = 0; i < 7; i++) {
+    await h.emit("session.deleted", {
+      info: { id: `done-${i}`, title: `Done ${i}`, directory: "/work/project" },
+    });
+  }
+
+  await sleep(200);
+
+  const snapshot = h.lastSnapshot();
+  assert.ok(snapshot, "expected a heartbeat snapshot");
+  const ids = snapshot.events.map((event) => event.session_id);
+  assert.ok(ids.includes("live"), "non-done sessions must always be present");
+  const doneIds = ids.filter((id) => id.startsWith("done-"));
+  assert.equal(doneIds.length, 5, "more than five done sessions must be trimmed");
+});
+
+test("the heartbeat interval sends repeated snapshots", async (t) => {
+  process.env.AGENTLIGHT_HEARTBEAT_MS = "40";
+  t.after(() => {
+    delete process.env.AGENTLIGHT_HEARTBEAT_MS;
+  });
+  const h = await harness();
+  t.after(h.restore);
+
+  await sleep(200);
+
+  assert.ok(
+    h.snapshots().length > 1,
+    `expected more than one snapshot, got ${h.snapshots().length}`,
+  );
 });

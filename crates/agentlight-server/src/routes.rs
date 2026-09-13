@@ -37,6 +37,7 @@ pub struct CapabilityResponse {
     pub events: Vec<&'static str>,
     pub commands: Vec<&'static str>,
     pub auth: &'static str,
+    pub ingest: Vec<&'static str>,
 }
 
 /// The self-contained, framework-free browser client served at `GET /`.
@@ -60,6 +61,7 @@ pub async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
             } else {
                 "none"
             },
+            ingest: vec!["upsert", "snapshot"],
         },
     })
 }
@@ -206,10 +208,13 @@ pub async fn commands(
 }
 
 /// Body for `POST /api/v1/ingest`. Unknown fields on the envelope and on each
-/// event are ignored.
+/// event are ignored. `mode` is `"upsert"` (the default) or `"snapshot"`; any
+/// other value is a `400`.
 #[derive(Debug, Deserialize)]
 pub struct IngestRequest {
     pub events: Vec<SessionEvent>,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,9 +222,10 @@ pub struct IngestResponse {
     pub accepted: usize,
 }
 
-/// `POST /api/v1/ingest` — upsert a batch of pushed session events into the
-/// event source. Only available when the server runs in events mode; otherwise
-/// the request is a `400`.
+/// `POST /api/v1/ingest` — merge a batch of pushed session events into the
+/// event source. `upsert` (the default) only adds and updates; `snapshot` also
+/// prunes push-source sessions absent from the batch. Only available when the
+/// server runs in events mode; otherwise the request is a `400`.
 pub async fn ingest(
     State(state): State<AppState>,
     payload: Result<Json<IngestRequest>, JsonRejection>,
@@ -229,6 +235,14 @@ pub async fn ingest(
     let events = state
         .events()
         .ok_or_else(|| ApiError::bad_request("this server is not in events mode"))?;
-    let accepted = events.apply(&request.events);
+    let accepted = match request.mode.as_deref() {
+        None | Some("upsert") => events.apply(&request.events),
+        Some("snapshot") => events.apply_snapshot(&request.events),
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "unknown ingest mode: {other}"
+            )));
+        }
+    };
     Ok(Json(IngestResponse { accepted }))
 }

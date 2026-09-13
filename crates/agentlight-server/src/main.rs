@@ -4,8 +4,11 @@
 //! `AGENTLIGHT_BIND` (`127.0.0.1:8787`), `AGENTLIGHT_TOKEN` (unset disables
 //! auth; hashed at startup), `AGENTLIGHT_SOURCE` (`file`, or `events`/`ingest`
 //! for the push source), `AGENTLIGHT_STATE_FILE` (clawlight `state.json`),
-//! `AGENTLIGHT_POLL_MS` (`1500`), and `AGENTLIGHT_DEVICES_FILE` (`devices.json`
-//! in the working directory). No config file is read.
+//! `AGENTLIGHT_POLL_MS` (`1500`), `AGENTLIGHT_DEVICES_FILE` (`devices.json` in
+//! the working directory), `AGENTLIGHT_EVENTS_FILE` (`push-state.json` in the
+//! working directory, the push source's durable store), and
+//! `AGENTLIGHT_HEARTBEAT_MS` (`0`, disabled; when set the stale window is four
+//! times this). No config file is read.
 
 use std::path::PathBuf;
 
@@ -37,6 +40,10 @@ fn server_config() -> ServerConfig {
     let devices_path = env_non_empty("AGENTLIGHT_DEVICES_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("devices.json"));
+    let events_path = env_non_empty("AGENTLIGHT_EVENTS_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("push-state.json"));
+    let heartbeat_ms = env_parse("AGENTLIGHT_HEARTBEAT_MS").unwrap_or(0);
 
     let source_kind = match env_non_empty("AGENTLIGHT_SOURCE").as_deref() {
         Some("events") | Some("ingest") => SourceKind::Push,
@@ -46,6 +53,8 @@ fn server_config() -> ServerConfig {
     ServerConfig::new(bind, admin_token_hash, core.sanitized())
         .with_source_kind(source_kind)
         .with_devices_path(devices_path)
+        .with_events_path(events_path)
+        .with_heartbeat_ms(heartbeat_ms)
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

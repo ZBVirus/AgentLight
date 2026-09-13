@@ -152,6 +152,73 @@ async fn follow_up_ingest_updates_the_status() {
 }
 
 #[tokio::test]
+async fn snapshot_mode_prunes_sessions_absent_from_the_batch() {
+    let app = events_app();
+
+    let seed = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [
+                { "session_id": "a", "status": "active" },
+                { "session_id": "b", "status": "active" }
+            ] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(seed.status(), StatusCode::OK);
+
+    let snapshot_ingest = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({
+                "mode": "snapshot",
+                "events": [{ "session_id": "b", "status": "needs_help" }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(snapshot_ingest.status(), StatusCode::OK);
+    assert_eq!(read_json(snapshot_ingest).await["accepted"], 1);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(body["counts"]["total"], 1);
+    assert_eq!(body["sessions"][0]["session_id"], "b");
+    assert_eq!(body["sessions"][0]["status"], "needs_help");
+}
+
+#[tokio::test]
+async fn unknown_ingest_mode_is_a_bad_request() {
+    let app = events_app();
+
+    let response = app
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "mode": "merge", "events": [] })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = read_json(response).await;
+    assert_eq!(body["error"]["code"], "bad_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown ingest mode"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn ingest_is_rejected_in_file_mode() {
     let config = ServerConfig {
         admin_token_hash: Some(hash_token("secret")),
