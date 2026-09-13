@@ -171,6 +171,24 @@ decide and prioritize later.
   window straddles the boundary so it is visible on both monitors? Candidate
   rule: remember the monitor that holds the most of the window (or the anchor
   corner), and snap the resize origin to that monitor's edge.
+- **Jump to a session in the opencode web UI. Planned.** Can we detect which
+  Chrome window and which tab/session inside opencode's web UI a given session
+  lives in, and offer a button in AgentLight to open or focus it? Open question:
+  what would this take, and where (app, plugin, browser extension, opencode)?
+  Candidate paths: (a) the plugin knows opencode's server URL and session id and
+  emits a stable deep link; the app opens it, which focuses an existing tab if
+  the browser cooperates, otherwise opens a new one; (b) a browser extension or
+  the web UI itself uses native messaging to focus the tab; (c) the app matches
+  opencode's own session id to AgentLight's `(source, session_id)` key. A native
+  app cannot enumerate or control browser windows without such cooperation, so
+  the plugin or a deep link is likely the only workable route.
+- **Attention alarms and custom sounds. Planned.** Make AgentLight act as an
+  alarm that fires when an agent needs attention, not just a passive light.
+  Customizable trigger logic (which statuses or aggregate fire, per source,
+  re-alert while `needs_help` persists, snooze/acknowledge, quiet hours) and
+  customizable sounds per condition and source. Needs a rules model in settings,
+  sound-file selection and playback, dedup/escalation policy, and a way to
+  respect the existing notification opt-in.
 - **Deferred engineering options. Planned.** From the architecture review:
   - Tag and release the architecture line: hub, pairing, file or hub source,
     ingest, and the plugin.
