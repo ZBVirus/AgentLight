@@ -110,7 +110,9 @@ echo '{"session_id":"abc","status":"active","name":"Fix auth"}' | agentlight-hoo
 
 The hub persists pushed sessions to `AGENTLIGHT_EVENTS_FILE` (default
 `push-state.json`) and reloads them on restart, so last-known state survives a
-hub restart instead of starting empty.
+hub restart instead of starting empty. The plugin can also start the hub itself:
+set `AGENTLIGHT_AUTOSTART_BIN` to the `agentlight-server` binary and it probes
+`/healthz`, spawning the hub only when nothing is already running.
 
 See [`docs/plugin.md`](docs/plugin.md) for hub setup, the hook, plugin install,
 the `SessionEvent` schema, and the token security note.

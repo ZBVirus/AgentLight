@@ -210,6 +210,37 @@ body[data-collapse="triple_vertical"] .mini-triple {
   box-shadow: 0 0 12px rgba(152, 195, 121, 0.7);
 }
 
+/* Mini context menu ------------------------------------------------------ */
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  padding: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+
+.context-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.context-item:hover {
+  background: var(--sel);
+}
+
 /* Light ------------------------------------------------------------------ */
 
 .light {

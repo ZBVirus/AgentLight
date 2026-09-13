@@ -105,7 +105,14 @@ Configure it through the environment opencode is launched with:
 ```bash
 export AGENTLIGHT_HUB_URL=http://127.0.0.1:8787
 export AGENTLIGHT_TOKEN=secret   # only if the hub requires auth
+export AGENTLIGHT_HEARTBEAT_MS=30000          # heartbeat snapshot interval; 0 disables
+export AGENTLIGHT_AUTOSTART_BIN=/path/to/agentlight-server  # optional; see below
 ```
+
+`AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
+startup, the plugin spawns that binary detached, waits a few seconds for health,
+and then reports normally. It never stops the process it started; the hub owns
+its own lifecycle. Leave it unset if you run the hub yourself.
 
 Mapping (opencode → AgentLight):
 

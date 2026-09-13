@@ -13,6 +13,78 @@ const COALESCE_WAIT_MS = 300;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitFor(predicate, { timeout = 1000, interval = 5 } = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(interval);
+  }
+  throw new Error("waitFor timed out");
+}
+
+// Fetch stub that answers /healthz (with a call-count controllable verdict) and
+// accepts ingest posts. `healthyAfter` is the number of unhealthy probes before
+// it starts reporting 200.
+function healthFetch({ healthyAfter = 0 } = {}) {
+  const calls = [];
+  let healthCount = 0;
+  const fetchStub = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method });
+    if (String(url).endsWith("/healthz")) {
+      healthCount += 1;
+      const healthy = healthCount > healthyAfter;
+      return { ok: healthy, status: healthy ? 200 : 503, text: async () => "" };
+    }
+    return { ok: true, status: 200, text: async () => "" };
+  };
+  fetchStub.calls = calls;
+  fetchStub.healthCount = () => healthCount;
+  return fetchStub;
+}
+
+function trackingClient() {
+  const logs = [];
+  return {
+    logs,
+    app: {
+      log: async ({ body }) => {
+        logs.push(body);
+      },
+    },
+    session: { get: async () => ({ data: undefined }) },
+  };
+}
+
+function spawnSpy() {
+  const calls = [];
+  let unrefCount = 0;
+  const spawn = (bin, args, options) => {
+    calls.push({ bin, args, options });
+    return {
+      pid: 4242,
+      unref: () => {
+        unrefCount += 1;
+      },
+    };
+  };
+  spawn.calls = calls;
+  spawn.unrefCount = () => unrefCount;
+  return spawn;
+}
+
+// Save AGENTLIGHT_AUTOSTART_BIN and restore it when the returned function runs.
+function setAutostartBin(value) {
+  const previous = process.env.AGENTLIGHT_AUTOSTART_BIN;
+  if (value === undefined) delete process.env.AGENTLIGHT_AUTOSTART_BIN;
+  else process.env.AGENTLIGHT_AUTOSTART_BIN = value;
+  return () => {
+    if (previous === undefined) delete process.env.AGENTLIGHT_AUTOSTART_BIN;
+    else process.env.AGENTLIGHT_AUTOSTART_BIN = previous;
+  };
+}
+
+const FAST_TIMING = { probeTimeoutMs: 5, pollIntervalMs: 5, pollTimeoutMs: 20 };
+
 async function harness(sessionInfo = {}) {
   const calls = [];
   const previousFetch = globalThis.fetch;
@@ -192,3 +264,98 @@ test("the heartbeat interval sends repeated snapshots", async (t) => {
     `expected more than one snapshot, got ${h.snapshots().length}`,
   );
 });
+
+test("a healthy hub is not spawned", async (t) => {
+  t.after(setAutostartBin("/opt/agentlight/agentlight-server"));
+
+  const fetchStub = healthFetch({ healthyAfter: 0 });
+  const spawn = spawnSpy();
+  const client = trackingClient();
+
+  await AgentLightPlugin(
+    { directory: "/work/project", client },
+    { spawn, fetch: fetchStub, timing: FAST_TIMING },
+  );
+
+  await waitFor(() => fetchStub.healthCount() >= 1);
+  await sleep(20);
+
+  assert.equal(spawn.calls.length, 0, "must not spawn when /healthz is healthy");
+});
+
+test("no autostart bin means no probe and no spawn", async (t) => {
+  t.after(setAutostartBin(undefined));
+
+  const fetchStub = healthFetch({ healthyAfter: 0 });
+  const spawn = spawnSpy();
+  const client = trackingClient();
+
+  await AgentLightPlugin(
+    { directory: "/work/project", client },
+    { spawn, fetch: fetchStub, timing: FAST_TIMING },
+  );
+  await sleep(20);
+
+  assert.equal(spawn.calls.length, 0, "must not spawn without AGENTLIGHT_AUTOSTART_BIN");
+  assert.equal(
+    fetchStub.calls.filter((call) => call.url.endsWith("/healthz")).length,
+    0,
+    "must be a no-op without AGENTLIGHT_AUTOSTART_BIN",
+  );
+});
+
+test("an unreachable hub is spawned detached and unref'd, then awaited", async (t) => {
+  t.after(setAutostartBin("/opt/agentlight/agentlight-server"));
+
+  const fetchStub = healthFetch({ healthyAfter: 1 });
+  const spawn = spawnSpy();
+  const client = trackingClient();
+
+  await AgentLightPlugin(
+    { directory: "/work/project", client },
+    { spawn, fetch: fetchStub, timing: FAST_TIMING },
+  );
+
+  await waitFor(() => spawn.unrefCount() >= 1);
+  await waitFor(() => fetchStub.healthCount() >= 2);
+  await sleep(20);
+
+  assert.equal(spawn.calls.length, 1, "expected exactly one spawn");
+  assert.equal(spawn.calls[0].bin, "/opt/agentlight/agentlight-server");
+  assert.deepEqual(spawn.calls[0].args, []);
+  assert.equal(spawn.calls[0].options.detached, true);
+  assert.equal(spawn.calls[0].options.stdio, "ignore");
+  assert.equal(spawn.unrefCount(), 1, "the detached child must be unref'd");
+  assert.equal(
+    client.logs.filter((entry) => entry.level === "warn").length,
+    0,
+    "a hub that comes up must not warn",
+  );
+});
+
+test("a hub that never becomes healthy is warned about and gives up", async (t) => {
+  t.after(setAutostartBin("/opt/agentlight/agentlight-server"));
+
+  const fetchStub = healthFetch({ healthyAfter: Number.POSITIVE_INFINITY });
+  const spawn = spawnSpy();
+  const client = trackingClient();
+
+  const startedAt = Date.now();
+  await AgentLightPlugin(
+    { directory: "/work/project", client },
+    { spawn, fetch: fetchStub, timing: FAST_TIMING },
+  );
+
+  await waitFor(() => client.logs.some((entry) => /did not become healthy/.test(entry.message)));
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(spawn.calls.length, 1, "the binary should still be spawned");
+  assert.equal(spawn.unrefCount(), 1);
+  assert.ok(elapsed < 1000, `autostart should give up quickly, took ${elapsed}ms`);
+  assert.equal(
+    client.logs.filter((entry) => entry.level === "warn").length,
+    1,
+    "expected exactly one warning",
+  );
+});
+

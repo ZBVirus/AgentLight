@@ -13,6 +13,18 @@
 //   AGENTLIGHT_TOKEN         Bearer token, if the hub requires auth. Never logged.
 //   AGENTLIGHT_HEARTBEAT_MS  Heartbeat snapshot interval in ms. Default 30000.
 //                            `0` disables the periodic snapshot.
+//   AGENTLIGHT_AUTOSTART_BIN Optional absolute path to the `agentlight-server`
+//                            binary. Opt-in: unset/empty means this plugin never
+//                            probes or starts anything and event reporting is
+//                            unchanged. When set, the plugin probes
+//                            `GET ${hub}/healthz` once at startup; if the hub is
+//                            healthy it does nothing. If it is unreachable, the
+//                            plugin starts the binary **detached** (stdio
+//                            ignored, `unref()`ed) and polls `/healthz` for a
+//                            few seconds, logging a warning if it never comes up.
+//                            The plugin does not own the process: it never stops
+//                            the server on exit, and a failed start is logged,
+//                            never thrown.
 //
 // Mapping (opencode -> AgentLight `status`):
 //   session.status busy / retry      -> active      (working)
@@ -44,13 +56,21 @@
 // live opencode build. Other versions may rename events, so adapt the `switch`
 // in `handleEvent` below if an event name or payload differs.
 
+import { spawn as nodeSpawn } from "node:child_process";
+
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 const COALESCE_MS = 150;
 const DEFAULT_HEARTBEAT_MS = 30000;
 const MAX_DONE_SESSIONS = 5;
 const HARNESS = "opencode";
+const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1000;
+const DEFAULT_HEALTH_POLL_INTERVAL_MS = 250;
+const DEFAULT_HEALTH_POLL_TIMEOUT_MS = 5000;
 
-export const AgentLightPlugin = async ({ directory, client }) => {
+export const AgentLightPlugin = async (
+  { directory, client },
+  { spawn = nodeSpawn, fetch = globalThis.fetch, timing = {} } = {},
+) => {
   const hubUrl = (process.env.AGENTLIGHT_HUB_URL || DEFAULT_HUB_URL).replace(/\/+$/, "");
   const token = process.env.AGENTLIGHT_TOKEN || "";
   const ingestUrl = `${hubUrl}/api/v1/ingest`;
@@ -59,10 +79,15 @@ export const AgentLightPlugin = async ({ directory, client }) => {
     ? DEFAULT_HEARTBEAT_MS
     : Math.max(0, parsedHeartbeat);
 
+  const autostartBin = (process.env.AGENTLIGHT_AUTOSTART_BIN || "").trim();
+  const healthProbeTimeoutMs = timing.probeTimeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
+  const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
+  const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
+
   // Capture fetch at load so a heartbeat from this instance keeps using the
   // transport it started with (and cannot reach the network after a test or
   // sidecar swaps globals).
-  const postFetch = globalThis.fetch.bind(globalThis);
+  const postFetch = typeof fetch === "function" ? fetch.bind(globalThis) : fetch;
 
   // sessionID -> { name, projectPath, parentID, status, updatedAt }
   const sessions = new Map();
@@ -82,6 +107,65 @@ export const AgentLightPlugin = async ({ directory, client }) => {
   };
 
   const now = () => new Date().toISOString();
+
+  const sleep = (ms) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      // Allow opencode to exit without waiting on the poll loop.
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+
+  const probeHealth = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), healthProbeTimeoutMs);
+    if (timer && typeof timer.unref === "function") timer.unref();
+    try {
+      const response = await postFetch(`${hubUrl}/healthz`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      return Boolean(response && response.ok);
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // Opt-in hub autostart. Unset `AGENTLIGHT_AUTOSTART_BIN` makes this a no-op,
+  // so the plugin's event reporting is unchanged. The child is spawned detached
+  // and unref'd: the plugin never waits on it and never stops it on exit.
+  const ensureHubRunning = async () => {
+    if (!autostartBin) return;
+    if (await probeHealth()) return;
+    try {
+      const child = spawn(autostartBin, [], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+      });
+      if (child && typeof child.unref === "function") child.unref();
+    } catch (error) {
+      await log("warn", "could not start AgentLight hub", {
+        bin: autostartBin,
+        error: String(error && error.message ? error.message : error),
+      });
+      return;
+    }
+
+    const deadline = Date.now() + healthPollTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(healthPollIntervalMs);
+      if (await probeHealth()) return;
+    }
+    await log("warn", "AgentLight hub did not become healthy after autostart", {
+      bin: autostartBin,
+      waited_ms: healthPollTimeoutMs,
+    });
+  };
+
+  // Fire-and-forget: startup must not block on the hub coming up.
+  ensureHubRunning().catch(() => {});
 
   const buildEvent = (sessionID, status) => {
     const known = sessions.get(sessionID) || {};
@@ -105,7 +189,7 @@ export const AgentLightPlugin = async ({ directory, client }) => {
     if (token) headers.Authorization = `Bearer ${token}`;
 
     try {
-      const response = await fetch(ingestUrl, { method: "POST", headers, body });
+      const response = await postFetch(ingestUrl, { method: "POST", headers, body });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         await log("warn", `hub rejected event for ${sessionID}`, {
