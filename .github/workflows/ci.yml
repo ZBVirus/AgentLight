@@ -35,6 +35,18 @@ jobs:
       - name: Test
         run: cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client
 
+  plugin:
+    name: plugin (node tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Test plugin
+        run: node --test plugins/opencode/test/agentlight.test.js
+
   windows:
     name: windows app build
     runs-on: windows-latest
