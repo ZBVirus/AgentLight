@@ -29,6 +29,9 @@ agentlight-server
 - Sessions live in memory only: a restart starts empty, and `GET
   /api/v1/snapshot` reports `source_kind: "push"`, `source_label: "events"`,
   and — before the first event — `ok: false` with `Waiting for agent events`.
+  A durable store and a producer heartbeat are specified but not yet
+  implemented; see "Snapshot mode and producer heartbeat" in
+  [`protocol.md`](protocol.md).
 
 `POST /api/v1/ingest` requires the admin or a device token and accepts an
 `{ "events": [ ... ] }` batch.
