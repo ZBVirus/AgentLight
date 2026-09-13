@@ -150,6 +150,20 @@ impl Engine {
         self.inner.publish(Utc::now())
     }
 
+    /// The current state as an [`Update`], without publishing or bumping the
+    /// revision. Used to seed a new stream (e.g. SSE) with the present state
+    /// before live updates begin.
+    pub fn current_update(&self) -> Update {
+        let now = Utc::now();
+        let sources = self.inner.source_snapshots(now);
+        let snapshot = self.inner.render(&sources, now);
+        Update {
+            revision: self.inner.revision.load(Ordering::SeqCst),
+            snapshot,
+            notifications: Vec::new(),
+        }
+    }
+
     pub fn source_id(&self) -> Option<SourceId> {
         self.inner.sources.lock().unwrap().first().map(|s| s.id())
     }
@@ -494,6 +508,23 @@ mod tests {
         assert!(third > first);
         let seen = seen.lock().unwrap().clone();
         assert!(seen.windows(2).all(|pair| pair[1] > pair[0]));
+    }
+
+    #[test]
+    fn current_update_does_not_bump_the_revision() {
+        let engine = Engine::new(Config::default());
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![frame("a", "1", Status::Active, 1)]),
+        ));
+
+        let before = engine.current_update().revision;
+        let _ = engine.current_update();
+        let _ = engine.current_update();
+        assert_eq!(engine.current_update().revision, before);
+
+        let after_refresh = engine.refresh().revision;
+        assert!(after_refresh > before);
+        assert_eq!(engine.current_update().revision, after_refresh);
     }
 
     #[test]

@@ -213,6 +213,12 @@ keep-alive comment every 15 seconds.
 | `update` | A `agentlight_core::Update` object as JSON (below). |
 | `lagged` | Decimal count of updates dropped for this client; re-fetch `/api/v1/snapshot`. |
 
+Immediately on connect, before any live frames, the server sends one `update`
+frame carrying the current state. A subscriber therefore has the initial view
+without a separate `GET /api/v1/snapshot` round trip. A `lagged` frame still
+means updates were dropped for that client; because every frame is a whole
+snapshot, re-fetching is optional but recommended.
+
 An `Update` frame:
 
 ```json

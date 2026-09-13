@@ -127,17 +127,30 @@ pub async fn snapshot(State(state): State<AppState>) -> Result<Json<Snapshot>, A
     Ok(Json(snapshot))
 }
 
-/// `GET /api/v1/events` — Server-Sent Events carrying every [`Update`].
+/// `GET /api/v1/events` — Server-Sent Events carrying every [`Update`]. The
+/// first frame is the current state, so a client renders immediately instead of
+/// waiting for the next engine change.
 pub async fn events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static> {
-    let stream = BroadcastStream::new(state.subscribe()).filter_map(|result| match result {
+    // Compute the seed before subscribing: otherwise the update that produced
+    // it could also be queued and sent a second time.
+    let engine = state.engine().clone();
+    let initial: Option<Result<Event, Infallible>> =
+        tokio::task::spawn_blocking(move || engine.current_update())
+            .await
+            .ok()
+            .map(|update| Ok(update_event(update)));
+
+    let live = BroadcastStream::new(state.subscribe()).filter_map(|result| match result {
         Ok(update) => Some(Ok(update_event(update))),
         Err(BroadcastStreamRecvError::Lagged(skipped)) => Some(Ok(Event::default()
             .event("lagged")
             .data(skipped.to_string()))),
     });
-    Sse::new(stream).keep_alive(KeepAlive::default().interval(Duration::from_secs(15)))
+
+    Sse::new(tokio_stream::iter(initial).chain(live))
+        .keep_alive(KeepAlive::default().interval(Duration::from_secs(15)))
 }
 
 fn update_event(update: Update) -> Event {

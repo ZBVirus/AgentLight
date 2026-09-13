@@ -75,6 +75,12 @@ or a remote AgentLight hub, chosen under **Source** in Settings. The embedded
 server above is independent: this widget can host a hub and read from one at the
 same time, and reading from a hub needs no local clawlight install.
 
+The desktop follows the hub's live SSE stream (`GET /api/v1/events`) instead of
+fixed-interval polling, so updates arrive as the hub emits them and the
+connect-time frame supplies the current state immediately. If the stream cannot
+be established it falls back to polling `GET /api/v1/snapshot`, emitting only on
+change.
+
 A hub that requires auth is addressed with a bearer token. That token is a
 **client credential** the hub validates, so it must be sent verbatim and cannot
 be stored as a hash the way the server's admin token is. It therefore lives in

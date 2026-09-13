@@ -189,6 +189,28 @@ impl HubClient {
         serde_json::from_str(body).map_err(HubError::Decode)
     }
 
+    /// `GET /api/v1/events` — the hub's Server-Sent Events stream.
+    ///
+    /// Returned lazily and deliberately without a timeout: minreq's timeout is
+    /// an absolute deadline, so it would kill a long-lived stream. The caller
+    /// reads frames until EOF (the hub closes the connection on lag/disconnect,
+    /// so a reconnect is expected). A non-2xx status is reported as
+    /// [`HubError::Http`] without consuming the stream.
+    pub(crate) fn events_stream(&self) -> Result<minreq::ResponseLazy, HubError> {
+        let url = format!("{}/api/v1/events", self.base());
+        let response = self
+            .authorize(minreq::get(url))
+            .with_header("Accept", "text/event-stream")
+            .send_lazy()?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(HubError::Http {
+                status: response.status_code,
+                body: String::new(),
+            });
+        }
+        Ok(response)
+    }
+
     /// `POST /api/v1/commands` with a `remove_session` body. Returns the
     /// revision produced by the hub's follow-up refresh.
     pub fn remove_session(&self, source: Option<&str>, session_id: &str) -> Result<u64, HubError> {

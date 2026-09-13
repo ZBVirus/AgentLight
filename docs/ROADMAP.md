@@ -197,4 +197,7 @@ decide and prioritize later.
     bounded recent-`done` tail, never full history), and a `mode: "snapshot"`
     ingest prunes sessions that vanished while the hub was down. Documented in
     `docs/protocol.md` under "Snapshot mode and producer heartbeat".
-  - Move `HubSource` from polling to the hub's SSE stream.
+  - **Done (v0.4.x).** `HubSource` follows the hub's SSE stream, emitting a
+    change on connect and on each `update`/`lagged` frame and reconnecting on
+    disconnect. If the stream cannot be established it falls back to a one-shot
+    `GET /api/v1/snapshot` poll, emitting only on change.

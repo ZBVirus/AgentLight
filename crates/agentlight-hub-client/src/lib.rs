@@ -13,7 +13,8 @@
 //! - [`HubConfig`] — one hub's connection settings.
 //! - [`HubClient`] — blocking `snapshot` / `remove_session` / `clear_done`.
 //! - [`HubSource`] — the [`StateSource`](agentlight_core::StateSource) adapter,
-//!   including a poll thread that emits [`SourceEvent::Changed`] on change.
+//!   including an SSE reader thread (with a poll fallback) that emits
+//!   [`SourceEvent::Changed`] on change.
 //!
 //! [`SourceEvent::Changed`]: agentlight_core::SourceEvent::Changed
 
@@ -21,6 +22,7 @@
 
 mod client;
 mod source;
+mod sse;
 
 pub use client::{
     HubClient, HubConfig, HubError, DEFAULT_BASE_URL, DEFAULT_HUB_ID, DEFAULT_POLL_MS,

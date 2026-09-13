@@ -69,8 +69,8 @@ impl HubSource {
         let sinks = self.sinks.clone();
         let poll_ms = self.poll_ms;
         std::thread::Builder::new()
-            .name("agentlight-hub-poll".to_string())
-            .spawn(move || poll_loop(client, poll_ms, thread_stop, sinks))
+            .name("agentlight-hub-stream".to_string())
+            .spawn(move || stream_loop(client, poll_ms, thread_stop, sinks))
             .ok();
         *poller = Some(PollHandle { stop });
     }
@@ -191,23 +191,46 @@ fn remote_error(error: crate::client::HubError) -> Error {
     Error::Io(std::io::Error::other(error.to_string()))
 }
 
-/// Poll the hub forever, emitting [`SourceEvent::Changed`] whenever the
-/// snapshot signature changes (including the first successful poll and any
-/// transition into/out of an error). Plain `std::thread`, no async runtime.
-fn poll_loop(
+/// Follow the hub's SSE stream forever, emitting [`SourceEvent::Changed`] on
+/// every `update`/`lagged` frame. A successful connect also emits once, so a
+/// subscriber can render before the first frame arrives. If the stream cannot
+/// be established, fall back to one [`poll_once`] so the source still makes
+/// progress. Reconnects after `poll_ms` (clamped by [`MIN_POLL_MS`]). Plain
+/// `std::thread`, no async runtime.
+fn stream_loop(
     client: HubClient,
     poll_ms: u64,
     stop: Arc<AtomicBool>,
     sinks: Arc<Mutex<Vec<SourceSink>>>,
 ) {
+    let reconnect_delay = poll_ms.max(MIN_POLL_MS);
     let mut last: Option<String> = None;
     while !stop.load(Ordering::SeqCst) {
-        let signature = client.snapshot().ok().map(|snapshot| signature(&snapshot));
-        if signature != last {
-            last = signature;
-            emit(&sinks);
+        match client.events_stream() {
+            Ok(response) => {
+                emit(&sinks);
+                let reader = std::io::BufReader::new(response);
+                crate::sse::read_frames(reader, &stop, &mut |event| {
+                    if matches!(event, "update" | "lagged") {
+                        emit(&sinks);
+                    }
+                });
+            }
+            Err(_) => poll_once(&client, &mut last, &sinks),
         }
-        sleep_interruptible(&stop, poll_ms);
+        if !stop.load(Ordering::SeqCst) {
+            sleep_interruptible(&stop, reconnect_delay);
+        }
+    }
+}
+
+/// One fallback poll: fetch the authoritative snapshot and emit only when its
+/// signature changes (matching the pre-SSE behavior).
+fn poll_once(client: &HubClient, last: &mut Option<String>, sinks: &Mutex<Vec<SourceSink>>) {
+    let signature = client.snapshot().ok().map(|snapshot| signature(&snapshot));
+    if signature != *last {
+        *last = signature;
+        emit(sinks);
     }
 }
 
