@@ -226,6 +226,9 @@ can be edited by hand.
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
 | `notifications`  | `false`           | Desktop notification when a session needs help.    |
+| `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
+| `alarm_trigger`  | `"needs_help"`    | `needs_help`, `done`, or `any_status`.             |
+| `alarm_sound`    | *(system beep)*   | `.wav` file for the alarm; empty uses the system beep. |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 | `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
 | `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |

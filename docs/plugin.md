@@ -107,7 +107,14 @@ export AGENTLIGHT_HUB_URL=http://127.0.0.1:8787
 export AGENTLIGHT_TOKEN=secret   # only if the hub requires auth
 export AGENTLIGHT_HEARTBEAT_MS=30000          # heartbeat snapshot interval; 0 disables
 export AGENTLIGHT_AUTOSTART_BIN=/path/to/agentlight-server  # optional; see below
+export AGENTLIGHT_SESSION_URL_TEMPLATE='http://localhost:4096/session/{id}'  # optional deep link
 ```
+
+`AGENTLIGHT_SESSION_URL_TEMPLATE` is best-effort: when set, every reported event
+carries `url` with `{id}` replaced by the session id, and the desktop's detail
+row shows an "Open" action. A native app cannot focus a specific browser window
+or tab, so the browser decides whether to reuse an existing tab or open a new
+one; exact focus would need a browser extension or remote debugging.
 
 `AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
 startup, the plugin spawns that binary detached, waits a few seconds for health,
