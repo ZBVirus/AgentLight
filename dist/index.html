@@ -119,6 +119,27 @@
               <span>Show every done session</span>
             </label>
 
+            <label class="field inline">
+              <input type="checkbox" id="set-alarms-enabled" />
+              <span>Play an alarm sound</span>
+            </label>
+            <label class="field">
+              <span>Alarm when</span>
+              <select id="set-alarm-trigger">
+                <option value="needs_help">A session needs help</option>
+                <option value="done">A session finishes</option>
+                <option value="any_status">Any status change</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Alarm sound</span>
+              <div class="row">
+                <input type="text" id="set-alarm-sound" readonly placeholder="System default" />
+                <button type="button" class="ghost" id="btn-alarm-sound-pick">Choose…</button>
+                <button type="button" class="ghost" id="btn-alarm-sound-clear">Clear</button>
+              </div>
+            </label>
+
             <label class="field">
               <span>Idle behavior</span>
               <select id="set-yellow-mode">

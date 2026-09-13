@@ -74,6 +74,20 @@ export function renderDetail(snapshot) {
     meta.appendChild(sub);
     li.appendChild(meta);
 
+    const url = typeof session.url === "string" ? session.url.trim() : "";
+    if (url) {
+      const open = document.createElement("button");
+      open.className = "open";
+      open.type = "button";
+      open.textContent = "Open";
+      open.title = url;
+      open.addEventListener("click", (event) => {
+        event.stopPropagation();
+        invoke("open_url", { url }).catch((error) => toast(`Open failed: ${error}`));
+      });
+      li.appendChild(open);
+    }
+
     const remove = document.createElement("button");
     remove.className = "remove";
     remove.textContent = "×";

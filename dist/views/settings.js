@@ -85,6 +85,9 @@ export function populateSettings() {
   $("set-autostart").checked = !!config.start_at_login;
   $("set-notifications").checked = !!config.notifications;
   $("set-show-done").checked = !!config.show_done;
+  $("set-alarms-enabled").checked = !!config.alarms_enabled;
+  $("set-alarm-trigger").value = config.alarm_trigger || "needs_help";
+  $("set-alarm-sound").value = config.alarm_sound || "";
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
   $("set-collapse-style").value = config.collapse_style || "single";
   // A color input only understands #rrggbb, so seed the built-in hex when the
@@ -108,6 +111,8 @@ export function populateSettings() {
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
   $("btn-server-token-clear").onclick = clearAdminToken;
+  $("btn-alarm-sound-pick").onclick = chooseAlarmSound;
+  $("btn-alarm-sound-clear").onclick = clearAlarmSound;
   renderSourceFields();
   renderServerUrl();
   refreshServerStatus();
@@ -249,6 +254,20 @@ function miniColorValue(key) {
   return value && value.toLowerCase() !== MINI_BUILTIN[key] ? value : null;
 }
 
+async function chooseAlarmSound() {
+  if (!invoke) return;
+  try {
+    const path = await invoke("pick_sound_file");
+    if (path) $("set-alarm-sound").value = path;
+  } catch (error) {
+    toast(`Could not pick sound: ${error}`);
+  }
+}
+
+function clearAlarmSound() {
+  $("set-alarm-sound").value = "";
+}
+
 export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
@@ -262,6 +281,9 @@ export async function saveSettings(event) {
     start_at_login: $("set-autostart").checked,
     notifications: $("set-notifications").checked,
     show_done: $("set-show-done").checked,
+    alarms_enabled: $("set-alarms-enabled").checked,
+    alarm_trigger: $("set-alarm-trigger").value,
+    alarm_sound: $("set-alarm-sound").value.trim() || null,
     yellow_mode: $("set-yellow-mode").value,
     collapse_style: $("set-collapse-style").value,
     mini_red: miniColorValue("red"),
