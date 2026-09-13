@@ -337,6 +337,9 @@ fn normalize(source: &SourceId, event: &SessionEvent) -> Session {
     }
     session.last_updated = event.last_updated.clone().unwrap_or_default();
     session.is_done = event.status == Status::Done;
+    if let Some(url) = event.url.as_deref() {
+        session = session.with_url(url);
+    }
     session
 }
 
@@ -355,6 +358,7 @@ fn session_to_event(session: &Session) -> SessionEvent {
         project_path: session.project.clone(),
         harness: session.harness.clone(),
         last_updated: (!session.last_updated.is_empty()).then(|| session.last_updated.clone()),
+        url: session.url.clone(),
     }
 }
 
@@ -393,6 +397,7 @@ mod tests {
             project_path: None,
             harness: None,
             last_updated: None,
+            url: None,
         }
     }
 
@@ -499,6 +504,7 @@ mod tests {
             project_path: Some("/work/agentlight".to_string()),
             harness: Some("opencode".to_string()),
             last_updated: Some("2026-01-01T01:00:00Z".to_string()),
+            url: None,
         }]);
 
         let snapshot = source.snapshot(at());
@@ -525,6 +531,7 @@ mod tests {
                 project_path: Some("/work/agentlight".to_string()),
                 harness: Some("opencode".to_string()),
                 last_updated: Some("2026-01-01T01:00:00Z".to_string()),
+                url: None,
             },
             event("b", Status::Done),
         ]);

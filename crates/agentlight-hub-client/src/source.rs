@@ -178,6 +178,7 @@ fn normalize(source: &SourceId, row: &DisplaySession) -> Session {
         updated_at: parse_timestamp(&row.last_updated),
         is_done: row.is_done,
         last_updated: row.last_updated.clone(),
+        url: row.url.clone(),
     }
 }
 

@@ -513,6 +513,23 @@ body[data-collapse="triple_vertical"] .mini-triple {
   color: #fff;
 }
 
+.session .open {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.session .open:hover {
+  background: var(--sel);
+  border-color: var(--accent);
+}
+
 .empty {
   padding: 18px 4px;
   color: var(--dim);

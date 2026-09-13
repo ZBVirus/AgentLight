@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::config::{Config, SourceKind};
+use crate::config::{AlarmTrigger, Config, SourceKind};
 use crate::session::{display_session, DisplaySession, DONE_RETENTION};
 use crate::snapshot::{Counts, Snapshot};
 use crate::source::{
@@ -52,6 +52,9 @@ pub struct Update {
     pub revision: u64,
     pub snapshot: Snapshot,
     pub notifications: Vec<Notification>,
+    /// Alarm edges for this publish. Additive; empty unless alarms are on.
+    #[serde(default)]
+    pub alarms: Vec<Notification>,
 }
 
 /// Owns sources and policy. Cheap to clone through an `Arc`.
@@ -65,6 +68,7 @@ struct Inner {
     config: Mutex<Config>,
     revision: AtomicU64,
     previous: Mutex<HashMap<SessionKey, Status>>,
+    alarm_previous: Mutex<HashMap<SessionKey, Status>>,
     subscribers: Mutex<Vec<UpdateSink>>,
 }
 
@@ -76,6 +80,7 @@ impl Engine {
                 config: Mutex::new(config),
                 revision: AtomicU64::new(0),
                 previous: Mutex::new(HashMap::new()),
+                alarm_previous: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(Vec::new()),
             }),
         }
@@ -161,6 +166,7 @@ impl Engine {
             revision: self.inner.revision.load(Ordering::SeqCst),
             snapshot,
             notifications: Vec::new(),
+            alarms: Vec::new(),
         }
     }
 
@@ -282,11 +288,13 @@ impl Inner {
         let sources = self.source_snapshots(now);
         let snapshot = self.render(&sources, now);
         let notifications = self.notification_edge(&sources);
+        let alarms = self.alarm_edge(&sources);
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         let update = Update {
             revision,
             snapshot,
             notifications,
+            alarms,
         };
         let subscribers = self.subscribers.lock().unwrap().clone();
         for sink in subscribers {
@@ -396,6 +404,55 @@ impl Inner {
             previous.insert(model.key.clone(), model.status);
         }
         notifications
+    }
+
+    /// Alarm edges for the configured trigger. Separate from notifications so
+    /// alarms can fire on `done` or any change without changing the toast edge.
+    fn alarm_edge(&self, sources: &[SourceSnapshot]) -> Vec<Notification> {
+        let config = self.config.lock().unwrap().clone();
+        if !config.alarms_enabled {
+            return Vec::new();
+        }
+        let models: Vec<&Session> = sources
+            .iter()
+            .flat_map(|source| source.sessions.iter())
+            .collect();
+        let mut previous = self.alarm_previous.lock().unwrap();
+
+        let mut alarms = Vec::new();
+        for model in &models {
+            let before = previous.get(&model.key).copied();
+            let fires = match config.alarm_trigger {
+                AlarmTrigger::NeedsHelp => {
+                    model.status == Status::NeedsHelp && before != Some(Status::NeedsHelp)
+                }
+                AlarmTrigger::Done => model.status == Status::Done && before != Some(Status::Done),
+                // Only on a real change; a newly seen session does not alarm.
+                AlarmTrigger::AnyStatus => before.is_some_and(|before| before != model.status),
+            };
+            if fires {
+                alarms.push(Notification {
+                    key: model.key.clone(),
+                    title: "AgentLight".to_string(),
+                    body: format!(
+                        "\"{}\" is {}",
+                        model.name,
+                        model.status.label().to_lowercase()
+                    ),
+                    urgency: if model.status == Status::NeedsHelp {
+                        Urgency::Critical
+                    } else {
+                        Urgency::Normal
+                    },
+                });
+            }
+        }
+
+        previous.clear();
+        for model in &models {
+            previous.insert(model.key.clone(), model.status);
+        }
+        alarms
     }
 }
 

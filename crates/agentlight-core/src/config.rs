@@ -43,6 +43,19 @@ pub enum YellowMode {
     ActiveWins,
 }
 
+/// What transition fires an attention alarm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AlarmTrigger {
+    /// A session enters `needs_help`. Default.
+    #[default]
+    NeedsHelp,
+    /// A session becomes `done`.
+    Done,
+    /// Any status change after the session is first seen.
+    AnyStatus,
+}
+
 /// Collapsed (mini) window layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +117,12 @@ pub struct Config {
     pub hub_token: Option<String>,
     /// Fire a desktop notification when a session needs help.
     pub notifications: bool,
+    /// Play an attention alarm (sound) when a session needs attention.
+    pub alarms_enabled: bool,
+    /// Which transition fires an alarm.
+    pub alarm_trigger: AlarmTrigger,
+    /// Custom sound file for alarms. `None` uses the system/default sound.
+    pub alarm_sound: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
     /// Serve the engine over HTTP on the LAN. Off by default.
@@ -142,6 +161,9 @@ impl Default for Config {
             hub_url: DEFAULT_HUB_URL.to_string(),
             hub_token: None,
             notifications: false,
+            alarms_enabled: false,
+            alarm_trigger: AlarmTrigger::NeedsHelp,
+            alarm_sound: None,
             start_at_login: false,
             server_enabled: false,
             server_bind: DEFAULT_SERVER_BIND.to_string(),
@@ -205,6 +227,12 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .filter(|token| !token.is_empty())
+            .map(str::to_string);
+        self.alarm_sound = self
+            .alarm_sound
+            .as_deref()
+            .map(str::trim)
+            .filter(|sound| !sound.is_empty())
             .map(str::to_string);
         self.server_bind = self.server_bind.trim().to_string();
         if self.server_bind.is_empty() {
@@ -451,6 +479,30 @@ mod tests {
         assert!(defaults.mini_show_labels);
         assert!(defaults.mini_width.is_none());
         assert!(!defaults.topmost_reassert);
+    }
+
+    #[test]
+    fn alarms_parse_and_default() {
+        let defaults = Config::default();
+        assert!(!defaults.alarms_enabled);
+        assert_eq!(defaults.alarm_trigger, AlarmTrigger::NeedsHelp);
+        assert!(defaults.alarm_sound.is_none());
+
+        let c: Config = serde_json::from_str(
+            r#"{"alarms_enabled":true,"alarm_trigger":"any_status","alarm_sound":"  C:/ding.wav  "}"#,
+        )
+        .unwrap();
+        assert!(c.alarms_enabled);
+        assert_eq!(c.alarm_trigger, AlarmTrigger::AnyStatus);
+        let c = c.sanitized();
+        assert_eq!(c.alarm_sound.as_deref(), Some("C:/ding.wav"));
+
+        let c = Config {
+            alarm_sound: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert!(c.alarm_sound.is_none());
     }
 
     #[test]

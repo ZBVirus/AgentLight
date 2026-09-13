@@ -90,6 +90,9 @@ pub struct Session {
     /// The raw `last_updated` string, echoed verbatim so the wire output stays
     /// byte-identical to the pre-seam snapshot.
     pub last_updated: String,
+    /// Optional deep link back to the session in its harness UI, when the
+    /// producer knows one.
+    pub url: Option<String>,
 }
 
 impl Session {
@@ -104,7 +107,16 @@ impl Session {
             updated_at: None,
             is_done: status == Status::Done,
             last_updated: String::new(),
+            url: None,
         }
+    }
+
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        if !url.trim().is_empty() {
+            self.url = Some(url);
+        }
+        self
     }
 
     pub fn with_project(mut self, project: impl Into<String>) -> Self {

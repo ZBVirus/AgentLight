@@ -21,4 +21,7 @@ pub struct SessionEvent {
     /// RFC 3339 timestamp echoed verbatim and parsed for ordering.
     #[serde(default)]
     pub last_updated: Option<String>,
+    /// Optional deep link back to the session in its harness UI.
+    #[serde(default)]
+    pub url: Option<String>,
 }
