@@ -105,6 +105,7 @@ Liveness plus the negotiation data a client needs before authenticating. No auth
   "capabilities": {
     "events": ["sse"],
     "commands": ["remove_session", "clear_done"],
+    "ingest": ["upsert", "snapshot"],
     "auth": "bearer"
   }
 }
@@ -279,12 +280,12 @@ failed to parse.
 
 Auth required (admin or device token). Available only when the server runs in
 events mode (`AGENTLIGHT_SOURCE=events`); in file mode it returns
-`400 bad_request`. It upserts a batch of pushed session events into the
-in-memory event source, keyed by `session_id`, and returns how many were
-accepted:
+`400 bad_request`. It merges a batch of pushed session events into the durable
+push source, keyed by `session_id`, and returns how many were accepted. The
+envelope carries an optional `mode` field, defaulting to `"upsert"`:
 
 ```json
-{ "events": [
+{ "mode": "snapshot", "events": [
   {
     "session_id": "abc",
     "status": "needs_help",
@@ -307,42 +308,46 @@ Each event:
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
 
-Unknown fields on the envelope and on each event are ignored. Re-pushing a
-`session_id` replaces its prior status in place. The batch is a single change:
-subscribers to `/api/v1/events` see one `update` afterward. Response:
+`mode` is optional and selects how the batch is applied: `"upsert"` (default)
+merges keyed by `session_id`, while `"snapshot"` upserts the batch and then
+prunes every push-source session absent from it. An unknown mode is
+`400 bad_request`. Unknown fields on the envelope and on each event are ignored.
+Re-pushing a `session_id` replaces its prior status in place. The batch is a
+single change: subscribers to `/api/v1/events` see one `update` afterward.
+Response:
 
 ```json
 { "accepted": 1 }
 ```
 
 `accepted` is the number of events in the batch, not the number that changed.
-Sessions are held in memory only today; there is no file and no history, so a
-restart starts empty. `GET /api/v1/snapshot` reports `source_kind: "push"` and
-`source_label: "events"`, and before the first event `ok` is `false` with the
-error `Waiting for agent events`.
+Pushed sessions persist to `AGENTLIGHT_EVENTS_FILE` and reload on restart, so
+the hub reports last-known state instead of starting empty; there is still no
+history beyond the current live set. `GET /api/v1/snapshot` reports
+`source_kind: "push"` and `source_label: "events"`, and before the first event
+`ok` is `false` with the error `Waiting for agent events`.
 
-### Snapshot mode and producer heartbeat (planned, schema 1 additive)
+### Snapshot mode and producer heartbeat (schema 1 additive)
 
 Upsert alone cannot answer "what is the current state" after the hub or the
 producer restarts. Two additive pieces fix that. Both are optional; omitting
-them keeps today's behavior.
+them keeps upsert-only behavior.
 
 **`mode` on the ingest envelope.** Optional string, default `"upsert"`.
 
-- `"upsert"` — merge the batch into the source, keyed by `session_id`. Today's
-  behavior: only adds and updates.
+- `"upsert"` — merge the batch into the source, keyed by `session_id`: only
+  adds and updates.
 - `"snapshot"` — the batch is the producer's authoritative **live set**: upsert
   the batch, then drop every push-source session whose `session_id` is absent
   from it. This prunes sessions that vanished while the hub was down. The batch
   is still a single change and still returns `{"accepted": N}`.
 
-When implemented, `/healthz` advertises `capabilities.ingest` as
-`["upsert", "snapshot"]`; a producer should treat an unknown or absent mode list
-as upsert-only.
+An unknown mode is `400 bad_request`. `/healthz` advertises
+`capabilities.ingest` as `["upsert", "snapshot"]`; a producer should treat an
+unknown or absent mode list as upsert-only.
 
 **What a heartbeat carries.** A producer that wants the hub to stay truthful
-sends its live set on load and on a periodic heartbeat (recommended every 30s).
-The live set is:
+sends its live set on load and on a periodic heartbeat. The live set is:
 
 - every session that is not `done`, plus
 - a bounded tail of recent `done` sessions, matching the engine's own retention
@@ -355,11 +360,11 @@ for sessions that end without a delete is the correct fix; resending history is
 not.
 
 **Durability.** The push source persists its live set to
-`AGENTLIGHT_EVENTS_FILE` and reloads it at startup, so the hub can report
+`AGENTLIGHT_EVENTS_FILE` and reloads it at startup, so the hub reports
 last-known state before the first heartbeat. Restored rows keep their
 per-session `last_updated`, so clients show the row's age instead of claiming
-freshness. A hub with no ingest within a multiple of the heartbeat interval may
-mark the source stale.
+freshness. When `AGENTLIGHT_HEARTBEAT_MS` is greater than 0, a hub with no
+ingest within four times that interval marks the source stale.
 
 ## Server defaults
 
@@ -372,8 +377,10 @@ session source: `file` (default) reads clawlight's `state.json`, while `events`
 `state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json` in the working directory)
 is where paired devices persist. In events mode, `AGENTLIGHT_EVENTS_FILE`
-(default `push-state.json`) is the **planned** durable store for the push
-source; see "Snapshot mode and producer heartbeat" above. The pairing code is
+(default `push-state.json` in the working directory) is the durable store for
+the push source, and `AGENTLIGHT_HEARTBEAT_MS` (default `0`, disabled) marks the
+source stale after four times that interval with no ingest; see "Snapshot mode
+and producer heartbeat" above. The pairing code is
 logged at startup so a headless host can be paired. LAN exposure is an explicit opt-in; use a VPN for
 off-LAN access.
 

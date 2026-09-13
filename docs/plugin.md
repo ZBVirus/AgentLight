@@ -26,12 +26,15 @@ agentlight-server
 - `AGENTLIGHT_BIND` defaults to `127.0.0.1:8787`; exposing it on the LAN is an
   explicit change.
 - `AGENTLIGHT_STATE_FILE` is ignored in events mode.
-- Sessions live in memory only: a restart starts empty, and `GET
-  /api/v1/snapshot` reports `source_kind: "push"`, `source_label: "events"`,
-  and — before the first event — `ok: false` with `Waiting for agent events`.
-  A durable store and a producer heartbeat are specified but not yet
-  implemented; see "Snapshot mode and producer heartbeat" in
-  [`protocol.md`](protocol.md).
+- Pushed sessions persist to `AGENTLIGHT_EVENTS_FILE` (default
+  `push-state.json`) and reload on restart, so `GET /api/v1/snapshot` reports
+  last-known state before the first heartbeat. It reports `source_kind:
+  "push"`, `source_label: "events"`, and — only before any event has ever been
+  seen — `ok: false` with `Waiting for agent events`.
+- The reference opencode plugin sends a `mode: "snapshot"` batch on startup and
+  then every `AGENTLIGHT_HEARTBEAT_MS` (default `30000` ms; `0` disables). The
+  live set is every non-`done` session plus the newest five `done`. See
+  "Snapshot mode and producer heartbeat" in [`protocol.md`](protocol.md).
 
 `POST /api/v1/ingest` requires the admin or a device token and accepts an
 `{ "events": [ ... ] }` batch.

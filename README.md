@@ -59,7 +59,9 @@ The admin token is stored only as a SHA-256 hash, and device tokens are hashed
 the same way; plaintext tokens are never persisted, so a saved admin token
 cannot be shown again. Pair other devices with the pairing code. The standalone
 binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
-`AGENTLIGHT_DEVICES_FILE` (default `devices.json`). The full rule is in
+`AGENTLIGHT_DEVICES_FILE` (default `devices.json`), and — in events mode —
+`AGENTLIGHT_EVENTS_FILE` (default `push-state.json`) and
+`AGENTLIGHT_HEARTBEAT_MS` (default `0` = disabled). The full rule is in
 [`docs/protocol.md`](docs/protocol.md).
 
 For a headless or container host, build the standalone `agentlight-server`
@@ -99,6 +101,10 @@ export AGENTLIGHT_SOURCE=events AGENTLIGHT_TOKEN=secret
 agentlight-server &
 echo '{"session_id":"abc","status":"active","name":"Fix auth"}' | agentlight-hook
 ```
+
+The hub persists pushed sessions to `AGENTLIGHT_EVENTS_FILE` (default
+`push-state.json`) and reloads them on restart, so last-known state survives a
+hub restart instead of starting empty.
 
 See [`docs/plugin.md`](docs/plugin.md) for hub setup, the hook, plugin install,
 the `SessionEvent` schema, and the token security note.

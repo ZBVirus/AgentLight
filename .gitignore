@@ -6,6 +6,11 @@
 # Tauri
 /src-tauri/gen
 
+# Local runtime state
+/devices.json
+/push-state.json
+/tmp/
+
 # Node tooling (only if added later; the frontend itself is static)
 /node_modules
 

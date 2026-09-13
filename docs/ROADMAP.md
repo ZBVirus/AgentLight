@@ -191,10 +191,10 @@ decide and prioritize later.
 - **Deferred engineering options. Planned.** From the architecture review:
   - Tag and release the architecture line: hub, pairing, file or hub source,
     ingest, and the plugin.
-  - Producer resync and heartbeat, plus a durable push store, so a hub restart
-    recovers state instead of waiting for the next event. The heartbeat carries
-    only the live set (non-`done` sessions plus a bounded recent-`done` tail,
-    never full history), and a `mode: "snapshot"` ingest prunes sessions that
-    vanished while the hub was down. Design recorded in `docs/protocol.md`
-    under "Snapshot mode and producer heartbeat".
+  - **Done (v0.4.x).** Producer resync and heartbeat, plus a durable push
+    store, so a hub restart recovers state instead of waiting for the next
+    event. The heartbeat carries only the live set (non-`done` sessions plus a
+    bounded recent-`done` tail, never full history), and a `mode: "snapshot"`
+    ingest prunes sessions that vanished while the hub was down. Documented in
+    `docs/protocol.md` under "Snapshot mode and producer heartbeat".
   - Move `HubSource` from polling to the hub's SSE stream.

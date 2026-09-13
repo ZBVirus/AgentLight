@@ -550,7 +550,9 @@ and a same-origin browser client exist; the PWA, push, and mobile shell do not.
 multi-source UI.** Ingest, `EventPushSource`, the `agentlight-hook` CLI, and a
 reference opencode plugin work on the v0.4.0 line; the plugin is validated
 against a live opencode build, and hub-source command routing (remove session)
-is fixed. The multi-source UI does not exist yet.
+is fixed. Push durability (sessions persist to `AGENTLIGHT_EVENTS_FILE` and
+recover on restart) and the producer heartbeat (`AGENTLIGHT_HEARTBEAT_MS`,
+`mode: "snapshot"`) are done. The multi-source UI does not exist yet.
 - `agentlight hook` CLI / HTTP endpoint; merge policy and per-source labels in
   the UI; `docs/protocol.md` published.
 - Exit criteria: an agent can report without a shared file, and the file
