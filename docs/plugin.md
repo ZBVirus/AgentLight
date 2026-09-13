@@ -84,9 +84,9 @@ leak the secret into the process list and shell history.
 plugin for the documented [opencode plugin API](https://opencode.ai/docs/plugins).
 It subscribes to the event bus and forwards status with `fetch`, coalescing
 bursts per session. It is a reference: it was written against the documented API
-and event names but has **not** been exercised against a live opencode build in
-this repository. Adapt the `handleEvent` switch if your version's event names or
-payloads differ.
+and event names and has since been validated against a live opencode build in
+this repository. Other versions may rename events, so adapt the `handleEvent`
+switch if your version's names or payloads differ.
 
 Install it by copying the file into a plugin directory opencode loads at
 startup:

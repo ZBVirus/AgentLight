@@ -8,8 +8,7 @@ For the proposed source/engine/transport rework behind these items, see
 
 Status legend: **Done** shipped on `feat/architecture-redesign`; **Partial**
 some pieces exist; **Planned** recorded, not started; **Deferred** intentionally
-later. Statuses are as of commit `3290d02` (2026-09-12) on
-`feat/architecture-redesign`. None of the architecture work is on `main` yet.
+later. Statuses are as of the v0.4.0 line.
 
 ## North star (end goal)
 
@@ -75,10 +74,10 @@ rewrite.
 Replace clawlight's file write with an opencode plugin that reports session
 state directly. This skips `state.json` entirely. Two shapes:
 
-- **Push. Status: Done.** The plugin POSTs events to the hub's ingest endpoint.
-  `EventPushSource`, `POST /api/v1/ingest`, `agentlight-hook`, and a reference
-  opencode plugin exist. The plugin is not yet tested against a live opencode
-  build.
+- **Push. Status: Done, validated live.** The plugin POSTs events to the hub's
+  ingest endpoint. `EventPushSource`, `POST /api/v1/ingest`, `agentlight-hook`,
+  and a reference opencode plugin exist. The plugin has since been validated
+  against a live opencode build.
 - **Pull. Status: Planned.** The plugin exposes a small HTTP/SSE source endpoint
   the hub subscribes to.
 
@@ -161,16 +160,6 @@ decide and prioritize later.
   "Clear done" misses them. Decide whether the plugin should emit `done` on
   session end or the client should infer it, and make finished sessions
   clearable.
-- **Remove session fails in hub source mode (bug). Planned.** With the desktop
-  set to source `hub`, removing a session from the expanded view returns HTTP
-  `409 command_failed` with `unreadable state file: no source can handle the
-  command`. Cause: `HubSource` forwards `remove_session` with `source =
-  DEFAULT_HUB_ID` (`"hub"`), but the hub engine's source id is `"local"` in file
-  mode or `"events"` in push mode, so `Engine::dispatch` finds no matching
-  source and returns `Error::Unreadable`, which the server maps to `409`. Fix:
-  omit `source` so the server defaults to its first source, or use the source id
-  learned from the hub snapshot. `clear_done` already works, because the hub
-  defaults to its first source.
 - **Right-click hide in collapsed mode. Planned.** Add a context menu on the
   collapsed window with a "Hide" action that sends the app to the tray.
 - **Stay on the same monitor when expanding/collapsing. Planned.** Bug: when the
@@ -208,6 +197,4 @@ decide and prioritize later.
     never full history), and a `mode: "snapshot"` ingest prunes sessions that
     vanished while the hub was down. Design recorded in `docs/protocol.md`
     under "Snapshot mode and producer heartbeat".
-  - Test the opencode plugin against a live opencode build and adjust the event
-    names if they differ.
   - Move `HubSource` from polling to the hub's SSE stream.

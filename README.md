@@ -62,6 +62,10 @@ binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json`). The full rule is in
 [`docs/protocol.md`](docs/protocol.md).
 
+For a headless or container host, build the standalone `agentlight-server`
+binary with `cargo build -p agentlight-server`; CI builds it on Windows and
+tagged releases attach it.
+
 ## Reading from a hub
 
 The desktop can read its sessions from either a local `state.json` (the default)
@@ -87,8 +91,8 @@ producer side ships two pieces:
 
 - `agentlight-hook` — a CLI that reads a `SessionEvent` (or a batch) from stdin
   or `--json` and POSTs it to `POST /api/v1/ingest`.
-- A reference **opencode plugin** that forwards `session` / `tool` / `permission`
-  events to the hub.
+- A reference **opencode plugin**, validated against a live opencode build, that
+  forwards `session` / `tool` / `permission` events to the hub.
 
 ```bash
 export AGENTLIGHT_SOURCE=events AGENTLIGHT_TOKEN=secret
@@ -131,17 +135,23 @@ be taken, exactly like clawlight, and only writes on an explicit user action.
 ## Architecture
 
 ```
-crates/agentlight-core/   Rust library, no GUI deps, unit-tested everywhere
-  src/state.rs            parse state.json, aggregate, reap, lock, clear, atomic write
-  src/session.rs          display rows: names, badges, ordering, done retention
-  src/config.rs           preferences + path resolution
-  src/snapshot.rs         the JSON payload the frontend renders
-src-tauri/                Tauri v2 shell (Windows/macOS/Linux)
-  src/lib.rs              commands, tray, watcher, autostart, notifications
-  tauri.conf.json         frameless transparent always-on-top window
-dist/                     static HTML/CSS/JS frontend (no bundler, no Node)
-docs/                     state contract, roadmap
-scripts/make_icons.py     regenerates the app icons
+crates/agentlight-core/        Rust library, no GUI deps, unit-tested everywhere
+  src/state.rs                 parse state.json, aggregate, reap, lock, clear, atomic write
+  src/session.rs               display rows: names, badges, ordering, done retention
+  src/source.rs                StateSource trait + normalized session model
+  src/source/clawlight.rs      file adapter: notify + poll, lock + atomic write
+  src/engine.rs                merge, retention, aggregate, notifications, source lifecycle
+  src/config.rs                preferences + path resolution
+  src/snapshot.rs              the JSON payload the frontend renders
+crates/agentlight-server/       hub: routes, auth, devices, embedded web client
+crates/agentlight-hub-client/   HubClient + HubSource + the agentlight-hook CLI
+crates/agentlight-source-events/ EventPushSource for agents that push events
+src-tauri/                     Tauri v2 shell (Windows/macOS/Linux)
+  src/lib.rs                   commands, tray, watcher, autostart, notifications
+  tauri.conf.json              frameless transparent always-on-top window
+dist/                          static HTML/CSS/JS frontend (no bundler, no Node)
+docs/                          state contract, roadmap
+scripts/make_icons.py          regenerates the app icons
 ```
 
 The split keeps all state logic in a crate that builds and tests on any host;
@@ -185,7 +195,7 @@ can be edited by hand.
 | Field            | Default           | Meaning                                            |
 |------------------|-------------------|----------------------------------------------------|
 | `state_path`     | *(resolved)*      | Absolute path to `state.json`.                     |
-| `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`.  |
+| `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`; `push` is a server-only mode. |
 | `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
@@ -195,6 +205,8 @@ can be edited by hand.
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
 | `notifications`  | `false`           | Desktop notification when a session needs help.    |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
+| `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
+| `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |
 
 Environment override: `AGENTLIGHT_STATE_FILE`. Window size and position are
 persisted automatically by `tauri-plugin-window-state`.

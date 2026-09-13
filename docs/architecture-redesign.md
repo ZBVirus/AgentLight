@@ -1,9 +1,11 @@
 # AgentLight architecture redesign
 
-Status: design accepted; Phases 0-3 and most of Phase 5 are implemented on
-`feat/architecture-redesign` (statuses per phase in section 8). Scope: how to make AgentLight modular enough to grow into a
-multi-client product (desktop, web, mobile) without breaking clawlight
-compatibility or the current desktop widget.
+Status: design accepted; Phases 0-3 and Phase 5 (all but the multi-source UI) are
+implemented on the v0.4.0 line (statuses per phase in section 8). The reference
+opencode plugin is validated against a live opencode build, and hub-source
+command routing (remove session) is fixed. Scope: how to make AgentLight modular
+enough to grow into a multi-client product (desktop, web, mobile) without
+breaking clawlight compatibility or the current desktop widget.
 
 This document records the as-built architecture, the forces acting on it, a
 target architecture, the concrete differences and their effects, and a staged
@@ -544,9 +546,11 @@ and a same-origin browser client exist; the PWA, push, and mobile shell do not.
 - Tauri mobile shell if native background/push is needed.
 - Exit criteria: phone shows the light and receives "needs help" alerts.
 
-**Phase 5 — Optional event ingest and multi-source UX. Status: Partial.**
-Ingest, `EventPushSource`, the `agentlight-hook` CLI, and a reference opencode
-plugin exist; the multi-source UI does not.
+**Phase 5 — Optional event ingest and multi-source UX. Status: Done except the
+multi-source UI.** Ingest, `EventPushSource`, the `agentlight-hook` CLI, and a
+reference opencode plugin work on the v0.4.0 line; the plugin is validated
+against a live opencode build, and hub-source command routing (remove session)
+is fixed. The multi-source UI does not exist yet.
 - `agentlight hook` CLI / HTTP endpoint; merge policy and per-source labels in
   the UI; `docs/protocol.md` published.
 - Exit criteria: an agent can report without a shared file, and the file
