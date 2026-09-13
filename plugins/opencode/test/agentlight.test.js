@@ -83,6 +83,17 @@ function setAutostartBin(value) {
   };
 }
 
+// Save an env var and restore it when the returned function runs.
+function setEnv(name, value) {
+  const previous = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  return () => {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  };
+}
+
 const FAST_TIMING = { probeTimeoutMs: 5, pollIntervalMs: 5, pollTimeoutMs: 20 };
 
 async function harness(sessionInfo = {}) {
@@ -200,6 +211,51 @@ test("a busy session is active", async (t) => {
   await sleep(COALESCE_WAIT_MS);
 
   assert.equal(h.lastStatus(), "active");
+});
+
+test("a session URL template decorates reported events and snapshots", async (t) => {
+  t.after(setEnv("AGENTLIGHT_SESSION_URL_TEMPLATE", "http://x/session/{id}"));
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.created", {
+    info: { id: "main", title: "Main", directory: "/work/project" },
+  });
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const reported = h.calls.find(
+    (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
+  );
+  assert.ok(reported, "expected a reported active event");
+  assert.equal(reported.event.url, "http://x/session/main");
+
+  const snapshot = h.lastSnapshot();
+  assert.ok(snapshot, "expected a startup snapshot");
+  const snapEvent = snapshot.events.find((event) => event.session_id === "main");
+  assert.ok(snapEvent, "snapshot should include the session");
+  assert.equal(snapEvent.url, "http://x/session/main");
+});
+
+test("without a session URL template, url is null", async (t) => {
+  t.after(setEnv("AGENTLIGHT_SESSION_URL_TEMPLATE", undefined));
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const reported = h.calls.find(
+    (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
+  );
+  assert.ok(reported, "expected a reported active event");
+  assert.equal(reported.event.url, null);
+
+  const snapshot = h.lastSnapshot();
+  assert.ok(snapshot, "expected a startup snapshot");
+  const snapEvent = snapshot.events.find((event) => event.session_id === "main");
+  assert.ok(snapEvent, "snapshot should include the session");
+  assert.equal(snapEvent.url, null);
 });
 
 test("a startup snapshot is sent with mode snapshot and includes a created session", async (t) => {

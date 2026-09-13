@@ -13,6 +13,16 @@
 //   AGENTLIGHT_TOKEN         Bearer token, if the hub requires auth. Never logged.
 //   AGENTLIGHT_HEARTBEAT_MS  Heartbeat snapshot interval in ms. Default 30000.
 //                            `0` disables the periodic snapshot.
+//   AGENTLIGHT_SESSION_URL_TEMPLATE
+//                            Optional best-effort session deep link, e.g.
+//                            `http://localhost:4096/session/{id}`. When set
+//                            (non-empty), every reported event and heartbeat
+//                            snapshot entry carries `url` with every `{id}`
+//                            replaced by the URL-encoded session id. When unset,
+//                            `url` is `null` and reporting is unchanged. A native
+//                            app cannot focus an exact browser window or tab, so
+//                            the link is best-effort: the browser decides
+//                            whether to reuse a tab or open a new one.
 //   AGENTLIGHT_AUTOSTART_BIN Optional absolute path to the `agentlight-server`
 //                            binary. Opt-in: unset/empty means this plugin never
 //                            probes or starts anything and event reporting is
@@ -80,6 +90,7 @@ export const AgentLightPlugin = async (
     : Math.max(0, parsedHeartbeat);
 
   const autostartBin = (process.env.AGENTLIGHT_AUTOSTART_BIN || "").trim();
+  const sessionUrlTemplate = (process.env.AGENTLIGHT_SESSION_URL_TEMPLATE || "").trim();
   const healthProbeTimeoutMs = timing.probeTimeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
   const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
@@ -167,6 +178,11 @@ export const AgentLightPlugin = async (
   // Fire-and-forget: startup must not block on the hub coming up.
   ensureHubRunning().catch(() => {});
 
+  const buildSessionUrl = (sessionID) => {
+    if (!sessionUrlTemplate || !sessionID) return null;
+    return sessionUrlTemplate.replace(/\{id\}/g, encodeURIComponent(String(sessionID)));
+  };
+
   const buildEvent = (sessionID, status) => {
     const known = sessions.get(sessionID) || {};
     return {
@@ -174,6 +190,7 @@ export const AgentLightPlugin = async (
       status,
       name: known.name || null,
       project_path: known.projectPath || directory || null,
+      url: buildSessionUrl(sessionID),
       harness: HARNESS,
       last_updated: known.updatedAt || now(),
     };
