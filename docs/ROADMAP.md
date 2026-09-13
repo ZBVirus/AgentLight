@@ -151,25 +151,23 @@ decide and prioritize later.
   borderless full-screen game such as Rocket League. Investigate the
   full-screen/topmost interaction and whether a native topmost re-assert or a
   different window style is needed.
-- **Plugin auto-starts the server. Planned.** Let the opencode plugin start the
-  hub when it is not running. Must work both for opencode on the host and for
-  opencode inside a container. Needs discovery of a running hub, spawn and
-  permission rules, and a decision on who owns the process lifecycle.
+- **Plugin auto-starts the server. Done (v0.5 line).** Opt-in via
+  `AGENTLIGHT_AUTOSTART_BIN`: the plugin probes `/healthz`, and if the hub is
+  unreachable it spawns that binary detached, waits for health, and never owns
+  the process lifecycle. No-op when unset.
 - **`done` is never observed (bug). Fixed in v0.4.0.** Finished sessions,
   including subagents, only went idle, so "Clear done" missed them. The plugin
   now reports idle on a session with a `parentID` (a subagent) as `done`, and
   keeps an idle session that is waiting on a permission as `needs_help`.
   Covered by `plugins/opencode/test/agentlight.test.js`.
-- **Right-click hide in collapsed mode. Planned.** Add a context menu on the
-  collapsed window with a "Hide" action that sends the app to the tray.
-- **Stay on the same monitor when expanding/collapsing. Planned.** Bug: when the
-  collapsed window sits just left of the boundary between two monitors,
-  expanding it grows to the right and lands on the second monitor; collapsing
-  then leaves it to the right of the boundary. The window should keep the
-  monitor it was on unless the user moved it. Open question: what to do when the
-  window straddles the boundary so it is visible on both monitors? Candidate
-  rule: remember the monitor that holds the most of the window (or the anchor
-  corner), and snap the resize origin to that monitor's edge.
+- **Right-click hide in collapsed mode. Done (v0.5 line).** The collapsed view
+  has a context menu with a "Hide" action that sends the app to the tray.
+- **Stay on the same monitor when expanding/collapsing. Done (v0.5 line).** The
+  window now remembers the collapsed rectangle's home monitor — the one with the
+  most overlap, ties broken by the top-left corner, then the primary — and
+  expands/collapses within that monitor, preserving the left edge. A window
+  exactly on the seam is therefore stable. Verified by unit tests on the
+  pure geometry helpers in `src-tauri`.
 - **Jump to a session in the opencode web UI. Planned.** Can we detect which
   Chrome window and which tab/session inside opencode's web UI a given session
   lives in, and offer a button in AgentLight to open or focus it? Open question:
