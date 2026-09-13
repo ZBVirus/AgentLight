@@ -195,12 +195,13 @@ The portable exe needs the WebView2 runtime, which ships with Windows 10/11.
 For quick testing without an install, download the `agentlight-windows-portable`
 artifact from the latest CI run, or the `*_portable.exe` asset on a release.
 
-CI (`.github/workflows/ci.yml`) runs the core and plugin tests on Linux and
-builds the portable exe and the server exe on Windows in parallel, using the
-fast `ci` profile; the release workflow builds the optimized binaries and
-attaches the portable exe and the NSIS installer to a tagged release. For an
-on-demand testable build without pushing, run the `dev-build` workflow
-(`workflow_dispatch`) and download the `agentlight-windows-dev` artifact.
+CI (`.github/workflows/ci.yml`) runs on pull requests into `main`/`develop`
+(and on manual dispatch): the core and plugin tests on Linux, plus the portable
+exe and the server exe on Windows in parallel, using the fast `ci` profile. The
+release workflow builds the optimized binaries and attaches the portable exe
+and the NSIS installer to a tagged release. For an on-demand testable build,
+run the `dev-build` workflow and download the `agentlight-windows-dev`
+artifact.
 
 ## Configuration
 

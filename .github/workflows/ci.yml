@@ -1,13 +1,11 @@
 name: ci
 
 on:
-  push:
-    branches: ["main", "feat/**"]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE"
-      - ".gitignore"
+  # Runs on pull requests into the integration/release branches, and on demand.
+  # Feature-branch pushes do not trigger it: test locally, then open a PR (or
+  # use workflow_dispatch) when you want CI.
   pull_request:
+    branches: ["main", "develop"]
     paths-ignore:
       - "**/*.md"
       - "LICENSE"
@@ -78,6 +76,7 @@ jobs:
           name: agentlight-windows-portable
           if-no-files-found: warn
           path: target/ci/AgentLight-portable.exe
+          retention-days: 7
 
   windows-server:
     name: windows server exe
@@ -98,3 +97,4 @@ jobs:
           name: agentlight-server-windows
           if-no-files-found: warn
           path: target/ci/agentlight-server.exe
+          retention-days: 7

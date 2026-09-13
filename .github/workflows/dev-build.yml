@@ -32,3 +32,4 @@ jobs:
           name: agentlight-windows-dev
           path: target/ci/AgentLight-dev.exe
           if-no-files-found: error
+          retention-days: 7
