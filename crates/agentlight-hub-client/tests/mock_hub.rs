@@ -432,7 +432,7 @@ fn commands_post_expected_tagged_bodies() {
     assert_eq!(requests[0].header("content-type"), Some("application/json"));
     assert_eq!(
         requests[0].body,
-        "{\"command\":\"remove_session\",\"source\":\"hub\",\"session_id\":\"abc\"}"
+        "{\"command\":\"remove_session\",\"session_id\":\"abc\"}"
     );
 
     source
@@ -451,6 +451,26 @@ fn commands_post_expected_tagged_bodies() {
         )))
         .expect("ignored other-source key");
     assert_eq!(hub.recorded().len(), 2);
+}
+
+#[test]
+fn remove_session_serializes_an_explicit_source() {
+    let hub = MockHub::start();
+    hub.set_command(200, "{\"revision\":3}");
+    let client = HubClient::new(HubConfig::new(hub.base_url()));
+
+    client
+        .remove_session(Some("events"), "abc")
+        .expect("remove_session");
+
+    let requests = hub.recorded();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/api/v1/commands");
+    assert_eq!(
+        requests[0].body,
+        "{\"command\":\"remove_session\",\"source\":\"events\",\"session_id\":\"abc\"}"
+    );
 }
 
 #[test]

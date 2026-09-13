@@ -124,7 +124,8 @@ impl From<serde_json::Error> for HubError {
 #[serde(tag = "command", rename_all = "snake_case")]
 enum CommandBody<'a> {
     RemoveSession {
-        source: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source: Option<&'a str>,
         session_id: &'a str,
     },
     ClearDone,
@@ -187,7 +188,7 @@ impl HubClient {
 
     /// `POST /api/v1/commands` with a `remove_session` body. Returns the
     /// revision produced by the hub's follow-up refresh.
-    pub fn remove_session(&self, source: &str, session_id: &str) -> Result<u64, HubError> {
+    pub fn remove_session(&self, source: Option<&str>, session_id: &str) -> Result<u64, HubError> {
         self.post_command(&CommandBody::RemoveSession { source, session_id })
     }
 

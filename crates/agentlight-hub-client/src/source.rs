@@ -139,7 +139,7 @@ impl StateSource for HubSource {
                     return Ok(());
                 }
                 self.client
-                    .remove_session(self.id.as_str(), &key.session_id)
+                    .remove_session(None, &key.session_id)
                     .map(|_| ())
                     .map_err(remote_error)
             }
