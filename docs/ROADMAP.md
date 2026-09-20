@@ -133,6 +133,8 @@ one per session, and click-to-open the window from the toast.
 - Optional compact mode: show only the light, hide the top bar until hover.
   **Done:** the collapsed view is already light-only with no bar. A hover-reveal
   bar was not needed.
+- Decide whether `agentlight-source-events` belongs in the CI test and clippy
+  matrix. It has tests, but `ci.yml` currently omits it. **Planned.**
 
 ## Future updates (recorded, not scheduled)
 

@@ -11,6 +11,9 @@
 /push-state.json
 /tmp/
 
+# Local (untracked) dev scripts
+/local/
+
 # Node tooling (only if added later; the frontend itself is static)
 /node_modules
 
