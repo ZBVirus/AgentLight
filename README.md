@@ -219,13 +219,14 @@ can be edited by hand.
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
-| `mini_red` / `mini_orange` / `mini_green` / `mini_gray` | *(built-in)* | Custom collapsed-light colors (any CSS color). |
-| `mini_show_labels` | `true`          | Show labels beside the collapsed lights.           |
+| `mini_red` / `mini_orange` / `mini_green` | *(built-in)* | Custom light colors (any CSS color), applied to the lights and status chips in both the collapsed and detail views. "Reset colors" restores the palette. |
+| `mini_show_labels` | `false`         | Show labels beside the collapsed lights.           |
 | `mini_width` / `mini_height` | *(style size)* | Persisted collapsed-window size in logical px. |
 | `topmost_reassert` | `false`         | Re-assert always-on-top for full-screen apps.      |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
-| `notifications`  | `false`           | Desktop notification when a session needs help.    |
+| `notifications`  | `false`           | Desktop notification when a session hits `notification_trigger`. |
+| `notification_trigger` | `"needs_help"` | `needs_help`, `done`, or `any_status`.            |
 | `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
 | `alarm_trigger`  | `"needs_help"`    | `needs_help`, `done`, or `any_status`.             |
 | `alarm_sound`    | *(system beep)*   | `.wav` file for the alarm; empty uses the system beep. |

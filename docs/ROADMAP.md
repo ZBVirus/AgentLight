@@ -141,11 +141,13 @@ one per session, and click-to-open the window from the toast.
 **Status: Planned.** Captured from product feedback. None of these are started;
 decide and prioritize later.
 
-- **Collapsed view customization. Done (v0.5 line).** Settings now has the four
-  collapsed-light colors (`mini_red` / `mini_orange` / `mini_green` /
-  `mini_gray`, any CSS color) and a labels toggle (`mini_show_labels`). The
-  colors apply to all three styles; leaving the built-in color keeps the
-  default palette. Per-status custom rules are still open.
+- **Collapsed view customization. Done (v0.5 line).** Settings has the three
+  light colors (`mini_red` / `mini_orange` / `mini_green`, any CSS color) with a
+  "Reset colors" button, and a labels toggle (`mini_show_labels`, off by
+  default). The colors apply to the lights and status chips in **both** the
+  collapsed and the detail views; leaving the built-in color keeps the default
+  palette. The gray/off color was removed (the triple light has no off state).
+  Per-status custom rules are still open.
 - **Collapsed view resizing. Done (v0.5 line).** Only the collapsed window is
   user-resizable; its size persists to `mini_width` / `mini_height` and is
   restored on restart. Expanded views keep their fixed sizes. Saves are
@@ -182,7 +184,18 @@ decide and prioritize later.
   plays a sound on an alarm edge; `alarm_trigger` selects `needs_help`, `done`,
   or `any_status`; `alarm_sound` chooses a `.wav` file (default is the system
   beep). Edges are computed in the engine, separate from the notification toast.
+  Desktop notifications now share the same trigger selection via
+  `notification_trigger`, and the alarm rows hide unless alarms are enabled.
   Per-source rules, snooze, and quiet hours remain open.
+- **Desktop receives pushed plugin events directly (embedded events mode).
+  Planned.** Today the desktop's embedded server is always built in file mode
+  (`AppState::with_devices` without `.with_events`), so `POST /api/v1/ingest`
+  answers `400 this server is not in events mode`, and the desktop source
+  builder maps `SourceKind::Push` back to the local file. Feeding the widget
+  from the plugin therefore needs a standalone `agentlight-server` in events
+  mode plus `Source = hub`. Planned: let the embedded server host the same
+  `EventPushSource` as the standalone server, so the plugin can point straight
+  at the desktop and the ingested sessions render with no separate hub process.
 - **Deferred engineering options. Planned.** From the architecture review:
   - Tag and release the architecture line: hub, pairing, file or hub source,
     ingest, and the plugin.

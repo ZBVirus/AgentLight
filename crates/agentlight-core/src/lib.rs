@@ -15,8 +15,8 @@ pub mod source;
 pub mod state;
 
 pub use config::{
-    config_path, hash_token, load as load_config, save as save_config, Config, SourceKind,
-    YellowMode,
+    config_path, hash_token, load as load_config, save as save_config, CollapseStyle, Config,
+    SourceKind, YellowMode,
 };
 pub use engine::{Engine, Notification, Update, UpdateSink, Urgency};
 pub use session::{display_session, harness_badge, load_sessions, DisplaySession, DONE_RETENTION};

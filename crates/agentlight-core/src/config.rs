@@ -87,8 +87,6 @@ pub struct Config {
     pub mini_orange: Option<String>,
     /// Custom color for the green (working / aggregate green) collapsed light.
     pub mini_green: Option<String>,
-    /// Custom color for the gray (no live sessions) collapsed light.
-    pub mini_gray: Option<String>,
     /// Show the text labels beside the collapsed lights.
     pub mini_show_labels: bool,
     /// Persisted width of the collapsed window, in logical pixels. `None` uses
@@ -115,8 +113,11 @@ pub struct Config {
     /// hash. It therefore stays plaintext in `config.json`; protect that file
     /// as you would any secret. It is never logged.
     pub hub_token: Option<String>,
-    /// Fire a desktop notification when a session needs help.
+    /// Fire a desktop notification when a session hits the notification trigger.
     pub notifications: bool,
+    /// Which transition fires a desktop notification. Same choices as
+    /// [`alarms`](Self::alarm_trigger).
+    pub notification_trigger: AlarmTrigger,
     /// Play an attention alarm (sound) when a session needs attention.
     pub alarms_enabled: bool,
     /// Which transition fires an alarm.
@@ -150,8 +151,7 @@ impl Default for Config {
             mini_red: None,
             mini_orange: None,
             mini_green: None,
-            mini_gray: None,
-            mini_show_labels: true,
+            mini_show_labels: false,
             mini_width: None,
             mini_height: None,
             topmost_reassert: false,
@@ -161,6 +161,7 @@ impl Default for Config {
             hub_url: DEFAULT_HUB_URL.to_string(),
             hub_token: None,
             notifications: false,
+            notification_trigger: AlarmTrigger::NeedsHelp,
             alarms_enabled: false,
             alarm_trigger: AlarmTrigger::NeedsHelp,
             alarm_sound: None,
@@ -195,7 +196,6 @@ impl Config {
             &mut self.mini_red,
             &mut self.mini_orange,
             &mut self.mini_green,
-            &mut self.mini_gray,
         ] {
             *color = color
                 .as_deref()
@@ -461,22 +461,25 @@ mod tests {
     #[test]
     fn mini_customization_parses_sanitizes_and_clamps() {
         let c: Config = serde_json::from_str(
-            r#"{"mini_red":"  #ff0000  ","mini_gray":"   ","mini_show_labels":false,"mini_width":10.0,"mini_height":99999.0}"#,
+            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true,"mini_width":10.0,"mini_height":99999.0}"#,
         )
         .unwrap();
         assert_eq!(c.mini_red.as_deref(), Some("  #ff0000  "));
         let c = c.sanitized();
         assert_eq!(c.mini_red.as_deref(), Some("#ff0000"));
         assert!(
-            c.mini_gray.is_none(),
+            c.mini_green.is_none(),
             "a blank color falls back to built-in"
         );
-        assert!(!c.mini_show_labels);
+        assert!(c.mini_show_labels);
         assert_eq!(c.mini_width, Some(40.0), "a too-small width clamps up");
         assert_eq!(c.mini_height, Some(2000.0), "a huge height clamps down");
 
         let defaults = Config::default();
-        assert!(defaults.mini_show_labels);
+        assert!(
+            !defaults.mini_show_labels,
+            "labels are hidden in the collapsed view by default"
+        );
         assert!(defaults.mini_width.is_none());
         assert!(!defaults.topmost_reassert);
     }
@@ -487,6 +490,10 @@ mod tests {
         assert!(!defaults.alarms_enabled);
         assert_eq!(defaults.alarm_trigger, AlarmTrigger::NeedsHelp);
         assert!(defaults.alarm_sound.is_none());
+        assert_eq!(defaults.notification_trigger, AlarmTrigger::NeedsHelp);
+
+        let c: Config = serde_json::from_str(r#"{"notification_trigger":"done"}"#).unwrap();
+        assert_eq!(c.notification_trigger, AlarmTrigger::Done);
 
         let c: Config = serde_json::from_str(
             r#"{"alarms_enabled":true,"alarm_trigger":"any_status","alarm_sound":"  C:/ding.wav  "}"#,

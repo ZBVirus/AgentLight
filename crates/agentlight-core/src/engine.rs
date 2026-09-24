@@ -376,7 +376,8 @@ impl Inner {
     }
 
     fn notification_edge(&self, sources: &[SourceSnapshot]) -> Vec<Notification> {
-        if !self.config.lock().unwrap().notifications {
+        let config = self.config.lock().unwrap().clone();
+        if !config.notifications {
             return Vec::new();
         }
         let mut previous = self.previous.lock().unwrap();
@@ -387,15 +388,9 @@ impl Inner {
 
         let mut notifications = Vec::new();
         for model in &models {
-            if model.status == Status::NeedsHelp
-                && previous.get(&model.key) != Some(&Status::NeedsHelp)
-            {
-                notifications.push(Notification {
-                    key: model.key.clone(),
-                    title: "AgentLight".to_string(),
-                    body: format!("\"{}\" needs help", model.name),
-                    urgency: Urgency::Critical,
-                });
+            let before = previous.get(&model.key).copied();
+            if trigger_fires(config.notification_trigger, model.status, before) {
+                notifications.push(attention_notification(model));
             }
         }
 
@@ -422,29 +417,8 @@ impl Inner {
         let mut alarms = Vec::new();
         for model in &models {
             let before = previous.get(&model.key).copied();
-            let fires = match config.alarm_trigger {
-                AlarmTrigger::NeedsHelp => {
-                    model.status == Status::NeedsHelp && before != Some(Status::NeedsHelp)
-                }
-                AlarmTrigger::Done => model.status == Status::Done && before != Some(Status::Done),
-                // Only on a real change; a newly seen session does not alarm.
-                AlarmTrigger::AnyStatus => before.is_some_and(|before| before != model.status),
-            };
-            if fires {
-                alarms.push(Notification {
-                    key: model.key.clone(),
-                    title: "AgentLight".to_string(),
-                    body: format!(
-                        "\"{}\" is {}",
-                        model.name,
-                        model.status.label().to_lowercase()
-                    ),
-                    urgency: if model.status == Status::NeedsHelp {
-                        Urgency::Critical
-                    } else {
-                        Urgency::Normal
-                    },
-                });
+            if trigger_fires(config.alarm_trigger, model.status, before) {
+                alarms.push(attention_notification(model));
             }
         }
 
@@ -453,6 +427,37 @@ impl Inner {
             previous.insert(model.key.clone(), model.status);
         }
         alarms
+    }
+}
+
+/// Whether a status transition fires an attention edge for `trigger`.
+///
+/// `before` is the status last seen for the session; a newly seen session has
+/// `None`. `NeedsHelp`/`Done` fire on entering the status even when first seen;
+/// `AnyStatus` only fires on an actual change, so a first sight does not fire.
+fn trigger_fires(trigger: AlarmTrigger, status: Status, before: Option<Status>) -> bool {
+    match trigger {
+        AlarmTrigger::NeedsHelp => status == Status::NeedsHelp && before != Some(Status::NeedsHelp),
+        AlarmTrigger::Done => status == Status::Done && before != Some(Status::Done),
+        AlarmTrigger::AnyStatus => before.is_some_and(|before| before != status),
+    }
+}
+
+/// The toast/sound payload for an attention edge.
+fn attention_notification(model: &Session) -> Notification {
+    Notification {
+        key: model.key.clone(),
+        title: "AgentLight".to_string(),
+        body: format!(
+            "\"{}\" is {}",
+            model.name,
+            model.status.label().to_lowercase()
+        ),
+        urgency: if model.status == Status::NeedsHelp {
+            Urgency::Critical
+        } else {
+            Urgency::Normal
+        },
     }
 }
 
@@ -609,11 +614,70 @@ mod tests {
         {
             let notifications = notifications.lock().unwrap();
             assert_eq!(notifications.len(), 1);
-            assert_eq!(notifications[0].body, "\"Session 1\" needs help");
+            assert_eq!(notifications[0].body, "\"Session 1\" is needs help");
             assert_eq!(notifications[0].key.session_id, "1");
         }
 
         source.set_sessions(vec![frame("a", "1", Status::NeedsHelp, 3)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_fires_on_done_when_configured() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: AlarmTrigger::Done,
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+
+        source.set_sessions(vec![frame("a", "1", Status::Done, 2)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+
+        source.set_sessions(vec![frame("a", "1", Status::Done, 3)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_any_status_ignores_first_sight() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: AlarmTrigger::AnyStatus,
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+        assert!(
+            notifications.lock().unwrap().is_empty(),
+            "a first sight does not fire"
+        );
+
+        source.set_sessions(vec![frame("a", "1", Status::NeedsHelp, 2)]);
         assert_eq!(notifications.lock().unwrap().len(), 1);
     }
 
