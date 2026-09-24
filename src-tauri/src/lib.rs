@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agentlight_core::{
-    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
-    StateSource, Update, CLAWLIGHT_SOURCE_ID,
+    ClawlightFileSource, CollapseStyle, Config, Engine, SessionKey, Snapshot, SourceCommand,
+    SourceId, SourceKind, StateSource, Update, CLAWLIGHT_SOURCE_ID,
 };
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -100,8 +100,16 @@ fn set_config(
             config.server_token_hash = Some(agentlight_server::hash_token(token));
         }
     }
-    let config = config.sanitized();
+    let mut config = config.sanitized();
     let previous = current_config(&state);
+
+    // A different collapsed layout has a different design size, so the size the
+    // user dragged for the old layout would otherwise be re-applied and look
+    // "stuck". Clear it so the new style's own size takes over.
+    if previous.collapse_style != config.collapse_style {
+        config.mini_width = None;
+        config.mini_height = None;
+    }
 
     // Reject a bad bind before doing anything else.
     if config.server_enabled {
@@ -341,7 +349,11 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         let (x, y) = clamp_rect((desired.x, desired.y), (target.width, target.height), home);
         let placed = PhysicalPosition::new(x, y);
         *state.programmatic_resize.lock().unwrap() = Some((width, height));
-        // Only the collapsed window is user-resizable.
+        // Only the collapsed window is user-resizable, and it scales on a
+        // single diagonal: the minimum leaves the lights and labels fully
+        // visible, unlike the OS's much larger default tracking minimum.
+        let (min_w, min_h) = mini_min(&config);
+        let _ = window.set_min_size(Some(LogicalSize::new(min_w, min_h)));
         let _ = window.set_resizable(true);
         let _ = window.set_size(logical);
         let _ = window.set_position(placed);
@@ -380,6 +392,7 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
 
     *state.programmatic_resize.lock().unwrap() = Some((width, height));
     // Expanded views keep their fixed size; only the collapsed window resizes.
+    let _ = window.set_min_size(None::<LogicalSize<f64>>);
     let _ = window.set_resizable(false);
     let _ = window.set_size(logical);
     if let (Some(home), Some(current)) = (home, current) {
@@ -580,6 +593,85 @@ fn size_matches(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
 
+/// The design size of the collapsed window for a layout. Its aspect ratio is
+/// what the user drags on, so the collapsed window scales on one diagonal.
+fn mini_base(config: &Config) -> (f64, f64) {
+    match config.collapse_style {
+        CollapseStyle::Single => (88.0, 88.0),
+        CollapseStyle::Triple => (172.0, 68.0),
+        CollapseStyle::TripleVertical => (68.0, 172.0),
+    }
+}
+
+/// The smallest collapsed size that still shows the lights, and the labels when
+/// they are on. With labels the design height is the floor so text is never
+/// clipped; without them the window may shrink somewhat.
+fn mini_min(config: &Config) -> (f64, f64) {
+    let (width, height) = mini_base(config);
+    if config.mini_show_labels {
+        (width, height)
+    } else {
+        (width * 0.7, height * 0.7)
+    }
+}
+
+/// Snap a collapsed size back onto the layout's aspect ratio, never below the
+/// minimum. Scale follows whichever axis the user moved furthest, so dragging a
+/// corner grows or shrinks both dimensions together.
+fn snap_to_aspect(size: (f64, f64), config: &Config) -> (f64, f64) {
+    let (base_w, base_h) = mini_base(config);
+    let (min_w, min_h) = mini_min(config);
+    let floor = (min_w / base_w).max(min_h / base_h);
+    let scale = (size.0 / base_w).max(size.1 / base_h).max(floor);
+    (base_w * scale, base_h * scale)
+}
+
+/// Re-assert a `WebviewWindow`'s topmost flag using the native Win32 call. The
+/// Tauri `set_always_on_top` can be ignored over an exclusive/borderless
+/// full-screen window; `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` is the
+/// documented way to stay above it. No-op on other platforms.
+#[cfg(target_os = "windows")]
+fn reassert_topmost(window: &WebviewWindow) {
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const HWND_TOPMOST: *mut c_void = -1isize as *mut c_void;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+
+    if let Ok(hwnd) = window.hwnd() {
+        // Safety: `hwnd` is this window's live handle and the constants are the
+        // documented `SetWindowPos` flags.
+        unsafe {
+            SetWindowPos(
+                hwnd.0,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn reassert_topmost(_window: &WebviewWindow) {}
+
 /// Background saver for the collapsed window size. Coalesces a drag into one
 /// write: it wakes on a fixed interval and only persists the newest pending
 /// size once the generation has stopped changing. Detached; ends with the
@@ -631,8 +723,44 @@ fn spawn_topmost_reassert(app: AppHandle) {
         }
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_always_on_top(true);
+            reassert_topmost(&window);
         }
     });
+}
+
+/// After a collapsed resize, snap the window back onto the layout's aspect
+/// ratio so it can only be dragged on one diagonal. Records the corrected size
+/// and marks it programmatic so its own `Resized` event is not re-snapped.
+fn snap_mini_aspect(window: &tauri::Window, state: &AppState, scale: f64) {
+    if *state.window_mode.lock().unwrap() != "mini" {
+        return;
+    }
+    if let Some(until) = *state.resize_guard_until.lock().unwrap() {
+        if Instant::now() < until {
+            return;
+        }
+    }
+    let config = state.config.lock().unwrap().clone();
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let logical = size.to_logical::<f64>(scale);
+    // Our own programmatic sizes (startup, view switches) already match the
+    // requested view; only snap sizes the user actually dragged.
+    if let Some((w, h)) = *state.programmatic_resize.lock().unwrap() {
+        if size_matches(w, logical.width) && size_matches(h, logical.height) {
+            return;
+        }
+    }
+    let (width, height) = snap_to_aspect((logical.width, logical.height), &config);
+    if size_matches(width, logical.width) && size_matches(height, logical.height) {
+        return;
+    }
+    *state.programmatic_resize.lock().unwrap() = Some((width, height));
+    *state.resize_guard_until.lock().unwrap() = Some(Instant::now() + RESIZE_GUARD);
+    let _ = window.set_size(LogicalSize::new(width, height));
+    *state.pending_mini_size.lock().unwrap() = Some((width, height));
+    state.resize_generation.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Build the configured source adapter: a local clawlight file or a remote hub.
@@ -1058,6 +1186,7 @@ pub fn run() {
                 let state = window.state::<AppState>();
                 let scale = window.scale_factor().unwrap_or(1.0);
                 note_user_resize(scale, &state, *size);
+                snap_mini_aspect(window, &state, scale);
             }
             _ => {}
         })

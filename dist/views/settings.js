@@ -17,17 +17,16 @@ const $ = (id) => document.getElementById(id);
 const DEFAULT_SERVER_BIND = "127.0.0.1:8787";
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 
-// Built-in collapsed palette, matching the CSS custom properties. A color
-// input seeded with one of these is treated as "not customized" on save so the
-// config keeps its null and the palette stays future-proof.
+// Built-in palette, matching the CSS custom properties. A color input seeded
+// with one of these is treated as "not customized" on save so the config keeps
+// its null and the palette stays future-proof.
 const MINI_BUILTIN = {
   red: "#e06c75",
   orange: "#e5c07b",
   green: "#98c379",
-  gray: "#5c6370",
 };
 
-const MINI_COLORS = ["red", "orange", "green", "gray"];
+const MINI_COLORS = ["red", "orange", "green"];
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 // Whether the persisted config carries an admin token hash. Lets the token
@@ -82,8 +81,11 @@ export function populateSettings() {
   $("set-hub-token").value = config.hub_token || "";
   $("set-state-path").value = config.state_path || (snapshot ? snapshot.state_path : "");
   $("set-top").checked = !!config.always_on_top;
+  $("set-topmost-reassert").checked = !!config.topmost_reassert;
   $("set-autostart").checked = !!config.start_at_login;
   $("set-notifications").checked = !!config.notifications;
+  $("set-notification-trigger").value =
+    config.notification_trigger || "needs_help";
   $("set-show-done").checked = !!config.show_done;
   $("set-alarms-enabled").checked = !!config.alarms_enabled;
   $("set-alarm-trigger").value = config.alarm_trigger || "needs_help";
@@ -108,12 +110,15 @@ export function populateSettings() {
   $("set-source-kind").onchange = renderSourceFields;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
+  $("set-alarms-enabled").onchange = renderAlarmRows;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
   $("btn-server-token-clear").onclick = clearAdminToken;
   $("btn-alarm-sound-pick").onclick = chooseAlarmSound;
   $("btn-alarm-sound-clear").onclick = clearAlarmSound;
+  $("btn-reset-colors").onclick = resetColors;
   renderSourceFields();
+  renderAlarmRows();
   renderServerUrl();
   refreshServerStatus();
 }
@@ -247,6 +252,25 @@ async function clearAdminToken() {
   await refreshServerStatus();
 }
 
+// Show and enable the alarm trigger/sound rows only while alarms are on.
+function renderAlarmRows() {
+  const rows = $("set-alarm-rows");
+  if (!rows) return;
+  const enabled = $("set-alarms-enabled").checked;
+  rows.classList.toggle("hidden", !enabled);
+  for (const el of rows.querySelectorAll("input, select, button")) {
+    el.disabled = !enabled;
+  }
+}
+
+// Seed the color inputs with the built-in palette. Saving afterwards treats
+// them as uncustomized and persists nulls, restoring the defaults.
+function resetColors() {
+  for (const key of MINI_COLORS) {
+    $(`set-mini-${key}`).value = MINI_BUILTIN[key];
+  }
+}
+
 // A color input always holds a value, so "customized" means it differs from the
 // built-in hex. Returning null keeps the built-in palette for that light.
 function miniColorValue(key) {
@@ -278,8 +302,10 @@ export async function saveSettings(event) {
     hub_token: $("set-hub-token").value.trim() || null,
     state_path: $("set-state-path").value.trim() || null,
     always_on_top: $("set-top").checked,
+    topmost_reassert: $("set-topmost-reassert").checked,
     start_at_login: $("set-autostart").checked,
     notifications: $("set-notifications").checked,
+    notification_trigger: $("set-notification-trigger").value,
     show_done: $("set-show-done").checked,
     alarms_enabled: $("set-alarms-enabled").checked,
     alarm_trigger: $("set-alarm-trigger").value,
@@ -289,7 +315,6 @@ export async function saveSettings(event) {
     mini_red: miniColorValue("red"),
     mini_orange: miniColorValue("orange"),
     mini_green: miniColorValue("green"),
-    mini_gray: miniColorValue("gray"),
     mini_show_labels: $("set-mini-show-labels").checked,
     poll_ms: Number($("set-poll").value) || 1500,
   });

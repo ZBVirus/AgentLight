@@ -107,12 +107,24 @@
               <span>Always on top</span>
             </label>
             <label class="field inline">
+              <input type="checkbox" id="set-topmost-reassert" />
+              <span>Keep above full-screen apps</span>
+            </label>
+            <label class="field inline">
               <input type="checkbox" id="set-autostart" />
               <span>Start at login</span>
             </label>
             <label class="field inline">
               <input type="checkbox" id="set-notifications" />
-              <span>Notify when a session needs help</span>
+              <span>Desktop notifications</span>
+            </label>
+            <label class="field">
+              <span>Notify when</span>
+              <select id="set-notification-trigger">
+                <option value="needs_help">A session needs help</option>
+                <option value="done">A session finishes</option>
+                <option value="any_status">Any status change</option>
+              </select>
             </label>
             <label class="field inline">
               <input type="checkbox" id="set-show-done" />
@@ -123,22 +135,24 @@
               <input type="checkbox" id="set-alarms-enabled" />
               <span>Play an alarm sound</span>
             </label>
-            <label class="field">
-              <span>Alarm when</span>
-              <select id="set-alarm-trigger">
-                <option value="needs_help">A session needs help</option>
-                <option value="done">A session finishes</option>
-                <option value="any_status">Any status change</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Alarm sound</span>
-              <div class="row">
-                <input type="text" id="set-alarm-sound" readonly placeholder="System default" />
-                <button type="button" class="ghost" id="btn-alarm-sound-pick">Choose…</button>
-                <button type="button" class="ghost" id="btn-alarm-sound-clear">Clear</button>
-              </div>
-            </label>
+            <div id="set-alarm-rows">
+              <label class="field">
+                <span>Alarm when</span>
+                <select id="set-alarm-trigger">
+                  <option value="needs_help">A session needs help</option>
+                  <option value="done">A session finishes</option>
+                  <option value="any_status">Any status change</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Alarm sound</span>
+                <div class="row">
+                  <input type="text" id="set-alarm-sound" readonly placeholder="System default" />
+                  <button type="button" class="ghost" id="btn-alarm-sound-pick">Choose…</button>
+                  <button type="button" class="ghost" id="btn-alarm-sound-clear">Clear</button>
+                </div>
+              </label>
+            </div>
 
             <label class="field">
               <span>Idle behavior</span>
@@ -158,7 +172,7 @@
             </label>
 
             <div class="field">
-              <span>Collapsed colors</span>
+              <span>Light colors</span>
               <div class="mini-colors">
                 <label class="color-field">
                   <input type="color" id="set-mini-red" />
@@ -172,12 +186,11 @@
                   <input type="color" id="set-mini-green" />
                   <span>Green</span>
                 </label>
-                <label class="color-field">
-                  <input type="color" id="set-mini-gray" />
-                  <span>Gray</span>
-                </label>
               </div>
-              <small class="hint">Each color is used by the collapsed lights in every style. Leaving the built-in color keeps the default palette.</small>
+              <div class="row">
+                <button type="button" class="ghost" id="btn-reset-colors">Reset colors</button>
+              </div>
+              <small class="hint">Each color is used by the lights and chips in both views. Leaving the built-in color keeps the default palette.</small>
             </div>
 
             <label class="field inline">

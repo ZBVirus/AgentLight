@@ -5,30 +5,31 @@ import { AGG_LABEL } from "../lib/format.js";
 const $ = (id) => document.getElementById(id);
 
 // Mirrors the config field names to the CSS custom properties consumed by the
-// collapsed light rules. Setting them on #view-mini keeps the detail light on
-// the built-in palette.
+// light and chip rules. Setting them on the document root makes the user's
+// palette apply to both the collapsed and expanded (detail) views.
 const MINI_COLOR_VARS = [
   ["mini_red", "--mini-red"],
   ["mini_orange", "--mini-orange"],
   ["mini_green", "--mini-green"],
-  ["mini_gray", "--mini-gray"],
 ];
 
-// Apply the user's collapsed-view customization: the four light colors become
-// custom properties (falling back to the built-in palette in CSS) and the
-// no-labels class hides the captions beside the collapsed lights.
+// Apply the user's color customization: the three light colors become custom
+// properties (falling back to the built-in palette in CSS) and the no-labels
+// class hides the captions beside the collapsed lights.
 export function applyMiniTheme(config) {
-  const mini = $("view-mini");
-  if (!mini) return;
+  const root = document.documentElement;
   for (const [field, variable] of MINI_COLOR_VARS) {
     const value = config && config[field];
-    if (value) mini.style.setProperty(variable, value);
-    else mini.style.removeProperty(variable);
+    if (value) root.style.setProperty(variable, value);
+    else root.style.removeProperty(variable);
   }
-  mini.classList.toggle(
-    "no-labels",
-    !!(config && config.mini_show_labels === false),
-  );
+  const mini = $("view-mini");
+  if (mini) {
+    mini.classList.toggle(
+      "no-labels",
+      !!(config && config.mini_show_labels === false),
+    );
+  }
 }
 
 export function setLights(color) {
