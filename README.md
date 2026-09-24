@@ -34,8 +34,13 @@ mode (see [`docs/state-format.md`](docs/state-format.md)). Switch to
   dot, name, harness badge (`oc` / `cx` / `co`), project, relative time, and a
   remove button. A "Clear done" action drops all `done` rows.
 - **Settings** — source (local file or remote hub), state path (with a file
-  picker) or hub URL and token, collapsed view, always-on-top, start at login,
-  notifications, show-every-done, idle behavior, and the poll interval.
+  picker) or hub URL and token, collapsed view (style, color pickers with Reset,
+  labels), always-on-top plus "keep above full-screen apps", start at login,
+  notifications with a trigger choice, alarm sound with a trigger choice,
+  show-every-done, idle behavior, the embedded server, and the poll interval.
+
+For the current branch/PR/release state and how to build a test exe, see
+[`docs/STATUS.md`](docs/STATUS.md).
 
 The window is frameless and draggable by its top bar, and it lives in the system
 tray: closing or hiding it keeps it running, and the tray icon toggles it back.
@@ -110,8 +115,15 @@ echo '{"session_id":"abc","status":"active","name":"Fix auth"}' | agentlight-hoo
 
 The hub persists pushed sessions to `AGENTLIGHT_EVENTS_FILE` (default
 `push-state.json`) and reloads them on restart, so last-known state survives a
-hub restart instead of starting empty. The plugin can also start the hub itself:
-set `AGENTLIGHT_AUTOSTART_BIN` to the `agentlight-server` binary and it probes
+hub restart instead of starting empty. A `mode:"snapshot"` ingest is
+authoritative and **scoped to the batch's `producer`**, so several producers can
+share one hub without evicting each other's sessions; a producer never posts an
+empty snapshot. The plugin tags events with a stable `AGENTLIGHT_PRODUCER`
+(default `opencode:<host>:<directory>`) and populates a best-effort session
+`url` from `AGENTLIGHT_SESSION_URL_TEMPLATE` (default
+`http://localhost:4096/session/{id}`; empty disables) so the detail view can
+offer **Open**. The plugin can also start the hub itself: set
+`AGENTLIGHT_AUTOSTART_BIN` to the `agentlight-server` binary and it probes
 `/healthz`, spawning the hub only when nothing is already running.
 
 See [`docs/plugin.md`](docs/plugin.md) for hub setup, the hook, plugin install,
@@ -181,10 +193,11 @@ build tools and WebView2 (preinstalled on Windows 10/11, otherwise the Evergreen
 runtime). No Node toolchain is required — the frontend is static.
 
 ```bash
-# library: parse / aggregate / clear / snapshot
-cargo test -p agentlight-core
-cargo clippy -p agentlight-core --all-targets -- -D warnings
+# libraries + hub + client: parse / aggregate / clear / snapshot / ingest
+cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events
+cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings
 cargo fmt --all --check
+node --test plugins/opencode/test/agentlight.test.js
 
 # GUI (Windows)
 cargo install tauri-cli --version "^2.0.0" --locked
@@ -197,7 +210,7 @@ The portable exe needs the WebView2 runtime, which ships with Windows 10/11.
 For quick testing without an install, download the `agentlight-windows-portable`
 artifact from the latest CI run, or the `*_portable.exe` asset on a release.
 
-CI (`.github/workflows/ci.yml`) runs on pull requests into `main`/`develop`
+CI (`.github/workflows/ci.yml`) runs on pull requests into **any** base branch
 (and on manual dispatch): the core and plugin tests on Linux, plus the portable
 exe and the server exe on Windows in parallel, using the fast `ci` profile. The
 release workflow builds the optimized binaries and attaches the portable exe
