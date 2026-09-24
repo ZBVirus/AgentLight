@@ -516,6 +516,7 @@ fn ingest_posts_events_and_parses_accepted() {
             harness: Some("opencode".to_string()),
             last_updated: Some("2026-09-12T10:00:00Z".to_string()),
             url: None,
+            producer: None,
         },
         SessionEvent {
             session_id: "s2".to_string(),
@@ -525,6 +526,7 @@ fn ingest_posts_events_and_parses_accepted() {
             harness: None,
             last_updated: None,
             url: None,
+            producer: None,
         },
     ];
 
@@ -564,6 +566,7 @@ fn ingest_snapshot_sets_mode_and_upsert_omits_it() {
         harness: None,
         last_updated: None,
         url: None,
+        producer: None,
     };
 
     let accepted = client

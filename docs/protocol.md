@@ -313,11 +313,13 @@ Each event:
 | `project_path` | string \| null | Raw project path, empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
+| `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means legacy global pruning. |
 
 `mode` is optional and selects how the batch is applied: `"upsert"` (default)
 merges keyed by `session_id`, while `"snapshot"` upserts the batch and then
-prunes every push-source session absent from it. An unknown mode is
-`400 bad_request`. Unknown fields on the envelope and on each event are ignored.
+prunes push-source sessions absent from it (scoped by `producer`; see below). An
+unknown mode is `400 bad_request`. Unknown fields on the envelope and on each
+event are ignored.
 Re-pushing a `session_id` replaces its prior status in place. The batch is a
 single change: subscribers to `/api/v1/events` see one `update` afterward.
 Response:
@@ -344,13 +346,25 @@ them keeps upsert-only behavior.
 - `"upsert"` — merge the batch into the source, keyed by `session_id`: only
   adds and updates.
 - `"snapshot"` — the batch is the producer's authoritative **live set**: upsert
-  the batch, then drop every push-source session whose `session_id` is absent
-  from it. This prunes sessions that vanished while the hub was down. The batch
-  is still a single change and still returns `{"accepted": N}`.
+  the batch, then drop push-source sessions whose `session_id` is absent from it
+  **and** that belong to the same `producer`. This prunes sessions that vanished
+  while the hub was down without one producer evicting another's sessions. The
+  batch is still a single change and still returns `{"accepted": N}`.
 
 An unknown mode is `400 bad_request`. `/healthz` advertises
 `capabilities.ingest` as `["upsert", "snapshot"]`; a producer should treat an
 unknown or absent mode list as upsert-only.
+
+**`producer` on each event (snapshot scoping).** Optional and additive. The hub
+records the producer for a session when an event carries one, and a `"snapshot"`
+prunes a session only when the batch's producer matches the session's recorded
+producer (the batch producer is the first non-absent `producer` in the events;
+all events in one snapshot share it). A batch whose events carry **no**
+`producer` keeps the legacy behavior and prunes globally. Producers should send
+a **stable** id (e.g. `opencode:<host>:<directory>`) so a second instance cannot
+delete the first's sessions. A producer should also **not send an empty
+snapshot**: a starting or idle instance that posts `"events": []` would prune its
+own live set. Skip the request while there is nothing to report.
 
 **What a heartbeat carries.** A producer that wants the hub to stay truthful
 sends its live set on load and on a periodic heartbeat. The live set is:

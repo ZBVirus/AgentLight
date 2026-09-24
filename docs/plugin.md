@@ -33,7 +33,10 @@ agentlight-server
   seen — `ok: false` with `Waiting for agent events`.
 - The reference opencode plugin sends a `mode: "snapshot"` batch on startup and
   then every `AGENTLIGHT_HEARTBEAT_MS` (default `30000` ms; `0` disables). The
-  live set is every non-`done` session plus the newest five `done`. See
+  live set is every non-`done` session plus the newest five `done`. Snapshots
+  are producer-scoped (each event carries a stable `producer`), so multiple
+  opencode instances do not prune each other's sessions. An empty live set is
+  never sent, so a starting or idle instance cannot wipe the hub. See
   "Snapshot mode and producer heartbeat" in [`protocol.md`](protocol.md).
 
 `POST /api/v1/ingest` requires the admin or a device token and accepts an
@@ -105,16 +108,28 @@ Configure it through the environment opencode is launched with:
 ```bash
 export AGENTLIGHT_HUB_URL=http://127.0.0.1:8787
 export AGENTLIGHT_TOKEN=secret   # only if the hub requires auth
+export AGENTLIGHT_PRODUCER=my-host:my-project  # optional; default opencode:<host>:<directory>
 export AGENTLIGHT_HEARTBEAT_MS=30000          # heartbeat snapshot interval; 0 disables
 export AGENTLIGHT_AUTOSTART_BIN=/path/to/agentlight-server  # optional; see below
-export AGENTLIGHT_SESSION_URL_TEMPLATE='http://localhost:4096/session/{id}'  # optional deep link
+export AGENTLIGHT_SESSION_URL_TEMPLATE='http://localhost:4096/session/{id}'  # defaults to this; empty disables
 ```
 
-`AGENTLIGHT_SESSION_URL_TEMPLATE` is best-effort: when set, every reported event
-carries `url` with `{id}` replaced by the session id, and the desktop's detail
-row shows an "Open" action. A native app cannot focus a specific browser window
-or tab, so the browser decides whether to reuse an existing tab or open a new
-one; exact focus would need a browser extension or remote debugging.
+`AGENTLIGHT_PRODUCER` is a stable id used to scope snapshot pruning. It defaults
+to `opencode:<hostname>:<directory>`, which is stable per project and
+distinguishes hosts, so several opencode instances can report to one hub without
+one instance's snapshot deleting another's sessions. Set it explicitly only if
+you need to override that identity. The plugin never sends a snapshot with an
+empty live set, so a starting or idle instance does not wipe the hub.
+
+`AGENTLIGHT_SESSION_URL_TEMPLATE` is best-effort and defaults to
+`http://localhost:4096/session/{id}`, opencode's usual web address, so the
+desktop's detail row shows an "Open" action with no setup. Every reported event
+carries `url` with `{id}` replaced by the (URL-encoded) session id. Set the
+variable to an explicit empty value to disable the link, or to a custom template
+(useful when the browser and opencode are not on the same host). A native app
+cannot focus a specific browser window or tab, so the browser decides whether to
+reuse an existing tab or open a new one; exact focus would need a browser
+extension or remote debugging.
 
 `AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
 startup, the plugin spawns that binary detached, waits a few seconds for health,
@@ -163,6 +178,7 @@ its prior status in place.
 | `project_path` | string \| null | Raw project path; empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
+| `producer` | string \| null | Optional. Scopes `"snapshot"` pruning to this producer; absent means legacy global pruning. |
 
 The response is `{ "accepted": N }`, where `N` is the batch length, not the
 number that changed.

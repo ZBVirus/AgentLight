@@ -11,18 +11,25 @@
 // Environment (read from the opencode process):
 //   AGENTLIGHT_HUB_URL       Hub base URL. Default http://127.0.0.1:8787
 //   AGENTLIGHT_TOKEN         Bearer token, if the hub requires auth. Never logged.
+//   AGENTLIGHT_PRODUCER      Optional stable producer id. Defaults to
+//                            `opencode:<hostname>:<directory>`, which is stable
+//                            per project and distinguishes hosts. Snapshots are
+//                            producer-scoped, so one instance's snapshot prunes
+//                            only its own sessions, never another instance's.
 //   AGENTLIGHT_HEARTBEAT_MS  Heartbeat snapshot interval in ms. Default 30000.
 //                            `0` disables the periodic snapshot.
 //   AGENTLIGHT_SESSION_URL_TEMPLATE
-//                            Optional best-effort session deep link, e.g.
-//                            `http://localhost:4096/session/{id}`. When set
-//                            (non-empty), every reported event and heartbeat
-//                            snapshot entry carries `url` with every `{id}`
-//                            replaced by the URL-encoded session id. When unset,
-//                            `url` is `null` and reporting is unchanged. A native
-//                            app cannot focus an exact browser window or tab, so
-//                            the link is best-effort: the browser decides
-//                            whether to reuse a tab or open a new one.
+//                            Best-effort session deep link. Defaults to
+//                            `http://localhost:4096/session/{id}` (opencode's
+//                            usual web address) so the desktop's "Open" action
+//                            works with no setup. Every reported event and
+//                            heartbeat snapshot entry carries `url` with every
+//                            `{id}` replaced by the URL-encoded session id. Set
+//                            an explicit empty value to disable the link, or a
+//                            custom template to override it. A native app cannot
+//                            focus an exact browser window or tab, so the link is
+//                            best-effort: the browser decides whether to reuse a
+//                            tab or open a new one.
 //   AGENTLIGHT_AUTOSTART_BIN Optional absolute path to the `agentlight-server`
 //                            binary. Opt-in: unset/empty means this plugin never
 //                            probes or starts anything and event reporting is
@@ -55,11 +62,14 @@
 //
 // On top of those upserts the plugin sends a heartbeat **snapshot**:
 // `{ "mode": "snapshot", "events": [...] }`. A snapshot upserts the batch and
-// then prunes any hub-side session absent from it, so the hub can recover
-// last-known state after either side restarts. One snapshot is sent shortly
-// after startup, then every `AGENTLIGHT_HEARTBEAT_MS` (default 30000; `0`
-// disables the interval). The snapshot carries the live set: every session
-// that is not `done`, plus the newest five `done` sessions by update time.
+// then prunes the hub-side sessions belonging to the same `producer` that are
+// absent from it, so the hub can recover last-known state after either side
+// restarts without one instance evicting another's sessions. One snapshot is
+// sent shortly after startup, then every `AGENTLIGHT_HEARTBEAT_MS` (default
+// 30000; `0` disables the interval). An empty live set is never sent, so a
+// starting or idle instance cannot wipe the hub. The snapshot carries the live
+// set: every session that is not `done`, plus the newest five `done` sessions
+// by update time.
 //
 // NOTE: this targets the documented plugin API and the event names in
 // `@opencode-ai/sdk` at the time of writing, and has been validated against a
@@ -67,6 +77,7 @@
 // in `handleEvent` below if an event name or payload differs.
 
 import { spawn as nodeSpawn } from "node:child_process";
+import os from "node:os";
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 const COALESCE_MS = 150;
@@ -83,6 +94,10 @@ export const AgentLightPlugin = async (
 ) => {
   const hubUrl = (process.env.AGENTLIGHT_HUB_URL || DEFAULT_HUB_URL).replace(/\/+$/, "");
   const token = process.env.AGENTLIGHT_TOKEN || "";
+  // Stable per project and host, so each opencode instance's snapshot prunes
+  // only its own sessions.
+  const producer =
+    (process.env.AGENTLIGHT_PRODUCER || "").trim() || `opencode:${os.hostname()}:${directory}`;
   const ingestUrl = `${hubUrl}/api/v1/ingest`;
   const parsedHeartbeat = Number.parseInt(process.env.AGENTLIGHT_HEARTBEAT_MS ?? "", 10);
   const heartbeatMs = Number.isNaN(parsedHeartbeat)
@@ -90,7 +105,14 @@ export const AgentLightPlugin = async (
     : Math.max(0, parsedHeartbeat);
 
   const autostartBin = (process.env.AGENTLIGHT_AUTOSTART_BIN || "").trim();
-  const sessionUrlTemplate = (process.env.AGENTLIGHT_SESSION_URL_TEMPLATE || "").trim();
+  // Best-effort session deep link. Unset uses opencode's usual web address so
+  // the desktop's "Open" action works with no setup; set an explicit empty
+  // value to disable it, or a custom template (with `{id}`) to override it.
+  const sessionUrlEnv = process.env.AGENTLIGHT_SESSION_URL_TEMPLATE;
+  const sessionUrlTemplate =
+    sessionUrlEnv === undefined
+      ? "http://localhost:4096/session/{id}"
+      : sessionUrlEnv.trim();
   const healthProbeTimeoutMs = timing.probeTimeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
   const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
@@ -193,6 +215,7 @@ export const AgentLightPlugin = async (
       url: buildSessionUrl(sessionID),
       harness: HARNESS,
       last_updated: known.updatedAt || now(),
+      producer,
     };
   };
 
@@ -268,7 +291,11 @@ export const AgentLightPlugin = async (
   };
 
   const sendSnapshot = async () => {
-    const body = JSON.stringify({ mode: "snapshot", events: snapshotEvents() });
+    const events = snapshotEvents();
+    // Never POST an empty snapshot: a starting or idle instance must not wipe
+    // the hub's live set.
+    if (events.length === 0) return;
+    const body = JSON.stringify({ mode: "snapshot", events });
 
     const headers = { "Content-Type": "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;

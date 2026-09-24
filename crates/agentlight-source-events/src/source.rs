@@ -38,6 +38,9 @@ const EVENT_CAPABILITIES: Capabilities = Capabilities {
 pub struct EventPushSource {
     id: SourceId,
     sessions: Mutex<HashMap<String, Session>>,
+    /// session_id -> producer, so a `snapshot` prunes only its own producer's
+    /// absent sessions instead of the global live set.
+    producers: Mutex<HashMap<String, String>>,
     sinks: Mutex<Vec<SourceSink>>,
     revision: AtomicU64,
     seen: AtomicBool,
@@ -68,6 +71,7 @@ impl EventPushSource {
         let source = Self {
             id: id.into(),
             sessions: Mutex::new(HashMap::new()),
+            producers: Mutex::new(HashMap::new()),
             sinks: Mutex::new(Vec::new()),
             revision: AtomicU64::new(0),
             seen: AtomicBool::new(false),
@@ -94,6 +98,7 @@ impl EventPushSource {
         let mut changed = false;
         {
             let mut sessions = self.sessions.lock().unwrap();
+            let mut producers = self.producers.lock().unwrap();
             for event in events {
                 let next = normalize(&self.id, event);
                 match sessions.get(&event.session_id) {
@@ -101,6 +106,14 @@ impl EventPushSource {
                     _ => {
                         sessions.insert(event.session_id.clone(), next);
                         changed = true;
+                    }
+                }
+                match event.producer.as_deref() {
+                    Some(producer) => {
+                        producers.insert(event.session_id.clone(), producer.to_string());
+                    }
+                    None => {
+                        producers.remove(&event.session_id);
                     }
                 }
             }
@@ -115,20 +128,35 @@ impl EventPushSource {
         events.len()
     }
 
-    /// Replace the live set: upsert the batch, then prune every session whose
-    /// `session_id` is absent from it. Returns the batch length; emits
+    /// Replace the producer's live set: upsert the batch, then prune every
+    /// session whose `session_id` is absent from it **and** that belongs to the
+    /// batch's producer. A batch with no `producer` on any event keeps the
+    /// legacy global prune. Returns the batch length; emits
     /// [`SourceEvent::Changed`] once if anything actually changed.
     pub fn apply_snapshot(&self, events: &[SessionEvent]) -> usize {
         *self.last_ingest.lock().unwrap() = Some(Utc::now());
         let mut changed = false;
         {
             let mut sessions = self.sessions.lock().unwrap();
+            let mut producers = self.producers.lock().unwrap();
             let keep: HashSet<&str> = events.iter().map(|e| e.session_id.as_str()).collect();
+            let batch_producer = events.iter().find_map(|event| event.producer.as_deref());
             let before = sessions.len();
-            sessions.retain(|id, _| keep.contains(id.as_str()));
+            sessions.retain(|id, _| {
+                if keep.contains(id.as_str()) {
+                    return true;
+                }
+                match batch_producer {
+                    // Legacy snapshot: no producer, prune globally.
+                    None => false,
+                    // Scoped snapshot: prune only the batch producer's sessions.
+                    Some(producer) => producers.get(id).map(String::as_str) != Some(producer),
+                }
+            });
             if sessions.len() != before {
                 changed = true;
             }
+            producers.retain(|id, _| sessions.contains_key(id));
             for event in events {
                 let next = normalize(&self.id, event);
                 match sessions.get(&event.session_id) {
@@ -136,6 +164,14 @@ impl EventPushSource {
                     _ => {
                         sessions.insert(event.session_id.clone(), next);
                         changed = true;
+                    }
+                }
+                match event.producer.as_deref() {
+                    Some(producer) => {
+                        producers.insert(event.session_id.clone(), producer.to_string());
+                    }
+                    None => {
+                        producers.remove(&event.session_id);
                     }
                 }
             }
@@ -153,6 +189,7 @@ impl EventPushSource {
     /// Remove one session. Returns whether it existed.
     pub fn remove(&self, session_id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(session_id).is_some();
+        self.producers.lock().unwrap().remove(session_id);
         if removed {
             self.persist();
             self.emit(SourceEvent::Changed);
@@ -166,6 +203,10 @@ impl EventPushSource {
         let before = sessions.len();
         sessions.retain(|_, session| !session.is_done);
         let removed = before - sessions.len();
+        self.producers
+            .lock()
+            .unwrap()
+            .retain(|id, _| sessions.contains_key(id));
         drop(sessions);
         if removed > 0 {
             self.persist();
@@ -195,13 +236,18 @@ impl EventPushSource {
         };
 
         let mut sessions = HashMap::new();
+        let mut producers = HashMap::new();
         for event in &store.events {
             sessions.insert(event.session_id.clone(), normalize(&self.id, event));
+            if let Some(producer) = event.producer.as_deref() {
+                producers.insert(event.session_id.clone(), producer.to_string());
+            }
         }
         if !sessions.is_empty() {
             self.seen.store(true, Ordering::SeqCst);
         }
         *self.sessions.lock().unwrap() = sessions;
+        *self.producers.lock().unwrap() = producers;
         if let Some(last) = store.last_ingest.as_deref().and_then(parse_timestamp) {
             *self.last_ingest.lock().unwrap() = Some(last);
         }
@@ -215,7 +261,13 @@ impl EventPushSource {
         };
         let events = {
             let sessions = self.sessions.lock().unwrap();
-            let mut events: Vec<SessionEvent> = sessions.values().map(session_to_event).collect();
+            let producers = self.producers.lock().unwrap();
+            let mut events: Vec<SessionEvent> = sessions
+                .values()
+                .map(|session| {
+                    session_to_event(session, producers.get(&session.key.session_id).cloned())
+                })
+                .collect();
             events.sort_by(|a, b| a.session_id.cmp(&b.session_id));
             events
         };
@@ -350,7 +402,7 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Rebuild the wire event a normalized session came from, for persistence.
-fn session_to_event(session: &Session) -> SessionEvent {
+fn session_to_event(session: &Session, producer: Option<String>) -> SessionEvent {
     SessionEvent {
         session_id: session.key.session_id.clone(),
         status: session.status,
@@ -359,6 +411,7 @@ fn session_to_event(session: &Session) -> SessionEvent {
         harness: session.harness.clone(),
         last_updated: (!session.last_updated.is_empty()).then(|| session.last_updated.clone()),
         url: session.url.clone(),
+        producer,
     }
 }
 
@@ -398,6 +451,14 @@ mod tests {
             harness: None,
             last_updated: None,
             url: None,
+            producer: None,
+        }
+    }
+
+    fn producer_event(producer: &str, id: &str, status: Status) -> SessionEvent {
+        SessionEvent {
+            producer: Some(producer.to_string()),
+            ..event(id, status)
         }
     }
 
@@ -505,6 +566,7 @@ mod tests {
             harness: Some("opencode".to_string()),
             last_updated: Some("2026-01-01T01:00:00Z".to_string()),
             url: None,
+            producer: None,
         }]);
 
         let snapshot = source.snapshot(at());
@@ -532,6 +594,7 @@ mod tests {
                 harness: Some("opencode".to_string()),
                 last_updated: Some("2026-01-01T01:00:00Z".to_string()),
                 url: None,
+                producer: Some("p1".to_string()),
             },
             event("b", Status::Done),
         ]);
@@ -563,6 +626,63 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn apply_snapshot_scopes_to_producer() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        source.apply(&[
+            producer_event("p1", "a", Status::Active),
+            producer_event("p1", "b", Status::Active),
+            producer_event("p2", "c", Status::Active),
+        ]);
+
+        // A snapshot from p1 prunes its own absent session (b) but never p2's c.
+        assert_eq!(
+            source.apply_snapshot(&[producer_event("p1", "a", Status::Active)]),
+            1
+        );
+        let ids: Vec<String> = source
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a".to_string(), "c".to_string()]);
+
+        // A snapshot with no producer keeps the legacy global prune.
+        assert_eq!(source.apply_snapshot(&[event("z", Status::Active)]), 1);
+        let ids: Vec<String> = source
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["z".to_string()]);
+    }
+
+    #[test]
+    fn store_round_trip_keeps_producer_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("push-state.json");
+
+        let first = EventPushSource::with_store(EVENTS_SOURCE_ID, Some(path.clone()));
+        first.apply(&[
+            producer_event("p1", "a", Status::Active),
+            producer_event("p2", "c", Status::Active),
+        ]);
+
+        let restored = EventPushSource::with_store(EVENTS_SOURCE_ID, Some(path));
+        // p1's absent session is pruned on p1's snapshot, but p2's survives,
+        // so the producer mapping survived the reload with the sessions.
+        restored.apply_snapshot(&[producer_event("p1", "x", Status::Active)]);
+        let ids: Vec<String> = restored
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["c".to_string(), "x".to_string()]);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 
 import { AgentLightPlugin } from "../agentlight.js";
 
@@ -237,7 +238,7 @@ test("a session URL template decorates reported events and snapshots", async (t)
   assert.equal(snapEvent.url, "http://x/session/main");
 });
 
-test("without a session URL template, url is null", async (t) => {
+test("without an explicit template, the default session URL is used", async (t) => {
   t.after(setEnv("AGENTLIGHT_SESSION_URL_TEMPLATE", undefined));
   const h = await harness();
   t.after(h.restore);
@@ -249,13 +250,28 @@ test("without a session URL template, url is null", async (t) => {
     (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
   );
   assert.ok(reported, "expected a reported active event");
-  assert.equal(reported.event.url, null);
+  assert.equal(reported.event.url, "http://localhost:4096/session/main");
 
   const snapshot = h.lastSnapshot();
   assert.ok(snapshot, "expected a startup snapshot");
   const snapEvent = snapshot.events.find((event) => event.session_id === "main");
   assert.ok(snapEvent, "snapshot should include the session");
-  assert.equal(snapEvent.url, null);
+  assert.equal(snapEvent.url, "http://localhost:4096/session/main");
+});
+
+test("an empty session URL template disables the deep link", async (t) => {
+  t.after(setEnv("AGENTLIGHT_SESSION_URL_TEMPLATE", ""));
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const reported = h.calls.find(
+    (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
+  );
+  assert.ok(reported, "expected a reported active event");
+  assert.equal(reported.event.url, null);
 });
 
 test("a startup snapshot is sent with mode snapshot and includes a created session", async (t) => {
@@ -313,11 +329,72 @@ test("the heartbeat interval sends repeated snapshots", async (t) => {
   const h = await harness();
   t.after(h.restore);
 
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
   await sleep(200);
 
   assert.ok(
     h.snapshots().length > 1,
     `expected more than one snapshot, got ${h.snapshots().length}`,
+  );
+});
+
+test("reported events and snapshots carry the stable default producer", async (t) => {
+  t.after(setEnv("AGENTLIGHT_PRODUCER", undefined));
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const expected = `opencode:${os.hostname()}:/work/project`;
+  const reported = h.calls.find(
+    (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
+  );
+  assert.ok(reported, "expected a reported event");
+  assert.equal(reported.event.producer, expected);
+
+  const snapshot = h.lastSnapshot();
+  assert.ok(snapshot, "expected a startup snapshot");
+  assert.equal(snapshot.events[0].producer, expected);
+});
+
+test("AGENTLIGHT_PRODUCER overrides the default producer", async (t) => {
+  t.after(setEnv("AGENTLIGHT_PRODUCER", "custom:p1"));
+  const h = await harness();
+  t.after(h.restore);
+
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const reported = h.calls.find(
+    (call) => call.event && call.event.session_id === "main" && call.event.status === "active",
+  );
+  assert.ok(reported, "expected a reported event");
+  assert.equal(reported.event.producer, "custom:p1");
+});
+
+test("an empty state does not post a snapshot, but a populated heartbeat does", async (t) => {
+  process.env.AGENTLIGHT_HEARTBEAT_MS = "20";
+  t.after(() => {
+    delete process.env.AGENTLIGHT_HEARTBEAT_MS;
+  });
+  const h = await harness();
+  t.after(h.restore);
+
+  // No sessions yet: the startup snapshot and heartbeats are skipped.
+  await sleep(120);
+  assert.equal(h.snapshots().length, 0, "an empty instance must not POST a snapshot");
+
+  await h.emit("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(120);
+
+  const snapshot = h.lastSnapshot();
+  assert.ok(snapshot, "a non-empty heartbeat should POST a snapshot");
+  assert.equal(snapshot.mode, "snapshot");
+  assert.ok(snapshot.events.length > 0, "the snapshot carries the live session");
+  assert.ok(
+    snapshot.events.every((event) => typeof event.producer === "string" && event.producer),
+    "every snapshot event carries a producer",
   );
 });
 
