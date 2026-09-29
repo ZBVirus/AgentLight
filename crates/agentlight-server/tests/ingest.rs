@@ -162,8 +162,8 @@ async fn snapshot_mode_prunes_sessions_absent_from_the_batch() {
             "/api/v1/ingest",
             Some("secret"),
             Some(json!({ "events": [
-                { "session_id": "a", "status": "active" },
-                { "session_id": "b", "status": "active" }
+                { "session_id": "a", "status": "active", "producer": "p1" },
+                { "session_id": "b", "status": "active", "producer": "p1" }
             ] })),
         ))
         .await
@@ -178,7 +178,7 @@ async fn snapshot_mode_prunes_sessions_absent_from_the_batch() {
             Some("secret"),
             Some(json!({
                 "mode": "snapshot",
-                "events": [{ "session_id": "b", "status": "needs_help" }]
+                "events": [{ "session_id": "b", "status": "needs_help", "producer": "p1" }]
             })),
         ))
         .await
@@ -190,6 +190,45 @@ async fn snapshot_mode_prunes_sessions_absent_from_the_batch() {
     assert_eq!(body["counts"]["total"], 1);
     assert_eq!(body["sessions"][0]["session_id"], "b");
     assert_eq!(body["sessions"][0]["status"], "needs_help");
+}
+
+#[tokio::test]
+async fn snapshot_mode_without_a_producer_never_prunes() {
+    let app = events_app();
+
+    let seed = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [
+                { "session_id": "a", "status": "active" },
+                { "session_id": "b", "status": "active" }
+            ] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(seed.status(), StatusCode::OK);
+
+    // A snapshot with no producer is upsert-only: `a` must survive.
+    let snapshot_ingest = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({
+                "mode": "snapshot",
+                "events": [{ "session_id": "b", "status": "needs_help" }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(snapshot_ingest.status(), StatusCode::OK);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(body["counts"]["total"], 2);
 }
 
 #[tokio::test]

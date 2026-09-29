@@ -119,9 +119,13 @@ AgentLight ever reads a state file written by a host-local clawlight.
 
 ## Desktop notifications
 
-**Status: Done** for the base feature (opt-in, off by default). **Planned**
-refinements: per-harness titles, a "needs help" summary notification instead of
-one per session, and click-to-open the window from the toast.
+**Status: Done** for the base feature (opt-in, off by default). The app
+registers its `AppUserModelID` under `HKCU\Software\Classes\AppUserModelId`
+on startup, so unpackaged/portable builds can toast too (an installed build
+already gets an identity from the NSIS shortcut). **Planned** refinements:
+per-harness titles, a "needs help" summary notification instead of one per
+session, click-to-open the window from the toast, and a tray-balloon fallback
+for machines where toasts are disabled by policy.
 
 ## Smaller things
 
@@ -148,10 +152,13 @@ decide and prioritize later.
   collapsed and the detail views; leaving the built-in color keeps the default
   palette. The gray/off color was removed (the triple light has no off state).
   Per-status custom rules are still open.
-- **Collapsed view resizing. Done (v0.5 line).** Only the collapsed window is
-  user-resizable; its size persists to `mini_width` / `mini_height` and is
-  restored on restart. Expanded views keep their fixed sizes. Saves are
-  coalesced so a drag writes at most once per ~500 ms.
+- **Collapsed view resizing. Reverted (v0.5 line).** A resizable frameless
+  window exposes all eight OS resize edges and the framework has no
+  corner-only mode; the aspect-snapping attempt fought the user's drags (an
+  edge drag snapped back to the previous size). The collapsed view is
+  fixed-size again at the per-style design size. A custom corner grip driving
+  `set_size` (or an explicit diagonal drag) is the open option if resizing is
+  wanted back; see `src-tauri/src/lib.rs` `resize_window`.
 - **Topmost over full-screen apps. Done (v0.5 line).** Opt-in
   `topmost_reassert` re-asserts always-on-top every ~3 s (while `always_on_top`
   is on) so a borderless/exclusive full-screen app cannot push the widget
@@ -187,6 +194,18 @@ decide and prioritize later.
   Desktop notifications now share the same trigger selection via
   `notification_trigger`, and the alarm rows hide unless alarms are enabled.
   Per-source rules, snooze, and quiet hours remain open.
+- **Producer startup reconcile. Planned.** The plugin's live set only contains
+  sessions it has seen since opencode started. After an opencode restart, a
+  still-open session that has not emitted an event yet is absent from the first
+  heartbeat, so the snapshot prunes it until its next event. A safe reconcile
+  needs either opencode's session list with a usable status, or a `producer`
+  field on the wire snapshot so the plugin can re-seed only its own sessions;
+  guessing statuses would show every historical session as paused.
+- **Removed sessions stay removed in events mode. Fixed (v0.5 line).**
+  `EventPushSource` persists tombstone ids: a producer heartbeat (`snapshot`)
+  cannot resurrect a session removed with the X button or "Clear done", while a
+  real upsert event clears the tombstone and brings it back. Covered by
+  `crates/agentlight-source-events` tests.
 - **Desktop receives pushed plugin events directly (embedded events mode).
   Planned.** Today the desktop's embedded server is always built in file mode
   (`AppState::with_devices` without `.with_events`), so `POST /api/v1/ingest`

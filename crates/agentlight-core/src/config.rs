@@ -89,11 +89,6 @@ pub struct Config {
     pub mini_green: Option<String>,
     /// Show the text labels beside the collapsed lights.
     pub mini_show_labels: bool,
-    /// Persisted width of the collapsed window, in logical pixels. `None` uses
-    /// the fixed size for the selected style.
-    pub mini_width: Option<f64>,
-    /// Persisted height of the collapsed window, in logical pixels.
-    pub mini_height: Option<f64>,
     /// Periodically re-assert always-on-top so the widget stays above
     /// borderless full-screen apps that push it behind. Opt-in, Windows-only.
     pub topmost_reassert: bool,
@@ -152,8 +147,6 @@ impl Default for Config {
             mini_orange: None,
             mini_green: None,
             mini_show_labels: false,
-            mini_width: None,
-            mini_height: None,
             topmost_reassert: false,
             poll_ms: 1500,
             show_done: false,
@@ -203,14 +196,6 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
         }
-        self.mini_width = self
-            .mini_width
-            .filter(|width| width.is_finite())
-            .map(|width| width.clamp(40.0, 2000.0));
-        self.mini_height = self
-            .mini_height
-            .filter(|height| height.is_finite())
-            .map(|height| height.clamp(24.0, 2000.0));
         if let Some(path) = &self.state_path {
             if path.trim().is_empty() {
                 self.state_path = None;
@@ -459,9 +444,9 @@ mod tests {
     }
 
     #[test]
-    fn mini_customization_parses_sanitizes_and_clamps() {
+    fn mini_customization_parses_and_sanitizes() {
         let c: Config = serde_json::from_str(
-            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true,"mini_width":10.0,"mini_height":99999.0}"#,
+            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true}"#,
         )
         .unwrap();
         assert_eq!(c.mini_red.as_deref(), Some("  #ff0000  "));
@@ -472,15 +457,12 @@ mod tests {
             "a blank color falls back to built-in"
         );
         assert!(c.mini_show_labels);
-        assert_eq!(c.mini_width, Some(40.0), "a too-small width clamps up");
-        assert_eq!(c.mini_height, Some(2000.0), "a huge height clamps down");
 
         let defaults = Config::default();
         assert!(
             !defaults.mini_show_labels,
             "labels are hidden in the collapsed view by default"
         );
-        assert!(defaults.mini_width.is_none());
         assert!(!defaults.topmost_reassert);
     }
 

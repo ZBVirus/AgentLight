@@ -1,0 +1,7 @@
+At line:1 char:1
++ @
++ ~
+Unrecognized token in source text.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : UnrecognizedToken
+ 

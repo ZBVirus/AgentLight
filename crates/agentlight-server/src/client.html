@@ -94,6 +94,18 @@
         color: #8a8d98;
         font-size: 13px;
       }
+      .open {
+        flex: none;
+        padding: 4px 10px;
+        border: 1px solid #3a3f4d;
+        border-radius: 8px;
+        color: #56b6c2;
+        font-size: 13px;
+        text-decoration: none;
+      }
+      .open:hover {
+        background: #262b36;
+      }
       .empty {
         padding: 0 16px;
         color: #8a8d98;
@@ -272,6 +284,16 @@
             li.appendChild(dot);
             li.appendChild(name);
             li.appendChild(meta);
+            if (s.url) {
+              var open = document.createElement("a");
+              open.className = "open";
+              open.href = s.url;
+              open.target = "_blank";
+              open.rel = "noopener noreferrer";
+              open.textContent = "Open";
+              open.title = s.url;
+              li.appendChild(open);
+            }
             list.appendChild(li);
           });
         }

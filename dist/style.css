@@ -576,7 +576,8 @@ body[data-collapse="triple_vertical"] .mini-triple {
   color: var(--dim);
 }
 
-#set-alarm-rows {
+#set-alarm-rows,
+#set-notification-rows {
   display: flex;
   flex-direction: column;
   gap: 10px;

@@ -146,6 +146,7 @@ pub fn start(
                     }
                 };
                 let _ = addr_tx.send(Ok(bound));
+                warn_if_open_to_network(bound, token_required);
                 tracing::info!(
                     address = %bound,
                     token = if token_required { "required" } else { "disabled" },
@@ -189,12 +190,29 @@ async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
     let _ = rx.changed().await;
 }
 
+/// Whether a bind address exposes the API beyond loopback without any token to
+/// check. The default loopback bind is open by design; a LAN bind without a
+/// token lets anyone read state and push sessions.
+fn needs_exposure_warning(bind: SocketAddr, token_configured: bool) -> bool {
+    !bind.ip().is_loopback() && !token_configured
+}
+
+fn warn_if_open_to_network(bind: SocketAddr, token_configured: bool) {
+    if needs_exposure_warning(bind, token_configured) {
+        tracing::warn!(
+            address = %bind,
+            "no admin token configured; every host that can reach this address can read state and push sessions"
+        );
+    }
+}
+
 /// Build the router, bind it, and serve until the process exits. The pairing
 /// code is logged so a headless host can be paired without a display.
 pub async fn serve(config: ServerConfig) -> std::io::Result<()> {
     let state = AppState::from_config(&config);
     let pair = state.pair_info();
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    warn_if_open_to_network(listener.local_addr()?, config.admin_token_hash.is_some());
     tracing::info!(
         address = %listener.local_addr()?,
         token = if config.admin_token_hash.is_some() { "required" } else { "disabled" },
@@ -250,5 +268,29 @@ mod tests {
         assert!(handle.devices().is_empty());
 
         handle.shutdown();
+    }
+
+    #[test]
+    fn exposure_warning_only_for_public_binds_without_a_token() {
+        assert!(needs_exposure_warning(
+            "0.0.0.0:8787".parse().unwrap(),
+            false
+        ));
+        assert!(needs_exposure_warning(
+            "192.168.1.20:8787".parse().unwrap(),
+            false
+        ));
+        assert!(!needs_exposure_warning(
+            "127.0.0.1:8787".parse().unwrap(),
+            false
+        ));
+        assert!(!needs_exposure_warning(
+            "[::1]:8787".parse().unwrap(),
+            false
+        ));
+        assert!(!needs_exposure_warning(
+            "0.0.0.0:8787".parse().unwrap(),
+            true
+        ));
     }
 }

@@ -3,7 +3,8 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-09-24, `chore/local-tooling` @ `edb0de0`._
+_Last updated: 2026-09-24, `chore/local-tooling` @ `11ef4f7` plus the
+uncommitted second hands-on testing round._
 
 ## Released
 
@@ -43,10 +44,39 @@ What each adds:
     gained `producer`; the plugin sends a stable id and never posts an empty
     snapshot. See `docs/protocol.md` and `docs/plugin.md`.
   - UI/window fixes: colors apply in both views, gray option removed, "Reset
-    colors", collapsed lights/labels scale, diagonal aspect-locked collapsed
-    resize with a per-layout minimum, topmost toggle exposed, native
+    colors", collapsed lights/labels scale, topmost toggle exposed, native
     `SetWindowPos` re-assert, notification triggers (`notification_trigger`),
     alarm rows hidden when disabled, `mini_show_labels` defaults off.
+  - Second hands-on round:
+    - **Removed-session tombstones** in `EventPushSource`: a producer heartbeat
+      can no longer resurrect a session removed with the X button or "Clear
+      done"; a real upsert event clears the tombstone. Persisted with the push
+      store. See `docs/protocol.md`.
+    - "Notify when" rows hide unless Desktop notifications is on, with an
+      installed-build caveat (Windows toasts need the NSIS install, not the
+      portable exe).
+    - Alarm uses the Win32 sound API with a bundled two-note chime default;
+      no PowerShell and no console window flash.
+    - Frontend: "Choose state file…" hides for hub/push sources, Settings opens
+      scrolled to the top, and an unchanged save no longer writes the resolved
+      file path over a hub config (which restarted the hub source).
+    - Collapsed window is fixed-size again (the aspect-snap resize fought the
+      user); `mini_width` / `mini_height` and the resize persister are removed.
+    - Server logs a warning when bound beyond loopback with no admin token.
+    - Plugin logs its version and settings on startup so a stale copied file is
+      visible; `docs/plugin.md` corrects the same-directory producer caveat and
+      documents the non-local URL template.
+  - Third round (no-legacy compatibility):
+    - **Removed the legacy global prune**: a `mode:"snapshot"` batch without a
+      `producer` now only upserts, so an old or hand-rolled producer can never
+      wipe another producer's live set. See `docs/protocol.md`.
+    - **Notification identity**: the app registers its `AppUserModelID` under
+      `HKCU\Software\Classes\AppUserModelId` at startup and sets the process
+      AUMID, so the portable exe can show Windows toasts instead of being
+      silently dropped. Settings hint adjusted.
+    - **Topmost implies the pin**: `topmost_reassert` now forces always-on-top
+      while it is enabled (it no longer silently required the pin) and applies
+      immediately on save, not only on the next 3 s tick.
 
 ## Verification matrix
 
@@ -54,7 +84,7 @@ What each adds:
 |-------|-------|--------|
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
-| `cargo test` (core 70, source-events 13, server 39, hub-client 21) | Linux | green |
+| `cargo test` (core 71, source-events 18, server 41, hub-client 21) | Linux | green |
 | `node --test plugins/opencode/test/agentlight.test.js` (20) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |

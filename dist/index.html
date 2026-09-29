@@ -118,14 +118,17 @@
               <input type="checkbox" id="set-notifications" />
               <span>Desktop notifications</span>
             </label>
-            <label class="field">
-              <span>Notify when</span>
-              <select id="set-notification-trigger">
-                <option value="needs_help">A session needs help</option>
-                <option value="done">A session finishes</option>
-                <option value="any_status">Any status change</option>
-              </select>
-            </label>
+            <div id="set-notification-rows">
+              <label class="field">
+                <span>Notify when</span>
+                <select id="set-notification-trigger">
+                  <option value="needs_help">A session needs help</option>
+                  <option value="done">A session finishes</option>
+                  <option value="any_status">Any status change</option>
+                </select>
+              </label>
+              <small class="hint">If nothing appears, check Focus Assist and Settings → Notifications for AgentLight.</small>
+            </div>
             <label class="field inline">
               <input type="checkbox" id="set-show-done" />
               <span>Show every done session</span>

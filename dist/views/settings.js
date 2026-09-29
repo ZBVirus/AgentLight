@@ -110,6 +110,7 @@ export function populateSettings() {
   $("set-source-kind").onchange = renderSourceFields;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
+  $("set-notifications").onchange = renderNotificationRows;
   $("set-alarms-enabled").onchange = renderAlarmRows;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
@@ -118,6 +119,7 @@ export function populateSettings() {
   $("btn-alarm-sound-clear").onclick = clearAlarmSound;
   $("btn-reset-colors").onclick = resetColors;
   renderSourceFields();
+  renderNotificationRows();
   renderAlarmRows();
   renderServerUrl();
   refreshServerStatus();
@@ -252,6 +254,17 @@ async function clearAdminToken() {
   await refreshServerStatus();
 }
 
+// Show and enable the notification trigger only while notifications are on.
+function renderNotificationRows() {
+  const rows = $("set-notification-rows");
+  if (!rows) return;
+  const enabled = $("set-notifications").checked;
+  rows.classList.toggle("hidden", !enabled);
+  for (const el of rows.querySelectorAll("input, select, button")) {
+    el.disabled = !enabled;
+  }
+}
+
 // Show and enable the alarm trigger/sound rows only while alarms are on.
 function renderAlarmRows() {
   const rows = $("set-alarm-rows");
@@ -295,12 +308,17 @@ function clearAlarmSound() {
 export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
+  const sourceKind = $("set-source-kind").value;
   const next = applyServerFields({
     ...config,
-    source_kind: $("set-source-kind").value,
+    source_kind: sourceKind,
     hub_url: $("set-hub-url").value.trim() || DEFAULT_HUB_URL,
     hub_token: $("set-hub-token").value.trim() || null,
-    state_path: $("set-state-path").value.trim() || null,
+    // The state-file input is seeded from the snapshot's resolved clawlight
+    // path even in hub mode; never write that back for a non-file source, or
+    // an unchanged save would restart the hub source.
+    state_path:
+      sourceKind === "file" ? $("set-state-path").value.trim() || null : config.state_path,
     always_on_top: $("set-top").checked,
     topmost_reassert: $("set-topmost-reassert").checked,
     start_at_login: $("set-autostart").checked,

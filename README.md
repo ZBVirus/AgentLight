@@ -234,15 +234,14 @@ can be edited by hand.
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
 | `mini_red` / `mini_orange` / `mini_green` | *(built-in)* | Custom light colors (any CSS color), applied to the lights and status chips in both the collapsed and detail views. "Reset colors" restores the palette. |
 | `mini_show_labels` | `false`         | Show labels beside the collapsed lights.           |
-| `mini_width` / `mini_height` | *(style size)* | Persisted collapsed-window size in logical px. |
-| `topmost_reassert` | `false`         | Re-assert always-on-top for full-screen apps.      |
+| `topmost_reassert` | `false`         | Re-assert always-on-top for full-screen apps. Implies `always_on_top` while enabled. |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
 | `notifications`  | `false`           | Desktop notification when a session hits `notification_trigger`. |
 | `notification_trigger` | `"needs_help"` | `needs_help`, `done`, or `any_status`.            |
 | `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
 | `alarm_trigger`  | `"needs_help"`    | `needs_help`, `done`, or `any_status`.             |
-| `alarm_sound`    | *(system beep)*   | `.wav` file for the alarm; empty uses the system beep. |
+| `alarm_sound`    | *(bundled chime)* | `.wav` file for the alarm; empty plays the bundled two-note chime through the Win32 sound API (no console window). |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 | `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
 | `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |
@@ -274,6 +273,14 @@ only Remove and Clear done are unavailable.
 - **Advisory lock across mounts.** See the caveat under Removing sessions.
 - **`done` retention.** The details view keeps the newest 5 `done` sessions
   unless "Show every done session" is enabled.
+- **Windows notification identity.** The app registers its `AppUserModelID`
+  (HKCU) on first launch so the portable exe can toast as well as the installed
+  build; an installed build gets it from the NSIS shortcut. If toasts still do
+  not appear, check Focus Assist and Settings → Notifications.
+- **Removed sessions in events mode.** A session removed from the detail view
+  stays removed when the producer's next heartbeat snapshot re-reports it, but
+  new activity for that session brings it back — the same behavior as the file
+  source.
 - **One state file at a time.** See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Credits

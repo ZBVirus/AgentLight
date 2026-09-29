@@ -80,6 +80,10 @@ import { spawn as nodeSpawn } from "node:child_process";
 import os from "node:os";
 
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
+// Bumped when an operator must re-copy the plugin to get a behavior fix. The
+// copy is manual, so a stale file is a common failure mode; the startup log
+// below makes the installed version visible in opencode's logs.
+const PLUGIN_VERSION = "0.5.0-dev";
 const COALESCE_MS = 150;
 const DEFAULT_HEARTBEAT_MS = 30000;
 const MAX_DONE_SESSIONS = 5;
@@ -138,6 +142,15 @@ export const AgentLightPlugin = async (
       if (level === "error") console.error(`agentlight: ${message}`, extra || "");
     }
   };
+
+  // One line to confirm which copy is loaded (the file is installed by hand).
+  log("info", `agentlight plugin ${PLUGIN_VERSION} started`, {
+    producer,
+    hub: hubUrl,
+    heartbeat_ms: heartbeatMs,
+    session_url: sessionUrlTemplate || "disabled",
+    autostart: autostartBin ? "enabled" : "disabled",
+  });
 
   const now = () => new Date().toISOString();
 

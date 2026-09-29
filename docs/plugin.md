@@ -34,10 +34,13 @@ agentlight-server
 - The reference opencode plugin sends a `mode: "snapshot"` batch on startup and
   then every `AGENTLIGHT_HEARTBEAT_MS` (default `30000` ms; `0` disables). The
   live set is every non-`done` session plus the newest five `done`. Snapshots
-  are producer-scoped (each event carries a stable `producer`), so multiple
-  opencode instances do not prune each other's sessions. An empty live set is
-  never sent, so a starting or idle instance cannot wipe the hub. See
-  "Snapshot mode and producer heartbeat" in [`protocol.md`](protocol.md).
+  are producer-scoped (each event carries a stable `producer`), so instances
+  with **different** producer ids do not prune each other's sessions. The
+  default id is per host **and project directory**, so two instances in the
+  same directory share a scope and need distinct `AGENTLIGHT_PRODUCER` values
+  (see below). An empty live set is never sent, so a starting or idle instance
+  cannot wipe the hub. See "Snapshot mode and producer heartbeat" in
+  [`protocol.md`](protocol.md).
 
 `POST /api/v1/ingest` requires the admin or a device token and accepts an
 `{ "events": [ ... ] }` batch.
@@ -116,20 +119,41 @@ export AGENTLIGHT_SESSION_URL_TEMPLATE='http://localhost:4096/session/{id}'  # d
 
 `AGENTLIGHT_PRODUCER` is a stable id used to scope snapshot pruning. It defaults
 to `opencode:<hostname>:<directory>`, which is stable per project and
-distinguishes hosts, so several opencode instances can report to one hub without
-one instance's snapshot deleting another's sessions. Set it explicitly only if
-you need to override that identity. The plugin never sends a snapshot with an
-empty live set, so a starting or idle instance does not wipe the hub.
+distinguishes hosts. The default assumes **one opencode instance per project
+directory**: two instances in the same directory on the same host share the id,
+so each heartbeat prunes the sessions the other has not reported. Run one
+instance per project, or give each instance its own `AGENTLIGHT_PRODUCER`. Set
+it explicitly only if you need to override that identity. The plugin never
+sends a snapshot with an empty live set, so a starting or idle instance does
+not wipe the hub, and a session removed in the UI stays removed through
+heartbeats (new activity for it brings it back). One caveat: after opencode
+restarts, the plugin's in-memory live set is empty, so a still-open session
+that has not emitted an event yet is pruned by the first heartbeat until its
+next event; reconciling that safely needs opencode to expose per-session
+status (see `docs/ROADMAP.md`).
 
 `AGENTLIGHT_SESSION_URL_TEMPLATE` is best-effort and defaults to
 `http://localhost:4096/session/{id}`, opencode's usual web address, so the
 desktop's detail row shows an "Open" action with no setup. Every reported event
 carries `url` with `{id}` replaced by the (URL-encoded) session id. Set the
 variable to an explicit empty value to disable the link, or to a custom template
-(useful when the browser and opencode are not on the same host). A native app
-cannot focus a specific browser window or tab, so the browser decides whether to
-reuse an existing tab or open a new one; exact focus would need a browser
-extension or remote debugging.
+when the browser and opencode are not on the same host — for example opencode in
+Docker with port 4096 published: `http://localhost:4096/session/{id}`, or on
+another machine: `http://192.168.1.20:4096/session/{id}`. The template must be
+reachable from the machine running the AgentLight desktop. A native app cannot
+focus a specific browser window or tab, so the browser decides whether to reuse
+an existing tab or open a new one; exact focus would need a browser extension or
+remote debugging.
+
+The desktop's detail row shows the **Open** action only for sessions that carry
+a `url`, which only the events path populates; file-source sessions have none.
+
+The plugin logs one line at startup (`agentlight plugin <version> started`,
+with the producer, hub, heartbeat, and URL template) to opencode's logs. The
+plugin file is **copied** into opencode's plugin directory, so after updating
+this repo, re-copy `plugins/opencode/agentlight.js` or the running copy stays
+stale — the startup line is the quickest way to confirm which version is
+loaded.
 
 `AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
 startup, the plugin spawns that binary detached, waits a few seconds for health,
@@ -178,7 +202,7 @@ its prior status in place.
 | `project_path` | string \| null | Raw project path; empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
-| `producer` | string \| null | Optional. Scopes `"snapshot"` pruning to this producer; absent means legacy global pruning. |
+| `producer` | string \| null | Optional. Scopes `"snapshot"` pruning to this producer; absent means the batch only upserts and never prunes. |
 
 The response is `{ "accepted": N }`, where `N` is the batch length, not the
 number that changed.

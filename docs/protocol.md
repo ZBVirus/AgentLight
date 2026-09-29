@@ -276,6 +276,12 @@ Success returns the revision produced by the refresh that follows the command:
 ```
 
 The resulting state is also published on `/api/v1/events` for subscribers.
+A removed session is remembered as a tombstone (persisted with the push store):
+a later `"snapshot"` from its producer does not resurrect it, while an explicit
+`"upsert"` (real new activity) clears the tombstone and brings the session
+back — matching the file source, where a removed session returns only when the
+harness writes it again.
+
 Commands are executed by the host that owns the source. Capability gating
 (`Capabilities::remove_session` / `clear_done`) is not enforced by the server
 yet; a client should consult future negotiation data before offering the
@@ -313,7 +319,7 @@ Each event:
 | `project_path` | string \| null | Raw project path, empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
-| `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means legacy global pruning. |
+| `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means the batch only upserts and never prunes. |
 
 `mode` is optional and selects how the batch is applied: `"upsert"` (default)
 merges keyed by `session_id`, while `"snapshot"` upserts the batch and then
@@ -360,11 +366,12 @@ records the producer for a session when an event carries one, and a `"snapshot"`
 prunes a session only when the batch's producer matches the session's recorded
 producer (the batch producer is the first non-absent `producer` in the events;
 all events in one snapshot share it). A batch whose events carry **no**
-`producer` keeps the legacy behavior and prunes globally. Producers should send
-a **stable** id (e.g. `opencode:<host>:<directory>`) so a second instance cannot
-delete the first's sessions. A producer should also **not send an empty
-snapshot**: a starting or idle instance that posts `"events": []` would prune its
-own live set. Skip the request while there is nothing to report.
+`producer` only upserts: it never prunes, so an old or hand-rolled producer
+cannot wipe the hub's live set. Producers should send a **stable** id (e.g.
+`opencode:<host>:<directory>`) so a second instance cannot delete the first's
+sessions. A producer should also **not send an empty snapshot**: a starting or
+idle instance that posts `"events": []` would prune its own live set. Skip the
+request while there is nothing to report.
 
 **What a heartbeat carries.** A producer that wants the hub to stay truthful
 sends its live set on load and on a periodic heartbeat. The live set is:
