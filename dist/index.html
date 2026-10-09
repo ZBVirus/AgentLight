@@ -107,10 +107,6 @@
               <span>Always on top</span>
             </label>
             <label class="field inline">
-              <input type="checkbox" id="set-topmost-reassert" />
-              <span>Keep above full-screen apps</span>
-            </label>
-            <label class="field inline">
               <input type="checkbox" id="set-autostart" />
               <span>Start at login</span>
             </label>
@@ -118,14 +114,26 @@
               <input type="checkbox" id="set-notifications" />
               <span>Desktop notifications</span>
             </label>
-            <label class="field">
-              <span>Notify when</span>
-              <select id="set-notification-trigger">
-                <option value="needs_help">A session needs help</option>
-                <option value="done">A session finishes</option>
-                <option value="any_status">Any status change</option>
-              </select>
-            </label>
+            <div id="set-notification-rows">
+              <div class="field">
+                <span>Notify when</span>
+                <div class="triggers">
+                  <label class="field inline">
+                    <input type="checkbox" id="set-notification-needs-help" />
+                    <span>A session needs help</span>
+                  </label>
+                  <label class="field inline">
+                    <input type="checkbox" id="set-notification-done" />
+                    <span>A session finishes</span>
+                  </label>
+                  <label class="field inline">
+                    <input type="checkbox" id="set-notification-any" />
+                    <span>Any status change</span>
+                  </label>
+                </div>
+              </div>
+              <small class="hint">If nothing appears, check Focus Assist and Settings → Notifications for AgentLight.</small>
+            </div>
             <label class="field inline">
               <input type="checkbox" id="set-show-done" />
               <span>Show every done session</span>
@@ -136,14 +144,23 @@
               <span>Play an alarm sound</span>
             </label>
             <div id="set-alarm-rows">
-              <label class="field">
+              <div class="field">
                 <span>Alarm when</span>
-                <select id="set-alarm-trigger">
-                  <option value="needs_help">A session needs help</option>
-                  <option value="done">A session finishes</option>
-                  <option value="any_status">Any status change</option>
-                </select>
-              </label>
+                <div class="triggers">
+                  <label class="field inline">
+                    <input type="checkbox" id="set-alarm-needs-help" />
+                    <span>A session needs help</span>
+                  </label>
+                  <label class="field inline">
+                    <input type="checkbox" id="set-alarm-done" />
+                    <span>A session finishes</span>
+                  </label>
+                  <label class="field inline">
+                    <input type="checkbox" id="set-alarm-any" />
+                    <span>Any status change</span>
+                  </label>
+                </div>
+              </div>
               <label class="field">
                 <span>Alarm sound</span>
                 <div class="row">

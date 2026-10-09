@@ -14,8 +14,9 @@
 # Local (untracked) dev scripts
 /local/
 
-# Node tooling (only if added later; the frontend itself is static)
+# Node tooling (only for tests; the frontend itself is static)
 /node_modules
+node_modules/
 
 # OS / editor
 .DS_Store

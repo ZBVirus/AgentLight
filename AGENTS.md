@@ -112,14 +112,18 @@ compiled by Windows CI, not locally.
   `src/source.rs`) and translate the external shape there. The clawlight file
   adapter (`ClawlightFileSource`) is the compatibility source and must keep
   behaving exactly as before.
-- **A `mode:"snapshot"` ingest is authoritative and producer-scoped.**
+- **A `mode:"snapshot"` ingest is producer-scoped, never global.**
   `EventPushSource` prunes only the batch producer's absent sessions; a batch
-  with no `producer` keeps the legacy global prune. A producer must never POST an
-  empty snapshot. Wire fields are additive (`SessionEvent.producer`, etc.); unknown
-  fields are ignored on read, so no protocol bump is needed for additions.
+  with no `producer` only upserts, so an old or hand-rolled producer cannot wipe
+  another producer's live set. A producer must never POST an empty snapshot.
+  A removal (X button / Clear done) is tombstoned so a later heartbeat cannot
+  resurrect it; a real upsert clears the tombstone. Wire fields are additive
+  (`SessionEvent.producer`, etc.); unknown fields are ignored on read, so no
+  protocol bump is needed for additions.
 - **Notifications and alarms are separate edges** computed by the same
-  `trigger_fires` helper, each with its own `*_trigger` (`needs_help` / `done` /
-  `any_status`) and its own previous-status map.
+  `triggers_fire` helper, each with its own `*_trigger` list (`needs_help` /
+  `done` / `any_status`; fires on the first match) and its own previous-status
+  map.
 - **Never commit secrets or runtime state.** The GitHub push token lives outside
   the tree; `devices.json`, `push-state.json`, and `local/` are gitignored.
 

@@ -35,6 +35,9 @@ export function setView(next) {
   $("view-mini").classList.toggle("hidden", next !== "mini");
   $("view-detail").classList.toggle("hidden", next !== "detail");
   $("view-settings").classList.toggle("hidden", next !== "settings");
+  // Opening Settings starts at the top: the form keeps its scroll offset
+  // across view switches otherwise.
+  if (next === "settings") $("settings-form").scrollTop = 0;
   const size =
     next === "mini"
       ? MINI_SIZES[collapseStyle()] || MINI_SIZES.single

@@ -65,8 +65,10 @@ the same way; plaintext tokens are never persisted, so a saved admin token
 cannot be shown again. Pair other devices with the pairing code. The standalone
 binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json`), and — in events mode —
-`AGENTLIGHT_EVENTS_FILE` (default `push-state.json`) and
-`AGENTLIGHT_HEARTBEAT_MS` (default `0` = disabled). The full rule is in
+`AGENTLIGHT_EVENTS_FILE` (default `push-state.json`),
+`AGENTLIGHT_HEARTBEAT_MS` (default `0` = disabled), and the optional
+`AGENTLIGHT_SESSION_URL_TEMPLATE` (rewrites every ingested session's `url`;
+`{id}` is the session id). The full rule is in
 [`docs/protocol.md`](docs/protocol.md).
 
 For a headless or container host, build the standalone `agentlight-server`
@@ -122,7 +124,10 @@ empty snapshot. The plugin tags events with a stable `AGENTLIGHT_PRODUCER`
 (default `opencode:<host>:<directory>`) and populates a best-effort session
 `url` from `AGENTLIGHT_SESSION_URL_TEMPLATE` (default
 `http://localhost:4096/session/{id}`; empty disables) so the detail view can
-offer **Open**. The plugin can also start the hub itself: set
+offer **Open**. The **hub** can override that link for every ingested session by
+setting its own `AGENTLIGHT_SESSION_URL_TEMPLATE`, which is handy when the
+browser can't resolve the producer's host. The plugin can also start the hub
+itself: set
 `AGENTLIGHT_AUTOSTART_BIN` to the `agentlight-server` binary and it probes
 `/healthz`, spawning the hub only when nothing is already running.
 
@@ -234,15 +239,13 @@ can be edited by hand.
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
 | `mini_red` / `mini_orange` / `mini_green` | *(built-in)* | Custom light colors (any CSS color), applied to the lights and status chips in both the collapsed and detail views. "Reset colors" restores the palette. |
 | `mini_show_labels` | `false`         | Show labels beside the collapsed lights.           |
-| `mini_width` / `mini_height` | *(style size)* | Persisted collapsed-window size in logical px. |
-| `topmost_reassert` | `false`         | Re-assert always-on-top for full-screen apps.      |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
-| `notifications`  | `false`           | Desktop notification when a session hits `notification_trigger`. |
-| `notification_trigger` | `"needs_help"` | `needs_help`, `done`, or `any_status`.            |
+| `notifications`  | `false`           | Desktop notification when a session hits a `notification_trigger`. |
+| `notification_trigger` | `["needs_help"]` | Any combination of `needs_help`, `done`, `any_status`; fires on the first match. |
 | `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
-| `alarm_trigger`  | `"needs_help"`    | `needs_help`, `done`, or `any_status`.             |
-| `alarm_sound`    | *(system beep)*   | `.wav` file for the alarm; empty uses the system beep. |
+| `alarm_trigger`  | `["needs_help"]`  | Any combination of `needs_help`, `done`, `any_status`; fires on the first match. |
+| `alarm_sound`    | *(bundled chime)* | `.wav` file for the alarm; empty plays the bundled two-note chime through the Win32 sound API (no console window). |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 | `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
 | `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |
@@ -274,6 +277,14 @@ only Remove and Clear done are unavailable.
 - **Advisory lock across mounts.** See the caveat under Removing sessions.
 - **`done` retention.** The details view keeps the newest 5 `done` sessions
   unless "Show every done session" is enabled.
+- **Windows notification identity.** The app registers its `AppUserModelID`
+  (HKCU) on first launch so the portable exe can toast as well as the installed
+  build; an installed build gets it from the NSIS shortcut. If toasts still do
+  not appear, check Focus Assist and Settings → Notifications.
+- **Removed sessions in events mode.** A session removed from the detail view
+  stays removed when the producer's next heartbeat snapshot re-reports it, but
+  new activity for that session brings it back — the same behavior as the file
+  source.
 - **One state file at a time.** See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Credits

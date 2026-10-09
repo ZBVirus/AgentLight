@@ -34,6 +34,8 @@ pub struct AppState {
     /// The push source when the server runs in events mode, so the ingest route
     /// can reach it. `None` in file mode.
     events: Option<Arc<EventPushSource>>,
+    /// Optional deep-link template applied to ingested sessions.
+    session_url_template: Option<String>,
 }
 
 impl AppState {
@@ -68,6 +70,7 @@ impl AppState {
             admin_token_hash,
             devices: Arc::new(devices),
             events: None,
+            session_url_template: None,
         }
     }
 
@@ -75,6 +78,18 @@ impl AppState {
     pub fn with_events(mut self, events: Option<Arc<EventPushSource>>) -> Self {
         self.events = events;
         self
+    }
+
+    /// Rewrite ingested session deep links with `template` (`{id}` replaced by
+    /// the URL-encoded session id).
+    pub fn with_session_url_template(mut self, template: Option<String>) -> Self {
+        self.session_url_template = template;
+        self
+    }
+
+    /// The active deep-link template, if any.
+    pub fn session_url_template(&self) -> Option<&str> {
+        self.session_url_template.as_deref()
     }
 
     /// Build the engine, source, and device store a config describes.
@@ -86,6 +101,7 @@ impl AppState {
             DeviceStore::load(config.devices_path.clone()),
         )
         .with_events(events)
+        .with_session_url_template(config.session_url_template.clone())
     }
 
     pub fn engine(&self) -> &Engine {

@@ -20,6 +20,13 @@ use crate::event::SessionEvent;
 /// Default id for the event push source.
 pub const EVENTS_SOURCE_ID: &str = "events";
 
+/// How many removed-session tombstones are remembered. A producer heartbeat
+/// re-reports its live set, so a session the user removed must not be
+/// resurrected by the next `mode:"snapshot"` batch; genuinely new activity
+/// (an upsert) clears the tombstone. Bounded so the durable store cannot grow
+/// without limit.
+const MAX_REMOVED: usize = 512;
+
 /// The capabilities of a push source: it can be cleared and pruned locally, and
 /// it accepts pushed events.
 const EVENT_CAPABILITIES: Capabilities = Capabilities {
@@ -41,6 +48,10 @@ pub struct EventPushSource {
     /// session_id -> producer, so a `snapshot` prunes only its own producer's
     /// absent sessions instead of the global live set.
     producers: Mutex<HashMap<String, String>>,
+    /// Removed session ids, oldest first. A producer `snapshot` skips them so
+    /// the next heartbeat cannot resurrect a session the user dismissed from
+    /// the UI; an explicit upsert (real activity) clears the tombstone.
+    removed: Mutex<Vec<String>>,
     sinks: Mutex<Vec<SourceSink>>,
     revision: AtomicU64,
     seen: AtomicBool,
@@ -57,6 +68,9 @@ struct Store {
     last_ingest: Option<String>,
     #[serde(default)]
     events: Vec<SessionEvent>,
+    /// Removed-session tombstones, oldest first.
+    #[serde(default)]
+    removed: Vec<String>,
 }
 
 impl EventPushSource {
@@ -72,6 +86,7 @@ impl EventPushSource {
             id: id.into(),
             sessions: Mutex::new(HashMap::new()),
             producers: Mutex::new(HashMap::new()),
+            removed: Mutex::new(Vec::new()),
             sinks: Mutex::new(Vec::new()),
             revision: AtomicU64::new(0),
             seen: AtomicBool::new(false),
@@ -96,6 +111,11 @@ impl EventPushSource {
     pub fn apply(&self, events: &[SessionEvent]) -> usize {
         *self.last_ingest.lock().unwrap() = Some(Utc::now());
         let mut changed = false;
+        // An explicit upsert is real activity: it may bring back a session the
+        // user removed, so the tombstone is cleared before the upsert.
+        for event in events {
+            self.forget_removed(&event.session_id);
+        }
         {
             let mut sessions = self.sessions.lock().unwrap();
             let mut producers = self.producers.lock().unwrap();
@@ -130,25 +150,39 @@ impl EventPushSource {
 
     /// Replace the producer's live set: upsert the batch, then prune every
     /// session whose `session_id` is absent from it **and** that belongs to the
-    /// batch's producer. A batch with no `producer` on any event keeps the
-    /// legacy global prune. Returns the batch length; emits
-    /// [`SourceEvent::Changed`] once if anything actually changed.
+    /// batch's producer. A batch with no `producer` on any event only upserts;
+    /// it never prunes (the old global prune let one producer wipe another's
+    /// sessions). Returns the batch length; emits [`SourceEvent::Changed`] once
+    /// if anything actually changed.
     pub fn apply_snapshot(&self, events: &[SessionEvent]) -> usize {
+        let accepted = events.len();
         *self.last_ingest.lock().unwrap() = Some(Utc::now());
+        // A heartbeat snapshot must not resurrect sessions the user removed.
+        // Filter tombstones out of the batch before it can upsert anything;
+        // a prune still runs against the rest of the producer's live set. The
+        // producer is read from the *original* batch so an all-tombstoned
+        // heartbeat cannot degrade into a legacy global prune.
+        let batch_producer = events
+            .iter()
+            .find_map(|event| event.producer.as_deref())
+            .map(str::to_string);
+        let events: Vec<&SessionEvent> = events
+            .iter()
+            .filter(|event| !self.is_removed(&event.session_id))
+            .collect();
         let mut changed = false;
         {
             let mut sessions = self.sessions.lock().unwrap();
             let mut producers = self.producers.lock().unwrap();
             let keep: HashSet<&str> = events.iter().map(|e| e.session_id.as_str()).collect();
-            let batch_producer = events.iter().find_map(|event| event.producer.as_deref());
             let before = sessions.len();
             sessions.retain(|id, _| {
                 if keep.contains(id.as_str()) {
                     return true;
                 }
-                match batch_producer {
-                    // Legacy snapshot: no producer, prune globally.
-                    None => false,
+                match batch_producer.as_deref() {
+                    // No producer: upsert-only, nothing is pruned.
+                    None => true,
                     // Scoped snapshot: prune only the batch producer's sessions.
                     Some(producer) => producers.get(id).map(String::as_str) != Some(producer),
                 }
@@ -176,14 +210,14 @@ impl EventPushSource {
                 }
             }
         }
-        if !events.is_empty() {
+        if accepted > 0 {
             self.seen.store(true, Ordering::SeqCst);
         }
         self.persist();
         if changed {
             self.emit(SourceEvent::Changed);
         }
-        events.len()
+        accepted
     }
 
     /// Remove one session. Returns whether it existed.
@@ -191,6 +225,7 @@ impl EventPushSource {
         let removed = self.sessions.lock().unwrap().remove(session_id).is_some();
         self.producers.lock().unwrap().remove(session_id);
         if removed {
+            self.remember_removed(session_id);
             self.persist();
             self.emit(SourceEvent::Changed);
         }
@@ -201,6 +236,11 @@ impl EventPushSource {
     pub fn clear_done(&self) -> usize {
         let mut sessions = self.sessions.lock().unwrap();
         let before = sessions.len();
+        let removed_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| session.is_done)
+            .map(|(id, _)| id.clone())
+            .collect();
         sessions.retain(|_, session| !session.is_done);
         let removed = before - sessions.len();
         self.producers
@@ -209,10 +249,44 @@ impl EventPushSource {
             .retain(|id, _| sessions.contains_key(id));
         drop(sessions);
         if removed > 0 {
+            for id in &removed_ids {
+                self.remember_removed(id);
+            }
             self.persist();
             self.emit(SourceEvent::Changed);
         }
         removed
+    }
+
+    /// Whether a session was removed from the UI and must not be resurrected
+    /// by a producer snapshot.
+    fn is_removed(&self, session_id: &str) -> bool {
+        self.removed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|id| id == session_id)
+    }
+
+    /// Forget a tombstone: real activity for the session brings it back.
+    fn forget_removed(&self, session_id: &str) {
+        let mut removed = self.removed.lock().unwrap();
+        if let Some(position) = removed.iter().position(|id| id == session_id) {
+            removed.remove(position);
+        }
+    }
+
+    /// Record a removal tombstone, newest last and bounded by [`MAX_REMOVED`].
+    fn remember_removed(&self, session_id: &str) {
+        let mut removed = self.removed.lock().unwrap();
+        if removed.iter().any(|id| id == session_id) {
+            return;
+        }
+        removed.push(session_id.to_string());
+        if removed.len() > MAX_REMOVED {
+            let excess = removed.len() - MAX_REMOVED;
+            removed.drain(..excess);
+        }
     }
 
     fn emit(&self, event: SourceEvent) {
@@ -248,6 +322,12 @@ impl EventPushSource {
         }
         *self.sessions.lock().unwrap() = sessions;
         *self.producers.lock().unwrap() = producers;
+        let mut removed = store.removed;
+        if removed.len() > MAX_REMOVED {
+            let excess = removed.len() - MAX_REMOVED;
+            removed.drain(..excess);
+        }
+        *self.removed.lock().unwrap() = removed;
         if let Some(last) = store.last_ingest.as_deref().and_then(parse_timestamp) {
             *self.last_ingest.lock().unwrap() = Some(last);
         }
@@ -271,6 +351,7 @@ impl EventPushSource {
             events.sort_by(|a, b| a.session_id.cmp(&b.session_id));
             events
         };
+        let removed = self.removed.lock().unwrap().clone();
         let store = Store {
             version: 1,
             last_ingest: self
@@ -279,6 +360,7 @@ impl EventPushSource {
                 .unwrap()
                 .map(|last| last.to_rfc3339()),
             events,
+            removed,
         };
         let Ok(payload) = serde_json::to_vec(&store) else {
             return;
@@ -610,12 +692,18 @@ mod tests {
     #[test]
     fn apply_snapshot_prunes_absent_ids() {
         let source = EventPushSource::new(EVENTS_SOURCE_ID);
-        source.apply(&[event("a", Status::Active), event("b", Status::Active)]);
+        source.apply(&[
+            producer_event("p1", "a", Status::Active),
+            producer_event("p1", "b", Status::Active),
+        ]);
         let (count, sink) = counting_sink();
         source.subscribe(sink);
 
         assert_eq!(
-            source.apply_snapshot(&[event("b", Status::Active), event("c", Status::Active)]),
+            source.apply_snapshot(&[
+                producer_event("p1", "b", Status::Active),
+                producer_event("p1", "c", Status::Active),
+            ]),
             2
         );
         let ids: Vec<String> = source
@@ -650,7 +738,7 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["a".to_string(), "c".to_string()]);
 
-        // A snapshot with no producer keeps the legacy global prune.
+        // A snapshot with no producer only upserts; it never prunes.
         assert_eq!(source.apply_snapshot(&[event("z", Status::Active)]), 1);
         let ids: Vec<String> = source
             .snapshot(at())
@@ -658,7 +746,112 @@ mod tests {
             .iter()
             .map(|session| session.key.session_id.clone())
             .collect();
-        assert_eq!(ids, vec!["z".to_string()]);
+        assert_eq!(ids, vec!["a".to_string(), "c".to_string(), "z".to_string()]);
+    }
+
+    #[test]
+    fn apply_snapshot_does_not_resurrect_a_removed_session() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        source.apply(&[
+            producer_event("p1", "a", Status::Active),
+            producer_event("p1", "b", Status::Active),
+        ]);
+
+        assert!(source.remove("a"));
+        assert_eq!(source.snapshot(at()).sessions.len(), 1);
+
+        // The producer's authoritative live set still lists "a"; a heartbeat
+        // must not bring it back.
+        assert_eq!(
+            source.apply_snapshot(&[
+                producer_event("p1", "a", Status::Active),
+                producer_event("p1", "b", Status::Active),
+            ]),
+            2
+        );
+        let ids: Vec<String> = source
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn upsert_after_removal_brings_the_session_back() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        source.apply(&[producer_event("p1", "a", Status::Active)]);
+        assert!(source.remove("a"));
+
+        // A real activity event is not a heartbeat: it clears the tombstone.
+        source.apply(&[producer_event("p1", "a", Status::NeedsHelp)]);
+        let sessions = source.snapshot(at()).sessions;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, Status::NeedsHelp);
+
+        // ...and a later snapshot is free to keep the session.
+        source.apply_snapshot(&[producer_event("p1", "a", Status::Inactive)]);
+        assert_eq!(source.snapshot(at()).sessions.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_with_only_removed_sessions_never_prunes_other_producers() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        source.apply(&[
+            producer_event("p1", "a", Status::Active),
+            producer_event("p2", "c", Status::Active),
+        ]);
+        source.remove("a");
+
+        // p1's heartbeat now carries only the removed session. The filtered
+        // batch is empty; p2's session must survive.
+        source.apply_snapshot(&[producer_event("p1", "a", Status::Active)]);
+        let ids: Vec<String> = source
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn clear_done_tombstones_the_cleared_sessions() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        source.apply(&[
+            producer_event("p1", "done1", Status::Done),
+            producer_event("p1", "live", Status::Active),
+        ]);
+        assert_eq!(source.clear_done(), 1);
+
+        // The next heartbeat still lists the cleared done session.
+        source.apply_snapshot(&[
+            producer_event("p1", "done1", Status::Done),
+            producer_event("p1", "live", Status::Active),
+        ]);
+        let ids: Vec<String> = source
+            .snapshot(at())
+            .sessions
+            .iter()
+            .map(|session| session.key.session_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["live".to_string()]);
+    }
+
+    #[test]
+    fn store_round_trip_keeps_removed_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("push-state.json");
+
+        let first = EventPushSource::with_store(EVENTS_SOURCE_ID, Some(path.clone()));
+        first.apply(&[producer_event("p1", "a", Status::Active)]);
+        first.remove("a");
+
+        let restored = EventPushSource::with_store(EVENTS_SOURCE_ID, Some(path));
+        assert_eq!(restored.snapshot(at()).sessions.len(), 0);
+        restored.apply_snapshot(&[producer_event("p1", "a", Status::Active)]);
+        assert_eq!(restored.snapshot(at()).sessions.len(), 0);
     }
 
     #[test]

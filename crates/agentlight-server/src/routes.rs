@@ -248,9 +248,17 @@ pub async fn ingest(
     let events = state
         .events()
         .ok_or_else(|| ApiError::bad_request("this server is not in events mode"))?;
+    let mut batch = request.events;
+    // A hub-level template overrides the producer's own deep links, so a hub
+    // operator can point every session at the address their browsers can reach.
+    if let Some(template) = state.session_url_template() {
+        for event in &mut batch {
+            event.url = Some(template.replace("{id}", &encode_component(&event.session_id)));
+        }
+    }
     let accepted = match request.mode.as_deref() {
-        None | Some("upsert") => events.apply(&request.events),
-        Some("snapshot") => events.apply_snapshot(&request.events),
+        None | Some("upsert") => events.apply(&batch),
+        Some("snapshot") => events.apply_snapshot(&batch),
         Some(other) => {
             return Err(ApiError::bad_request(format!(
                 "unknown ingest mode: {other}"
@@ -258,4 +266,24 @@ pub async fn ingest(
         }
     };
     Ok(Json(IngestResponse { accepted }))
+}
+
+/// Percent-encode a session id for use in a URL path segment, matching
+/// JavaScript's `encodeURIComponent` for the characters that matter here.
+fn encode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
 }

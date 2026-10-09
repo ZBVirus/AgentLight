@@ -30,6 +30,10 @@ pub struct ServerConfig {
     /// Producer heartbeat interval, in milliseconds. `0` disables the stale
     /// check; when set, the stale window is four times this value.
     pub heartbeat_ms: u64,
+    /// Optional deep-link template applied to ingested sessions, with `{id}`
+    /// replaced by the URL-encoded session id. When set it overrides any `url`
+    /// the producer sent, so a hub can fix up links for non-local agents.
+    pub session_url_template: Option<String>,
     /// Where session state comes from. [`SourceKind::Push`] serves events
     /// POSTed to `/api/v1/ingest`; every other kind reads a clawlight file.
     pub source_kind: SourceKind,
@@ -47,6 +51,7 @@ impl Default for ServerConfig {
             devices_path: None,
             events_path: None,
             heartbeat_ms: 0,
+            session_url_template: None,
             source_kind: SourceKind::File,
             core: Config::default(),
         }
@@ -63,6 +68,7 @@ impl ServerConfig {
             devices_path: None,
             events_path: None,
             heartbeat_ms: 0,
+            session_url_template: None,
             source_kind: SourceKind::File,
             core,
         }
@@ -95,6 +101,15 @@ impl ServerConfig {
     /// Set the producer heartbeat interval. `0` disables the stale check.
     pub fn with_heartbeat_ms(mut self, heartbeat_ms: u64) -> Self {
         self.heartbeat_ms = heartbeat_ms;
+        self
+    }
+
+    /// Rewrite ingested session deep links with `template`, replacing `{id}`
+    /// with the URL-encoded session id.
+    pub fn with_session_url_template(mut self, template: impl Into<String>) -> Self {
+        let template = template.into();
+        let template = template.trim().to_string();
+        self.session_url_template = (!template.is_empty()).then_some(template);
         self
     }
 }

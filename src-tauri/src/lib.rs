@@ -6,13 +6,12 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use agentlight_core::{
-    ClawlightFileSource, CollapseStyle, Config, Engine, SessionKey, Snapshot, SourceCommand,
-    SourceId, SourceKind, StateSource, Update, CLAWLIGHT_SOURCE_ID,
+    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
+    StateSource, Update, CLAWLIGHT_SOURCE_ID,
 };
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -54,18 +53,6 @@ struct AppState {
     /// Last position we placed the window at programmatically. Lets a real
     /// user drag be told apart from our own clamping move.
     applied_position: Mutex<Option<PhysicalPosition<i32>>>,
-    /// Logical size of the last programmatic expand/collapse resize. A
-    /// `Resized` event matching it is ours and must not be persisted as a user
-    /// resize.
-    programmatic_resize: Mutex<Option<(f64, f64)>>,
-    /// Ignore `Resized` events until this instant; covers the brief window
-    /// while a programmatic resize (including the resizable-style toggle) is
-    /// still settling.
-    resize_guard_until: Mutex<Option<Instant>>,
-    /// Newest collapsed size seen from a user resize, awaiting persistence.
-    pending_mini_size: Mutex<Option<(f64, f64)>>,
-    /// Bumped on every user resize so the debounce saver can coalesce a drag.
-    resize_generation: AtomicU64,
     /// Opt-in embedded HTTP hub over the same engine. Stopped on exit.
     server: Mutex<Option<agentlight_server::ServerHandle>>,
 }
@@ -100,16 +87,8 @@ fn set_config(
             config.server_token_hash = Some(agentlight_server::hash_token(token));
         }
     }
-    let mut config = config.sanitized();
+    let config = config.sanitized();
     let previous = current_config(&state);
-
-    // A different collapsed layout has a different design size, so the size the
-    // user dragged for the old layout would otherwise be re-applied and look
-    // "stuck". Clear it so the new style's own size takes over.
-    if previous.collapse_style != config.collapse_style {
-        config.mini_width = None;
-        config.mini_height = None;
-    }
 
     // Reject a bad bind before doing anything else.
     if config.server_enabled {
@@ -123,6 +102,7 @@ fn set_config(
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
 
     if let Some(window) = app.get_webview_window("main") {
+        // The pin / "Always on top" setting is the single authority on topmost.
         let _ = window.set_always_on_top(config.always_on_top);
     }
     apply_autostart(&app, config.start_at_login);
@@ -252,6 +232,10 @@ async fn pick_sound_file(app: AppHandle) -> Option<String> {
 
 /// Open an `http`/`https` URL in the OS default browser without waiting for it
 /// to exit. Any other scheme is rejected.
+///
+/// Windows uses `ShellExecuteW` directly: it hands the URL to the shell without
+/// spawning a process, so no console window flashes. macOS and Linux use the
+/// usual launchers.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     let scheme = url.trim().to_ascii_lowercase();
@@ -260,23 +244,74 @@ fn open_url(url: String) -> Result<(), String> {
     }
 
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &url])
-        .spawn();
+    {
+        use std::ffi::{c_void, OsStr};
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show: i32,
+            ) -> *mut c_void;
+        }
+
+        const SW_SHOWNORMAL: i32 = 1;
+        let wide =
+            |value: &OsStr| -> Vec<u16> { value.encode_wide().chain(std::iter::once(0)).collect() };
+        let operation = wide(OsStr::new("open"));
+        let file = wide(OsStr::new(&url));
+
+        // Safety: both pointers are valid NUL-terminated UTF-16 strings for the
+        // duration of the call, and `ShellExecuteW` copies what it needs. The
+        // return value is a shell HINSTANCE; anything <= 32 is an error code.
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        return if result as isize > 32 {
+            Ok(())
+        } else {
+            Err(format!(
+                "could not open the URL (ShellExecute code {})",
+                result as isize
+            ))
+        };
+    }
 
     #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open").arg(&url).spawn();
+    {
+        return std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+    {
+        return std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
-    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "opening a browser is not supported on this platform",
-    ));
-
-    spawned.map(|_| ()).map_err(|error| error.to_string())
+    {
+        let _ = url;
+        Err("opening a browser is not supported on this platform".to_string())
+    }
 }
 
 #[tauri::command]
@@ -315,16 +350,8 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
     };
     let scale = window.scale_factor().unwrap_or(1.0);
     let state = app.state::<AppState>();
-    *state.resize_guard_until.lock().unwrap() = Some(Instant::now() + RESIZE_GUARD);
 
     if mode == "mini" {
-        // A persisted collapsed size wins over the built-in style size the
-        // frontend passes, so the user's last drag survives restarts.
-        let config = current_config(&state);
-        let (width, height) = match (config.mini_width, config.mini_height) {
-            (Some(width), Some(height)) => (width, height),
-            _ => (width, height),
-        };
         let logical = LogicalSize::new(width, height);
         let target: PhysicalSize<u32> = logical.to_physical(scale);
 
@@ -348,13 +375,11 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         let home = work_area_for(&window, collapsed).unwrap_or(collapsed);
         let (x, y) = clamp_rect((desired.x, desired.y), (target.width, target.height), home);
         let placed = PhysicalPosition::new(x, y);
-        *state.programmatic_resize.lock().unwrap() = Some((width, height));
-        // Only the collapsed window is user-resizable, and it scales on a
-        // single diagonal: the minimum leaves the lights and labels fully
-        // visible, unlike the OS's much larger default tracking minimum.
-        let (min_w, min_h) = mini_min(&config);
-        let _ = window.set_min_size(Some(LogicalSize::new(min_w, min_h)));
-        let _ = window.set_resizable(true);
+        // The collapsed window is fixed-size again: every edge of a frameless
+        // resizable window resizes, and the OS has no corner-only mode, so the
+        // aspect-snapping experiment fought the user's drags. The layout sizes
+        // come from the frontend.
+        let _ = window.set_resizable(false);
         let _ = window.set_size(logical);
         let _ = window.set_position(placed);
         *state.mini_anchor.lock().unwrap() = Some(placed);
@@ -390,9 +415,7 @@ fn resize_window(app: AppHandle, width: f64, height: f64, mode: String) {
         current_work_area(&window).or_else(|| *state.mini_home.lock().unwrap())
     };
 
-    *state.programmatic_resize.lock().unwrap() = Some((width, height));
-    // Expanded views keep their fixed size; only the collapsed window resizes.
-    let _ = window.set_min_size(None::<LogicalSize<f64>>);
+    // Every view is fixed-size; only the view commands change it.
     let _ = window.set_resizable(false);
     let _ = window.set_size(logical);
     if let (Some(home), Some(current)) = (home, current) {
@@ -557,211 +580,114 @@ fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
-/// How long a collapsed resize must be quiet before it is written to disk.
-const RESIZE_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
-/// How long to ignore `Resized` events after a programmatic resize.
-const RESIZE_GUARD: Duration = Duration::from_millis(300);
-/// How often the opt-in topmost re-assert fires.
-const TOPMOST_REASSERT_INTERVAL: Duration = Duration::from_secs(3);
-
-/// Record a user resize of the collapsed window as the pending size to persist.
-/// Ignored for expanded views and for our own programmatic resizes.
-fn note_user_resize(scale: f64, state: &AppState, size: PhysicalSize<u32>) {
-    if *state.window_mode.lock().unwrap() != "mini" {
-        return;
-    }
-    if let Some(until) = *state.resize_guard_until.lock().unwrap() {
-        if Instant::now() < until {
-            return;
-        }
-    }
-    let logical = size.to_logical::<f64>(scale);
-    let programmatic = *state.programmatic_resize.lock().unwrap();
-    if let Some((width, height)) = programmatic {
-        if size_matches(width, logical.width) && size_matches(height, logical.height) {
-            return;
-        }
-        // A different size means the user has taken over; stop ignoring ours.
-        *state.programmatic_resize.lock().unwrap() = None;
-    }
-    *state.pending_mini_size.lock().unwrap() = Some((logical.width, logical.height));
-    state.resize_generation.fetch_add(1, Ordering::SeqCst);
-}
-
-/// Whether two logical sizes are the same within a sub-pixel tolerance.
-fn size_matches(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1.0
-}
-
-/// The design size of the collapsed window for a layout. Its aspect ratio is
-/// what the user drags on, so the collapsed window scales on one diagonal.
-fn mini_base(config: &Config) -> (f64, f64) {
-    match config.collapse_style {
-        CollapseStyle::Single => (88.0, 88.0),
-        CollapseStyle::Triple => (172.0, 68.0),
-        CollapseStyle::TripleVertical => (68.0, 172.0),
-    }
-}
-
-/// The smallest collapsed size that still shows the lights, and the labels when
-/// they are on. With labels the design height is the floor so text is never
-/// clipped; without them the window may shrink somewhat.
-fn mini_min(config: &Config) -> (f64, f64) {
-    let (width, height) = mini_base(config);
-    if config.mini_show_labels {
-        (width, height)
-    } else {
-        (width * 0.7, height * 0.7)
-    }
-}
-
-/// Snap a collapsed size back onto the layout's aspect ratio, never below the
-/// minimum. Scale follows whichever axis the user moved furthest, so dragging a
-/// corner grows or shrinks both dimensions together.
-fn snap_to_aspect(size: (f64, f64), config: &Config) -> (f64, f64) {
-    let (base_w, base_h) = mini_base(config);
-    let (min_w, min_h) = mini_min(config);
-    let floor = (min_w / base_w).max(min_h / base_h);
-    let scale = (size.0 / base_w).max(size.1 / base_h).max(floor);
-    (base_w * scale, base_h * scale)
-}
-
-/// Re-assert a `WebviewWindow`'s topmost flag using the native Win32 call. The
-/// Tauri `set_always_on_top` can be ignored over an exclusive/borderless
-/// full-screen window; `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` is the
-/// documented way to stay above it. No-op on other platforms.
+/// Register the app's `AppUserModelID` so Windows can resolve its toast
+/// notifications. An installed build gets one from the NSIS shortcut;
+/// an unpackaged build (the portable exe) must register it itself or Windows
+/// shows the raw AUMID as the toast's app name. `HKCU\Software\Classes\
+/// AppUserModelId\<id>` with `DisplayName` and `IconUri` is the documented
+/// unpackaged-app registration (Windows 10 1709+). Best-effort: a failure only
+/// affects notifications. No-op elsewhere.
 #[cfg(target_os = "windows")]
-fn reassert_topmost(window: &WebviewWindow) {
-    use std::ffi::c_void;
+fn register_app_user_model_id(identifier: &str) {
+    use std::ffi::{c_void, OsStr};
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
 
-    #[link(name = "user32")]
+    #[link(name = "advapi32")]
     extern "system" {
-        fn SetWindowPos(
-            hwnd: *mut c_void,
-            insert_after: *mut c_void,
-            x: i32,
-            y: i32,
-            cx: i32,
-            cy: i32,
-            flags: u32,
+        fn RegCreateKeyExW(
+            hkey: *mut c_void,
+            sub_key: *const u16,
+            reserved: u32,
+            class: *const u16,
+            options: u32,
+            desired: u32,
+            security: *mut c_void,
+            result: *mut *mut c_void,
+            disposition: *mut u32,
         ) -> i32;
+        fn RegSetValueExW(
+            hkey: *mut c_void,
+            name: *const u16,
+            reserved: u32,
+            kind: u32,
+            data: *const u8,
+            bytes: u32,
+        ) -> i32;
+        fn RegCloseKey(hkey: *mut c_void) -> i32;
     }
 
-    const HWND_TOPMOST: *mut c_void = -1isize as *mut c_void;
-    const SWP_NOSIZE: u32 = 0x0001;
-    const SWP_NOMOVE: u32 = 0x0002;
-    const SWP_NOACTIVATE: u32 = 0x0010;
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
 
-    if let Ok(hwnd) = window.hwnd() {
-        // Safety: `hwnd` is this window's live handle and the constants are the
-        // documented `SetWindowPos` flags.
-        unsafe {
-            SetWindowPos(
-                hwnd.0,
-                HWND_TOPMOST,
+    // Predefined registry handles are negative 32-bit values sign-extended to
+    // pointer width (`(HKEY)(ULONG_PTR)((LONG)0x80000001)`); zero-extending
+    // 0x80000001 produces an invalid handle and every call fails.
+    const HKEY_CURRENT_USER: *mut c_void = 0x8000_0001u32 as i32 as isize as *mut c_void;
+    // `KEY_WRITE`: set values and create the key if needed.
+    const KEY_WRITE: u32 = 0x20006;
+    const REG_SZ: u32 = 1;
+
+    let wide =
+        |value: &OsStr| -> Vec<u16> { value.encode_wide().chain(std::iter::once(0)).collect() };
+    let key_path = format!("Software\\Classes\\AppUserModelId\\{identifier}");
+    let identifier = wide(OsStr::new(identifier));
+    let key_path = wide(OsStr::new(&key_path));
+    let display_value = wide(OsStr::new("DisplayName"));
+    let icon_value = wide(OsStr::new("IconUri"));
+    let display_name = wide(OsStr::new("AgentLight"));
+    // The exe path gives Windows an icon for the toast; the name is what shows
+    // in the header.
+    let icon = std::env::current_exe()
+        .ok()
+        .map(|path| wide(OsStr::new(&path)));
+
+    // Safety: every pointer is valid for its call, the created key is closed
+    // before returning, and errors are ignored (notifications are best-effort).
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(identifier.as_ptr());
+        let mut key: *mut c_void = ptr::null_mut();
+        let mut disposition = 0u32;
+        let created = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            key_path.as_ptr(),
+            0,
+            ptr::null(),
+            0,
+            KEY_WRITE,
+            ptr::null_mut(),
+            &mut key,
+            &mut disposition,
+        );
+        if created != 0 || key.is_null() {
+            return;
+        }
+        let _ = RegSetValueExW(
+            key,
+            display_value.as_ptr(),
+            0,
+            REG_SZ,
+            display_name.as_ptr().cast(),
+            (display_name.len() * 2) as u32,
+        );
+        if let Some(icon) = &icon {
+            let _ = RegSetValueExW(
+                key,
+                icon_value.as_ptr(),
                 0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                REG_SZ,
+                icon.as_ptr().cast(),
+                (icon.len() * 2) as u32,
             );
         }
+        let _ = RegCloseKey(key);
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn reassert_topmost(_window: &WebviewWindow) {}
-
-/// Background saver for the collapsed window size. Coalesces a drag into one
-/// write: it wakes on a fixed interval and only persists the newest pending
-/// size once the generation has stopped changing. Detached; ends with the
-/// process.
-fn spawn_resize_persister(app: AppHandle) {
-    std::thread::spawn(move || {
-        let mut saved = 0u64;
-        loop {
-            std::thread::sleep(RESIZE_SAVE_DEBOUNCE);
-            let state = app.state::<AppState>();
-            if *state.window_mode.lock().unwrap() != "mini" {
-                continue;
-            }
-            let generation = state.resize_generation.load(Ordering::SeqCst);
-            if generation == saved {
-                continue;
-            }
-            let Some((width, height)) = *state.pending_mini_size.lock().unwrap() else {
-                continue;
-            };
-            let mut config = current_config(&state);
-            if config.mini_width == Some(width) && config.mini_height == Some(height) {
-                saved = generation;
-                continue;
-            }
-            config.mini_width = Some(width);
-            config.mini_height = Some(height);
-            match agentlight_core::save_config(&state.config_path, &config) {
-                Ok(()) => {
-                    *state.config.lock().unwrap() = config.clone();
-                    state.engine.set_config(config);
-                    saved = generation;
-                }
-                Err(error) => eprintln!("agentlight: could not save collapsed size: {error}"),
-            }
-        }
-    });
-}
-
-/// Keep re-asserting always-on-top so the widget stays above borderless or
-/// exclusive full-screen apps. A no-op unless both `topmost_reassert` and
-/// `always_on_top` are set. Detached; ends with the process.
-fn spawn_topmost_reassert(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(TOPMOST_REASSERT_INTERVAL);
-        let config = current_config(&app.state::<AppState>());
-        if !(config.topmost_reassert && config.always_on_top) {
-            continue;
-        }
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_always_on_top(true);
-            reassert_topmost(&window);
-        }
-    });
-}
-
-/// After a collapsed resize, snap the window back onto the layout's aspect
-/// ratio so it can only be dragged on one diagonal. Records the corrected size
-/// and marks it programmatic so its own `Resized` event is not re-snapped.
-fn snap_mini_aspect(window: &tauri::Window, state: &AppState, scale: f64) {
-    if *state.window_mode.lock().unwrap() != "mini" {
-        return;
-    }
-    if let Some(until) = *state.resize_guard_until.lock().unwrap() {
-        if Instant::now() < until {
-            return;
-        }
-    }
-    let config = state.config.lock().unwrap().clone();
-    let Ok(size) = window.inner_size() else {
-        return;
-    };
-    let logical = size.to_logical::<f64>(scale);
-    // Our own programmatic sizes (startup, view switches) already match the
-    // requested view; only snap sizes the user actually dragged.
-    if let Some((w, h)) = *state.programmatic_resize.lock().unwrap() {
-        if size_matches(w, logical.width) && size_matches(h, logical.height) {
-            return;
-        }
-    }
-    let (width, height) = snap_to_aspect((logical.width, logical.height), &config);
-    if size_matches(width, logical.width) && size_matches(height, logical.height) {
-        return;
-    }
-    *state.programmatic_resize.lock().unwrap() = Some((width, height));
-    *state.resize_guard_until.lock().unwrap() = Some(Instant::now() + RESIZE_GUARD);
-    let _ = window.set_size(LogicalSize::new(width, height));
-    *state.pending_mini_size.lock().unwrap() = Some((width, height));
-    state.resize_generation.fetch_add(1, Ordering::SeqCst);
-}
+fn register_app_user_model_id(_identifier: &str) {}
 
 /// Build the configured source adapter: a local clawlight file or a remote hub.
 fn build_source(config: &Config) -> Arc<dyn StateSource> {
@@ -937,30 +863,66 @@ fn emit_update(app: &AppHandle, update: &Update) {
     }
 }
 
+/// The bundled default alarm: a short two-note chime, so the default does not
+/// depend on a system sound scheme or spawn a console beep.
+#[cfg(target_os = "windows")]
+static DEFAULT_ALARM: &[u8] = include_bytes!("../assets/alarm.wav");
+
 /// Play the attention alarm on a detached thread so the engine's update sink
-/// never blocks on process spawn or sound playback.
+/// never blocks on playback.
 ///
-/// Windows-only playback, with no extra crates: a custom file goes through
-/// PowerShell's `Media.SoundPlayer`, the default through the console beep.
-/// Everywhere else this is a no-op.
+/// Windows-only playback through the Win32 `PlaySoundW` API: a custom file is
+/// played from disk, the default from the bundled WAV in memory. No child
+/// process is spawned, so no console window flashes. Everywhere else this is a
+/// no-op.
 fn play_alarm(sound: Option<String>) {
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         {
-            use std::process::Command;
+            use std::ffi::{c_void, OsStr};
+            use std::os::windows::ffi::OsStrExt;
 
-            let script = match sound {
-                // Single-quote the path for PowerShell and escape any embedded
-                // single quote by doubling it.
-                Some(path) => {
-                    let escaped = path.replace('\'', "''");
-                    format!("(New-Object Media.SoundPlayer -ArgumentList '{escaped}').PlaySync()")
-                }
-                None => "[console]::beep(880,150)".to_string(),
+            #[link(name = "winmm")]
+            extern "system" {
+                fn PlaySoundW(psz_sound: *const u16, hmod: *mut c_void, fdw_sound: u32) -> i32;
+            }
+
+            const SND_NODEFAULT: u32 = 0x0002;
+            const SND_MEMORY: u32 = 0x0004;
+            const SND_FILENAME: u32 = 0x0002_0000;
+            const SND_SYSTEM: u32 = 0x0020_0000;
+
+            let wide = |value: &OsStr| -> Vec<u16> {
+                value.encode_wide().chain(std::iter::once(0)).collect()
             };
-            let _ = Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                .spawn();
+
+            // Safety: `SND_MEMORY` playback is synchronous, so both the static
+            // buffer and the local wide path outlive the call, and the flags
+            // are the documented `PlaySound` constants. `SND_SYSTEM` routes the
+            // alarm to the system-notification audio session.
+            unsafe {
+                match sound
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                {
+                    Some(path) => {
+                        let path = wide(OsStr::new(path));
+                        PlaySoundW(
+                            path.as_ptr(),
+                            std::ptr::null_mut(),
+                            SND_FILENAME | SND_NODEFAULT | SND_SYSTEM,
+                        );
+                    }
+                    None => {
+                        PlaySoundW(
+                            DEFAULT_ALARM.as_ptr().cast(),
+                            std::ptr::null_mut(),
+                            SND_MEMORY | SND_NODEFAULT | SND_SYSTEM,
+                        );
+                    }
+                }
+            }
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -1107,10 +1069,6 @@ pub fn run() {
             mini_anchor: Mutex::new(None),
             mini_home: Mutex::new(None),
             applied_position: Mutex::new(None),
-            programmatic_resize: Mutex::new(None),
-            resize_guard_until: Mutex::new(None),
-            pending_mini_size: Mutex::new(None),
-            resize_generation: AtomicU64::new(0),
             server: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -1134,24 +1092,19 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle();
 
+            // Windows resolves toasts through the app identity; register it so
+            // the portable build can notify too (an installed build gets it
+            // from the NSIS shortcut).
+            register_app_user_model_id(&handle.config().identifier);
+
             if let Some(window) = handle.get_webview_window("main") {
+                // The pin / "Always on top" setting is the single authority on
+                // whether the window is topmost.
                 let _ = window.set_always_on_top(config.always_on_top);
-                // Treat the startup size as ours so its `Resized` event is not
-                // mistaken for the user dragging the collapsed window.
-                if let Ok(size) = window.inner_size() {
-                    let scale = window.scale_factor().unwrap_or(1.0);
-                    let logical = size.to_logical::<f64>(scale);
-                    let state = handle.state::<AppState>();
-                    *state.programmatic_resize.lock().unwrap() =
-                        Some((logical.width, logical.height));
-                }
             }
             apply_autostart(handle, config.start_at_login);
 
             setup_tray(handle)?;
-
-            spawn_resize_persister(handle.clone());
-            spawn_topmost_reassert(handle.clone());
 
             // Register the update sink before starting the source so the
             // initial file change is delivered on startup.
@@ -1181,12 +1134,6 @@ pub fn run() {
                     .state::<AppState>()
                     .visible
                     .store(false, Ordering::SeqCst);
-            }
-            WindowEvent::Resized(size) => {
-                let state = window.state::<AppState>();
-                let scale = window.scale_factor().unwrap_or(1.0);
-                note_user_resize(scale, &state, *size);
-                snap_mini_aspect(window, &state, scale);
             }
             _ => {}
         })

@@ -260,6 +260,20 @@ mod tests {
     }
 
     #[test]
+    fn display_session_keeps_the_session_url() {
+        let model = crate::source::Session::new(
+            crate::source::SessionKey::new(crate::source::SourceId::new("hub"), "s1"),
+            "Fix auth",
+            Status::Active,
+        )
+        .with_url("http://localhost:4096/session/s1");
+        assert_eq!(
+            display_session(&model).url.as_deref(),
+            Some("http://localhost:4096/session/s1")
+        );
+    }
+
+    #[test]
     fn project_name_is_the_last_path_segment() {
         let mut state = HookState::default();
         state.sessions.insert(
