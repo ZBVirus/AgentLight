@@ -56,19 +56,33 @@ local file, reads a remote hub, or hosts the embedded hub over its own engine.
 ## Commands
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"   # cargo lives here in the dev container
-
+# Rust: Debian's system cargo/rustfmt/clippy 1.85 at /usr/bin. A rustup toolchain
+# in ~/.cargo is optional and is NOT persisted when the container is recreated;
+# the repo builds and lints on the system toolchain.
 cargo fmt --all --check
 cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client \
   -p agentlight-source-events --all-targets -- -D warnings
 cargo test  -p agentlight-core -p agentlight-server -p agentlight-hub-client \
   -p agentlight-source-events
-node --test tests/plugin/agentlight.test.js
 node --check dist/views/detail.js      # any changed dist module
 
 cargo tauri dev                        # GUI, Windows only
 cargo tauri build                      # NSIS installer
 ```
+
+Every app-level suite lives under `tests/` (see `tests/README.md`):
+
+```bash
+bash tests/run-linux.sh                 # Rust + plugin + jsdom + server e2e
+powershell -File tests\run-windows.ps1  # Playwright + server smoke + native harness + WebView2 CDP
+```
+
+In-container `npm install` needs `--include=dev` (`NODE_ENV=production` is set),
+and Playwright's Chromium cannot launch (missing system libs): run the jsdom
+suite in-container, and Playwright/CI and the Windows GUI suite elsewhere. The
+Windows GUI suite (Tauri/WebView2, Session 1 + PsExec) is in
+`tests/windows/README.md`; the `windows-sandbox` skill covers the sandbox
+mechanics (build on the local disk, ephemeral vs persistent, `os error 1392`).
 
 The GUI does **not** compile on a bare Linux box (needs `webkit2gtk`/glib); CI
 builds it on `windows-latest`. `agentlight-core` must keep compiling and testing
@@ -83,8 +97,10 @@ cargo check -p agentlight
 ```
 
 `cargo clippy -p agentlight` fails on musl (`E0463`); `cargo check` is the Linux
-validation for the shell. The Windows-only native path (topmost re-assert) is
-compiled by Windows CI, not locally.
+validation for the shell. (`~/sysroot` is not currently staged in this container,
+so `tests/run-linux.sh` skips this step; stage the Tauri prerequisites to enable
+it.) The Windows-only native path (topmost re-assert) is compiled by Windows CI,
+not locally.
 
 ## Hard rules
 
@@ -137,7 +153,8 @@ compiled by Windows CI, not locally.
 - Tauri command args are camelCase on the JS side (`sessionId` ↔ `session_id`).
 - Add tests for any behavior change. `snapshot::build_snapshot_at` takes an
   injected clock for deterministic tests; `src-tauri` geometry helpers are
-  pure and unit-tested. Keep plugin tests in `tests/plugin/`.
+  pure and unit-tested. New app-level suites go under `tests/` (see
+  `tests/README.md`); keep plugin tests in `tests/plugin/`.
 - If clawlight's state contract changes, update `docs/state-format.md` and the
   parser together. Do not guess semantics from the JSON alone.
 - If you add or change a config field, update the README table and
