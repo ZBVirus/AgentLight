@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Continue'
 $src = 'C:\Workspace\AgentLight'
 $work = 'C:\AL-build'
 $targetDir = 'C:\AL-build\target'
-$log = 'C:\SandboxOutput\build-gui.log'
+$log = 'C:\Temp\agentlight-build.log'
 $cdpPort = 9222
 
 "== build start $(Get-Date -Format s) ==" | Tee-Object -FilePath $log
