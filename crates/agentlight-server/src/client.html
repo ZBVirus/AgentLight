@@ -94,6 +94,18 @@
         color: #8a8d98;
         font-size: 13px;
       }
+      .open {
+        flex: none;
+        padding: 4px 10px;
+        border: 1px solid #3a3f4d;
+        border-radius: 8px;
+        color: #56b6c2;
+        font-size: 13px;
+        text-decoration: none;
+      }
+      .open:hover {
+        background: #262b36;
+      }
       .empty {
         padding: 0 16px;
         color: #8a8d98;
@@ -272,6 +284,16 @@
             li.appendChild(dot);
             li.appendChild(name);
             li.appendChild(meta);
+            if (s.url) {
+              var open = document.createElement("a");
+              open.className = "open";
+              open.href = s.url;
+              open.target = "_blank";
+              open.rel = "noopener noreferrer";
+              open.textContent = "Open";
+              open.title = s.url;
+              li.appendChild(open);
+            }
             list.appendChild(li);
           });
         }
@@ -279,10 +301,17 @@
         function refresh() {
           return fetch("/api/v1/snapshot", { headers: headers() })
             .then(function (response) {
+              if (response.status === 401) {
+                // A saved token is no longer valid: drop it and pair again.
+                forget("Your device token is no longer valid.");
+                return null;
+              }
               if (!response.ok) throw new Error("HTTP " + response.status);
               return response.json();
             })
-            .then(render);
+            .then(function (snapshot) {
+              if (snapshot) render(snapshot);
+            });
         }
 
         function showState() {
@@ -390,7 +419,7 @@
             });
         }
 
-        function forget() {
+        function forget(message) {
           try {
             localStorage.removeItem(TOKEN_KEY);
           } catch (error) {
@@ -404,7 +433,7 @@
           }
           list.textContent = "";
           light.className = "light";
-          showPairing("");
+          showPairing(message || "");
         }
 
         panel.addEventListener("submit", submitPair);
@@ -412,13 +441,35 @@
           var upper = codeInput.value.toUpperCase();
           if (upper !== codeInput.value) codeInput.value = upper;
         });
-        forgetButton.addEventListener("click", forget);
+        forgetButton.addEventListener("click", function () {
+          forget();
+        });
 
-        if (token) {
-          start();
-        } else {
-          showPairing("");
+        // With no stored/URL token, ask the server whether auth is required. An
+        // open server (the loopback default) skips pairing and shows state.
+        function openOrPair() {
+          if (token) {
+            start();
+            return;
+          }
+          fetch("/healthz")
+            .then(function (response) {
+              return response.ok ? response.json() : null;
+            })
+            .then(function (health) {
+              var auth = health && health.capabilities && health.capabilities.auth;
+              if (auth === "none") {
+                start();
+              } else {
+                showPairing("");
+              }
+            })
+            .catch(function () {
+              showPairing("");
+            });
         }
+
+        openOrPair();
       })();
     </script>
   </body>

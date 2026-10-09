@@ -93,7 +93,11 @@ export function renderLight(snapshot) {
         : "Waiting for clawlight…";
     }
     setLabel(snapshot.error || fallback);
-    pick.classList.remove("hidden");
+    // Choosing a file only makes sense for the file source; a hub waiting for
+    // its first frame is not a missing local file.
+    const fileSource =
+      !snapshot.source_kind || snapshot.source_kind === "file";
+    pick.classList.toggle("hidden", !fileSource);
     return;
   }
   pick.classList.add("hidden");

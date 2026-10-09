@@ -3,7 +3,8 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-09-24, `chore/local-tooling` @ `edb0de0`._
+_Last updated: 2026-09-24, `chore/local-tooling` @ `11ef4f7` plus the
+uncommitted second hands-on testing round._
 
 ## Released
 
@@ -33,7 +34,7 @@ What each adds:
 - `feat/parked-fixes` (PR #1) — same-monitor expand/collapse, right-click Hide,
   plugin `AGENTLIGHT_AUTOSTART_BIN` hub autostart.
 - `feat/parked-window` (PR #2) — collapsed color/label customization, collapsed
-  resizing, `topmost_reassert`.
+  resizing (since reverted), `topmost_reassert` (since removed).
 - `feat/parked-producer` (PR #3) — session deep link (`url` + `open_url`), alarm
   sounds/triggers.
 - `chore/local-tooling` (current HEAD) — fixes from hands-on testing, on top of
@@ -43,10 +44,53 @@ What each adds:
     gained `producer`; the plugin sends a stable id and never posts an empty
     snapshot. See `docs/protocol.md` and `docs/plugin.md`.
   - UI/window fixes: colors apply in both views, gray option removed, "Reset
-    colors", collapsed lights/labels scale, diagonal aspect-locked collapsed
-    resize with a per-layout minimum, topmost toggle exposed, native
-    `SetWindowPos` re-assert, notification triggers (`notification_trigger`),
-    alarm rows hidden when disabled, `mini_show_labels` defaults off.
+    colors", notification triggers (`notification_trigger`), alarm rows hidden
+    when disabled, `mini_show_labels` defaults off.
+  - Second hands-on round:
+    - **Removed-session tombstones** in `EventPushSource`: a producer heartbeat
+      can no longer resurrect a session removed with the X button or "Clear
+      done"; a real upsert event clears the tombstone. Persisted with the push
+      store. See `docs/protocol.md`.
+    - "Notify when" rows hide unless Desktop notifications is on, with an
+      installed-build caveat (Windows toasts need the NSIS install, not the
+      portable exe).
+    - Alarm uses the Win32 sound API with a bundled two-note chime default;
+      no PowerShell and no console window flash.
+    - Frontend: "Choose state file…" hides for hub/push sources, Settings opens
+      scrolled to the top, and an unchanged save no longer writes the resolved
+      file path over a hub config (which restarted the hub source).
+    - Collapsed window is fixed-size again (the aspect-snap resize fought the
+      user); `mini_width` / `mini_height` and the resize persister are removed.
+    - Server logs a warning when bound beyond loopback with no admin token.
+    - Plugin logs its version and settings on startup so a stale copied file is
+      visible; `docs/plugin.md` corrects the same-directory producer caveat and
+      documents the non-local URL template.
+  - Third round (no-legacy compatibility):
+    - **Removed the legacy global prune**: a `mode:"snapshot"` batch without a
+      `producer` now only upserts, so an old or hand-rolled producer can never
+      wipe another producer's live set. See `docs/protocol.md`.
+    - **Notification identity**: the app registers its `AppUserModelID` under
+      `HKCU\Software\Classes\AppUserModelId` at startup and sets the process
+      AUMID, so the portable exe can show Windows toasts instead of being
+      silently dropped. Settings hint adjusted.
+  - Fourth round (post-test UI feedback):
+    - **Collapsed sizes restored**: the `vmin`-scaled lights/labels were too
+      small, so the fixed 42 px / 24 px lights and 10 px labels are back at the
+      fixed collapsed window sizes.
+    - **`topmost_reassert` removed**: it did not hold over a Microsoft Store
+      windowed-fullscreen window. The pin / "Always on top" setting is now the
+      single authority on topmost; the idea is recorded as a future feature in
+      `docs/ROADMAP.md`.
+    - **No console flashes**: opening a session URL now uses the Win32
+      `ShellExecuteW` call instead of `cmd /C start`; nothing the app does
+      spawns a console window.
+    - **Multi-select triggers**: desktop notifications and alarms each fire on
+      any combination of `needs_help` / `done` / `any_status` (checkboxes).
+    - **Server URL template**: the standalone hub accepts
+      `AGENTLIGHT_SESSION_URL_TEMPLATE` and rewrites ingested session URLs, so
+      it can be set where the server is launched.
+    - **Toast identity**: the AppUserModelID registration writes both
+      `DisplayName` and `IconUri` so the toast header reads "AgentLight".
 
 ## Verification matrix
 
@@ -54,12 +98,15 @@ What each adds:
 |-------|-------|--------|
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
-| `cargo test` (core 70, source-events 13, server 39, hub-client 21) | Linux | green |
+| `cargo test` (core 72, source-events 18, server 42, hub-client 21) | Linux | green |
 | `node --test plugins/opencode/test/agentlight.test.js` (20) | Linux | green |
+| `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
+| Server end-to-end (healthz, ingest, tombstone, URL template) | Linux | green |
+| Playwright (frontend + hub web client) | Windows / CI `ubuntu-latest` | green (Windows) |
 | Windows build (app + server) | GitHub Actions `windows-latest` | green |
-| Window behavior, sounds, topmost over fullscreen, drag/resize | Windows desktop | **not verified — needs a human** |
+| Window behavior, notification/alarm triggers, drag/resize | Windows desktop | **not verified — needs a human** (`local/ui-harness.ps1`) |
 
 ## Building a test exe
 

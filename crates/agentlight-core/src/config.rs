@@ -43,7 +43,8 @@ pub enum YellowMode {
     ActiveWins,
 }
 
-/// What transition fires an attention alarm.
+/// What transition fires an attention edge (notification or alarm). A session
+/// may select several; the edge fires when any selected trigger matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AlarmTrigger {
@@ -54,6 +55,29 @@ pub enum AlarmTrigger {
     Done,
     /// Any status change after the session is first seen.
     AnyStatus,
+}
+
+/// Default trigger set: fire when a session needs help.
+fn default_triggers() -> Vec<AlarmTrigger> {
+    vec![AlarmTrigger::NeedsHelp]
+}
+
+/// Accept either a single trigger or a list, so an older config that stored
+/// `"needs_help"` still loads now that the field is a set.
+fn one_or_many_triggers<'de, D>(deserializer: D) -> std::result::Result<Vec<AlarmTrigger>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(AlarmTrigger),
+        Many(Vec<AlarmTrigger>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(trigger) => vec![trigger],
+        OneOrMany::Many(triggers) => triggers,
+    })
 }
 
 /// Collapsed (mini) window layout.
@@ -89,14 +113,6 @@ pub struct Config {
     pub mini_green: Option<String>,
     /// Show the text labels beside the collapsed lights.
     pub mini_show_labels: bool,
-    /// Persisted width of the collapsed window, in logical pixels. `None` uses
-    /// the fixed size for the selected style.
-    pub mini_width: Option<f64>,
-    /// Persisted height of the collapsed window, in logical pixels.
-    pub mini_height: Option<f64>,
-    /// Periodically re-assert always-on-top so the widget stays above
-    /// borderless full-screen apps that push it behind. Opt-in, Windows-only.
-    pub topmost_reassert: bool,
     /// Fallback poll interval, in milliseconds, for the file watcher.
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
@@ -113,15 +129,23 @@ pub struct Config {
     /// hash. It therefore stays plaintext in `config.json`; protect that file
     /// as you would any secret. It is never logged.
     pub hub_token: Option<String>,
-    /// Fire a desktop notification when a session hits the notification trigger.
+    /// Fire a desktop notification when a session hits a notification trigger.
     pub notifications: bool,
-    /// Which transition fires a desktop notification. Same choices as
-    /// [`alarms`](Self::alarm_trigger).
-    pub notification_trigger: AlarmTrigger,
-    /// Play an attention alarm (sound) when a session needs attention.
+    /// Which transitions fire a desktop notification. Several may be selected;
+    /// the notification fires when any of them matches.
+    #[serde(
+        default = "default_triggers",
+        deserialize_with = "one_or_many_triggers"
+    )]
+    pub notification_trigger: Vec<AlarmTrigger>,
+    /// Play an attention alarm (sound) when a session hits an alarm trigger.
     pub alarms_enabled: bool,
-    /// Which transition fires an alarm.
-    pub alarm_trigger: AlarmTrigger,
+    /// Which transitions fire an alarm.
+    #[serde(
+        default = "default_triggers",
+        deserialize_with = "one_or_many_triggers"
+    )]
+    pub alarm_trigger: Vec<AlarmTrigger>,
     /// Custom sound file for alarms. `None` uses the system/default sound.
     pub alarm_sound: Option<String>,
     /// Launch AgentLight at login. Off by default.
@@ -152,18 +176,15 @@ impl Default for Config {
             mini_orange: None,
             mini_green: None,
             mini_show_labels: false,
-            mini_width: None,
-            mini_height: None,
-            topmost_reassert: false,
             poll_ms: 1500,
             show_done: false,
             source_kind: SourceKind::File,
             hub_url: DEFAULT_HUB_URL.to_string(),
             hub_token: None,
             notifications: false,
-            notification_trigger: AlarmTrigger::NeedsHelp,
+            notification_trigger: default_triggers(),
             alarms_enabled: false,
-            alarm_trigger: AlarmTrigger::NeedsHelp,
+            alarm_trigger: default_triggers(),
             alarm_sound: None,
             start_at_login: false,
             server_enabled: false,
@@ -203,14 +224,6 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
         }
-        self.mini_width = self
-            .mini_width
-            .filter(|width| width.is_finite())
-            .map(|width| width.clamp(40.0, 2000.0));
-        self.mini_height = self
-            .mini_height
-            .filter(|height| height.is_finite())
-            .map(|height| height.clamp(24.0, 2000.0));
         if let Some(path) = &self.state_path {
             if path.trim().is_empty() {
                 self.state_path = None;
@@ -459,9 +472,9 @@ mod tests {
     }
 
     #[test]
-    fn mini_customization_parses_sanitizes_and_clamps() {
+    fn mini_customization_parses_and_sanitizes() {
         let c: Config = serde_json::from_str(
-            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true,"mini_width":10.0,"mini_height":99999.0}"#,
+            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true}"#,
         )
         .unwrap();
         assert_eq!(c.mini_red.as_deref(), Some("  #ff0000  "));
@@ -472,35 +485,40 @@ mod tests {
             "a blank color falls back to built-in"
         );
         assert!(c.mini_show_labels);
-        assert_eq!(c.mini_width, Some(40.0), "a too-small width clamps up");
-        assert_eq!(c.mini_height, Some(2000.0), "a huge height clamps down");
 
         let defaults = Config::default();
         assert!(
             !defaults.mini_show_labels,
             "labels are hidden in the collapsed view by default"
         );
-        assert!(defaults.mini_width.is_none());
-        assert!(!defaults.topmost_reassert);
     }
 
     #[test]
-    fn alarms_parse_and_default() {
+    fn triggers_parse_and_default() {
         let defaults = Config::default();
         assert!(!defaults.alarms_enabled);
-        assert_eq!(defaults.alarm_trigger, AlarmTrigger::NeedsHelp);
+        assert_eq!(defaults.alarm_trigger, vec![AlarmTrigger::NeedsHelp]);
         assert!(defaults.alarm_sound.is_none());
-        assert_eq!(defaults.notification_trigger, AlarmTrigger::NeedsHelp);
+        assert_eq!(defaults.notification_trigger, vec![AlarmTrigger::NeedsHelp]);
 
+        // A single legacy value still loads into the set.
         let c: Config = serde_json::from_str(r#"{"notification_trigger":"done"}"#).unwrap();
-        assert_eq!(c.notification_trigger, AlarmTrigger::Done);
+        assert_eq!(c.notification_trigger, vec![AlarmTrigger::Done]);
+
+        // A list selects several triggers.
+        let c: Config =
+            serde_json::from_str(r#"{"notification_trigger":["done","needs_help"]}"#).unwrap();
+        assert_eq!(
+            c.notification_trigger,
+            vec![AlarmTrigger::Done, AlarmTrigger::NeedsHelp]
+        );
 
         let c: Config = serde_json::from_str(
             r#"{"alarms_enabled":true,"alarm_trigger":"any_status","alarm_sound":"  C:/ding.wav  "}"#,
         )
         .unwrap();
         assert!(c.alarms_enabled);
-        assert_eq!(c.alarm_trigger, AlarmTrigger::AnyStatus);
+        assert_eq!(c.alarm_trigger, vec![AlarmTrigger::AnyStatus]);
         let c = c.sanitized();
         assert_eq!(c.alarm_sound.as_deref(), Some("C:/ding.wav"));
 

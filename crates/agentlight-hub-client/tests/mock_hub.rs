@@ -37,7 +37,8 @@ const SNAPSHOT_NEEDS_HELP: &str = r#"{
       "harness": "opencode",
       "harness_badge": "op",
       "last_updated": "2026-09-12T10:00:00Z",
-      "is_done": false
+      "is_done": false,
+      "url": "http://localhost:4096/session/s1"
     }
   ],
   "yellow_mode": "any_inactive",
@@ -339,12 +340,22 @@ fn snapshot_parses_into_normalized_sessions_and_health() {
         )
     );
     assert!(!session.is_done);
+    // The deep link survives the hub -> normalized -> display round trip, so
+    // the detail row's "Open" action has a URL to offer.
+    assert_eq!(
+        session.url.as_deref(),
+        Some("http://localhost:4096/session/s1")
+    );
 
     let client = HubClient::new(HubConfig::new(hub.base_url()));
     let parsed = client.snapshot().expect("client snapshot");
     assert!(parsed.ok);
     assert_eq!(parsed.aggregate, "red");
     assert_eq!(parsed.sessions.len(), 1);
+    assert_eq!(
+        parsed.sessions[0].url.as_deref(),
+        Some("http://localhost:4096/session/s1")
+    );
 }
 
 #[test]

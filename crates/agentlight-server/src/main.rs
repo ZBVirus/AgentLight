@@ -8,7 +8,9 @@
 //! the working directory), `AGENTLIGHT_EVENTS_FILE` (`push-state.json` in the
 //! working directory, the push source's durable store), and
 //! `AGENTLIGHT_HEARTBEAT_MS` (`0`, disabled; when set the stale window is four
-//! times this). No config file is read.
+//! times this), and `AGENTLIGHT_SESSION_URL_TEMPLATE` (optional; rewrites
+//! ingested session deep links, with `{id}` replaced by the session id). No
+//! config file is read.
 
 use std::path::PathBuf;
 
@@ -44,17 +46,23 @@ fn server_config() -> ServerConfig {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("push-state.json"));
     let heartbeat_ms = env_parse("AGENTLIGHT_HEARTBEAT_MS").unwrap_or(0);
+    // Optional: rewrite ingested session deep links for non-local agents.
+    let session_url_template = env_non_empty("AGENTLIGHT_SESSION_URL_TEMPLATE");
 
     let source_kind = match env_non_empty("AGENTLIGHT_SOURCE").as_deref() {
         Some("events") | Some("ingest") => SourceKind::Push,
         _ => SourceKind::File,
     };
 
-    ServerConfig::new(bind, admin_token_hash, core.sanitized())
+    let mut config = ServerConfig::new(bind, admin_token_hash, core.sanitized())
         .with_source_kind(source_kind)
         .with_devices_path(devices_path)
         .with_events_path(events_path)
-        .with_heartbeat_ms(heartbeat_ms)
+        .with_heartbeat_ms(heartbeat_ms);
+    if let Some(template) = session_url_template {
+        config = config.with_session_url_template(template);
+    }
+    config
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

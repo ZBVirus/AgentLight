@@ -33,9 +33,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client --all-targets -- -D warnings
+        run: cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client
+        run: cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events
 
   plugin:
     name: plugin (node tests)
@@ -48,6 +48,46 @@ jobs:
 
       - name: Test plugin
         run: node --test plugins/opencode/test/agentlight.test.js
+
+  # Frontend behaviour in jsdom: no browser, so it runs anywhere Node does.
+  frontend:
+    name: frontend (jsdom)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        working-directory: tests/frontend
+        run: npm install --include=dev --no-audit --no-fund
+      - name: Test
+        working-directory: tests/frontend
+        run: node --test
+
+  # Real browser: the frontend against a mocked __TAURI__, and the hub web client
+  # against a spawned agentlight-server.
+  playwright:
+    name: playwright (frontend + web UI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build server
+        run: cargo build -p agentlight-server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        working-directory: tests/playwright
+        run: npm install --include=dev --no-audit --no-fund
+      - name: Install Chromium
+        working-directory: tests/playwright
+        run: npx playwright install --with-deps chromium
+      - name: Test
+        working-directory: tests/playwright
+        run: npx playwright test
 
   # The app and the server build in parallel. They share one cargo cache so the
   # second warm run reuses the common dependencies. Artifacts use the fast `ci`

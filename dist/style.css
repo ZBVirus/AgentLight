@@ -165,7 +165,7 @@ main {
 }
 
 .mini-label {
-  font-size: max(7px, 11vmin);
+  font-size: 10px;
   line-height: 1;
   color: var(--dim);
   white-space: nowrap;
@@ -191,8 +191,8 @@ body[data-collapse="triple_vertical"] .mini-triple {
 .mini-light {
   display: grid;
   place-items: center;
-  width: max(18px, 44vmin);
-  height: max(18px, 44vmin);
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   background: #14161d;
   border: 1px solid var(--rule);
@@ -200,23 +200,11 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .mini-light .core {
-  width: 58%;
-  height: 58%;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: #2b2f3a;
   transition: background 0.25s ease, box-shadow 0.25s ease;
-}
-
-/* The aggregate mini light scales with the collapsed window; the detail light
-   keeps its fixed size. */
-.view.mini .light {
-  width: max(28px, 54vmin);
-  height: max(28px, 54vmin);
-}
-
-.view.mini .light .light-core {
-  width: 62%;
-  height: 62%;
 }
 
 .mini-light.on.red {
@@ -576,10 +564,17 @@ body[data-collapse="triple_vertical"] .mini-triple {
   color: var(--dim);
 }
 
-#set-alarm-rows {
+#set-alarm-rows,
+#set-notification-rows {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.triggers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .field.inline {

@@ -81,14 +81,12 @@ export function populateSettings() {
   $("set-hub-token").value = config.hub_token || "";
   $("set-state-path").value = config.state_path || (snapshot ? snapshot.state_path : "");
   $("set-top").checked = !!config.always_on_top;
-  $("set-topmost-reassert").checked = !!config.topmost_reassert;
   $("set-autostart").checked = !!config.start_at_login;
   $("set-notifications").checked = !!config.notifications;
-  $("set-notification-trigger").value =
-    config.notification_trigger || "needs_help";
+  setTriggers("notification", config.notification_trigger);
   $("set-show-done").checked = !!config.show_done;
   $("set-alarms-enabled").checked = !!config.alarms_enabled;
-  $("set-alarm-trigger").value = config.alarm_trigger || "needs_help";
+  setTriggers("alarm", config.alarm_trigger);
   $("set-alarm-sound").value = config.alarm_sound || "";
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
   $("set-collapse-style").value = config.collapse_style || "single";
@@ -110,6 +108,7 @@ export function populateSettings() {
   $("set-source-kind").onchange = renderSourceFields;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
+  $("set-notifications").onchange = renderNotificationRows;
   $("set-alarms-enabled").onchange = renderAlarmRows;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
@@ -118,6 +117,7 @@ export function populateSettings() {
   $("btn-alarm-sound-clear").onclick = clearAlarmSound;
   $("btn-reset-colors").onclick = resetColors;
   renderSourceFields();
+  renderNotificationRows();
   renderAlarmRows();
   renderServerUrl();
   refreshServerStatus();
@@ -252,6 +252,17 @@ async function clearAdminToken() {
   await refreshServerStatus();
 }
 
+// Show and enable the notification trigger only while notifications are on.
+function renderNotificationRows() {
+  const rows = $("set-notification-rows");
+  if (!rows) return;
+  const enabled = $("set-notifications").checked;
+  rows.classList.toggle("hidden", !enabled);
+  for (const el of rows.querySelectorAll("input, select, button")) {
+    el.disabled = !enabled;
+  }
+}
+
 // Show and enable the alarm trigger/sound rows only while alarms are on.
 function renderAlarmRows() {
   const rows = $("set-alarm-rows");
@@ -292,23 +303,67 @@ function clearAlarmSound() {
   $("set-alarm-sound").value = "";
 }
 
+// Trigger fields (`notification_trigger` / `alarm_trigger`) are lists of
+// `needs_help` / `done` / `any_status`. A single string is accepted too.
+const TRIGGER_IDS = {
+  notification: {
+    needsHelp: "set-notification-needs-help",
+    done: "set-notification-done",
+    any: "set-notification-any",
+  },
+  alarm: {
+    needsHelp: "set-alarm-needs-help",
+    done: "set-alarm-done",
+    any: "set-alarm-any",
+  },
+};
+
+// An explicit empty list means "no trigger selected"; a missing value falls
+// back to the default.
+function triggerValues(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value) return [value];
+  return ["needs_help"];
+}
+
+function setTriggers(kind, value) {
+  const selected = triggerValues(value);
+  const ids = TRIGGER_IDS[kind];
+  $(ids.needsHelp).checked = selected.includes("needs_help");
+  $(ids.done).checked = selected.includes("done");
+  $(ids.any).checked = selected.includes("any_status");
+}
+
+function readTriggers(kind) {
+  const ids = TRIGGER_IDS[kind];
+  const selected = [];
+  if ($(ids.needsHelp).checked) selected.push("needs_help");
+  if ($(ids.done).checked) selected.push("done");
+  if ($(ids.any).checked) selected.push("any_status");
+  return selected;
+}
+
 export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
+  const sourceKind = $("set-source-kind").value;
   const next = applyServerFields({
     ...config,
-    source_kind: $("set-source-kind").value,
+    source_kind: sourceKind,
     hub_url: $("set-hub-url").value.trim() || DEFAULT_HUB_URL,
     hub_token: $("set-hub-token").value.trim() || null,
-    state_path: $("set-state-path").value.trim() || null,
+    // The state-file input is seeded from the snapshot's resolved clawlight
+    // path even in hub mode; never write that back for a non-file source, or
+    // an unchanged save would restart the hub source.
+    state_path:
+      sourceKind === "file" ? $("set-state-path").value.trim() || null : config.state_path,
     always_on_top: $("set-top").checked,
-    topmost_reassert: $("set-topmost-reassert").checked,
     start_at_login: $("set-autostart").checked,
     notifications: $("set-notifications").checked,
-    notification_trigger: $("set-notification-trigger").value,
+    notification_trigger: readTriggers("notification"),
     show_done: $("set-show-done").checked,
     alarms_enabled: $("set-alarms-enabled").checked,
-    alarm_trigger: $("set-alarm-trigger").value,
+    alarm_trigger: readTriggers("alarm"),
     alarm_sound: $("set-alarm-sound").value.trim() || null,
     yellow_mode: $("set-yellow-mode").value,
     collapse_style: $("set-collapse-style").value,
