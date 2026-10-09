@@ -202,7 +202,7 @@ runtime). No Node toolchain is required — the frontend is static.
 cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events
 cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings
 cargo fmt --all --check
-node --test plugins/opencode/test/agentlight.test.js
+node --test tests/plugin/agentlight.test.js
 
 # GUI (Windows)
 cargo install tauri-cli --version "^2.0.0" --locked

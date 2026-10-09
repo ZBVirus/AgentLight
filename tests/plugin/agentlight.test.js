@@ -2,13 +2,13 @@
 //
 // These drive `AgentLightPlugin` with a stub client and a stubbed `fetch`, so
 // the mapping can be verified without a live opencode build. Run with:
-//   node --test plugins/opencode/test/
+//   node --test tests/plugin/
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 
-import { AgentLightPlugin } from "../agentlight.js";
+import { AgentLightPlugin } from "../../plugins/opencode/agentlight.js";
 
 const COALESCE_WAIT_MS = 300;
 

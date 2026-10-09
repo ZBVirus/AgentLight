@@ -1,7 +1,7 @@
 // Frontend behaviour tests that run anywhere Node + jsdom run (no browser), so
 // they can run in the Linux container and in CI. They drive the real dist/
 // modules with a mocked window.__TAURI__. Native window behaviour is not here:
-// see local/ui-harness.ps1 (Win32 + UI Automation) and local/ui-tests (Playwright).
+// see tests/windows/ui-harness.ps1 (Win32 + UI Automation) and tests/playwright.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

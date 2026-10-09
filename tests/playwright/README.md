@@ -15,7 +15,7 @@ Headless Chromium, two suites:
 
 **Limits:** Playwright cannot drive the Tauri/WebView2 desktop window. Resize,
 always-on-top, tray, and the real collapsed window size are covered by the
-Windows UI Automation harness (`local/ui-harness.ps1`, needs an interactive
+Windows UI Automation harness (`tests/windows/ui-harness.ps1`, needs an interactive
 desktop).
 
 ## Setup / run

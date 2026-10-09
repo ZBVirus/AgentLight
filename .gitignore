@@ -20,6 +20,7 @@ node_modules/
 
 # Test output
 test-results/
+tests/test-report/
 
 # OS / editor
 .DS_Store

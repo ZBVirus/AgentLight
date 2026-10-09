@@ -63,7 +63,7 @@ cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client \
   -p agentlight-source-events --all-targets -- -D warnings
 cargo test  -p agentlight-core -p agentlight-server -p agentlight-hub-client \
   -p agentlight-source-events
-node --test plugins/opencode/test/agentlight.test.js
+node --test tests/plugin/agentlight.test.js
 node --check dist/views/detail.js      # any changed dist module
 
 cargo tauri dev                        # GUI, Windows only
@@ -137,7 +137,7 @@ compiled by Windows CI, not locally.
 - Tauri command args are camelCase on the JS side (`sessionId` ↔ `session_id`).
 - Add tests for any behavior change. `snapshot::build_snapshot_at` takes an
   injected clock for deterministic tests; `src-tauri` geometry helpers are
-  pure and unit-tested. Keep plugin tests in `plugins/opencode/test/`.
+  pure and unit-tested. Keep plugin tests in `tests/plugin/`.
 - If clawlight's state contract changes, update `docs/state-format.md` and the
   parser together. Do not guess semantics from the JSON alone.
 - If you add or change a config field, update the README table and

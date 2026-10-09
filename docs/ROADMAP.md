@@ -175,7 +175,7 @@ decide and prioritize later.
   including subagents, only went idle, so "Clear done" missed them. The plugin
   now reports idle on a session with a `parentID` (a subagent) as `done`, and
   keeps an idle session that is waiting on a permission as `needs_help`.
-  Covered by `plugins/opencode/test/agentlight.test.js`.
+  Covered by `tests/plugin/agentlight.test.js`.
 - **Right-click hide in collapsed mode. Done (v0.5 line).** The collapsed view
   has a context menu with a "Hide" action that sends the app to the tray.
 - **Stay on the same monitor when expanding/collapsing. Done (v0.5 line).** The

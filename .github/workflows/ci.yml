@@ -47,7 +47,7 @@ jobs:
           node-version: "20"
 
       - name: Test plugin
-        run: node --test plugins/opencode/test/agentlight.test.js
+        run: node --test tests/plugin/agentlight.test.js
 
   # Frontend behaviour in jsdom: no browser, so it runs anywhere Node does.
   frontend:
@@ -88,6 +88,38 @@ jobs:
       - name: Test
         working-directory: tests/playwright
         run: npx playwright test
+
+  # Real app UI over WebView2 remote debugging. The build gets a test-only
+  # additionalBrowserArgs so Playwright can drive the window; the shipped
+  # windows-app artifact is unaffected.
+  windows-gui:
+    name: windows gui (cdp e2e)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-cargo
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable WebView2 remote debugging (test build)
+        shell: pwsh
+        run: node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.app.windows[0].additionalBrowserArgs='--remote-debugging-port=9222 --remote-allow-origins=*';fs.writeFileSync(p,JSON.stringify(j,null,2));"
+
+      - name: Build app
+        run: cargo build -p agentlight --profile ci
+
+      - name: Install test deps
+        working-directory: tests/windows
+        run: npm install --include=dev --no-audit --no-fund
+
+      - name: Run CDP e2e
+        working-directory: tests/windows
+        shell: pwsh
+        run: ./run-cdp.ps1 -Exe ../../target/ci/agentlight.exe
 
   # The app and the server build in parallel. They share one cargo cache so the
   # second warm run reuses the common dependencies. Artifacts use the fast `ci`

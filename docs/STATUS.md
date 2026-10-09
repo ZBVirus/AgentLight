@@ -6,7 +6,7 @@ over git archaeology; update it whenever the branch layout changes.
 _Last updated: 2026-10-09, `chore/local-tooling` @ `b378917` (the hands-on
 testing rounds 2-5 are committed; **PR #4** into `feat/parked-producer`). The
 native GUI was also verified end-to-end in the Windows Sandbox (Session 1):
-window behavior via `local/ui-harness.ps1`, and real-WebView2 interactions via
+window behavior via `tests/windows/ui-harness.ps1`, and real-WebView2 interactions via
 Playwright over CDP (14/14). Backup branch `backup/2026-10-09`. See
 `local/HANDOFF.md` for environment facts and commands._
 
@@ -106,9 +106,10 @@ What each adds:
       `__TAURI__`) and the real hub web client (spawns `agentlight-server`).
     - **CI**: `agentlight-source-events` added to the core job, plus `frontend`
       (jsdom) and `playwright` jobs.
-    - **Local runners**: `local/verify-linux.sh`, `local/verify-windows.ps1`,
-      `local/ui-harness.ps1` (Win32 + UI Automation for native window behavior),
-      documented in `local/README-testing.md` and `local/HANDOFF.md`.
+    - **Test suites + runners**: `tests/run-linux.sh`, `tests/run-windows.ps1`,
+      `tests/windows/ui-harness.ps1` (Win32 + UI Automation for native window
+      behavior), and `tests/windows/e2e-cdp.js` (Playwright over WebView2 CDP),
+      documented in `tests/README.md` and `tests/windows/README.md`.
 
 ## Verification matrix
 
@@ -117,14 +118,14 @@ What each adds:
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
 | `cargo test` (core 72, source-events 18, server 42, hub-client 21) | Linux | green |
-| `node --test plugins/opencode/test/agentlight.test.js` (20) | Linux | green |
+| `node --test tests/plugin/agentlight.test.js` (20) | Linux | green |
 | `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
 | Server end-to-end (healthz, ingest, tombstone, URL template) | Linux | green |
 | Playwright (frontend + hub web client) | CI `ubuntu-latest`; in-sandbox via CDP | green |
 | Windows build (app + server) | GitHub Actions `windows-latest`; also built locally in the Windows Sandbox | green |
-| Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `local/ui-harness.ps1` | green (2026-10-09) |
+| Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `tests/windows/ui-harness.ps1` | green (2026-10-09) |
 | Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating) | Windows Sandbox, Playwright over WebView2 CDP | green 14/14 (2026-10-09) |
 | Toast actually rendered (header "AgentLight") | Windows desktop | AUMID registry entry verified; rendering still needs a human |
 
