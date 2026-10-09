@@ -3,35 +3,60 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-10-09, `chore/local-tooling` @ `b378917` (the hands-on
-testing rounds 2-5 are committed; **PR #4** into `feat/parked-producer`). The
+_Last updated: 2026-10-09 (cleanup), `develop` @ `5bebedf` (the hands-on
+testing rounds 2-5 and the whole parked stack are now integrated here). The
 native GUI was also verified end-to-end in the Windows Sandbox (Session 1):
 window behavior via `tests/windows/ui-harness.ps1`, and real-WebView2 interactions via
-Playwright over CDP (14/14). Backup branch `backup/2026-10-09`. See
-`local/HANDOFF.md` for environment facts and commands._
+Playwright over CDP (14/14). The former in-flight and `backup/*` branches were
+consolidated/deleted; every pre-cleanup commit is retained by the
+`archive/pre-cleanup-2026-10-09` tag and the snapshot bundle. See the "Branch
+layout" and "Cleanup" sections below, and `local/HANDOFF.md` for environment
+facts and commands._
 
 ## Released
 
 - `main` = `834f7e4`, tagged **`v0.4.0`** (NSIS installer + portable exe +
   `agentlight-server` on the release page). Everything since is **unreleased**.
-- `develop` = `40ca27b` (durable push store, heartbeat, SSE client groundwork).
+- `develop` = `5bebedf` (integrated v0.5 line: durable push store, heartbeat,
+  SSE client, producer-scoped snapshots and tombstones, alarms and deep links,
+  the frontend/Playwright test suites). Fast-forwarded from the former parked
+  stack; see "Cleanup" below.
 - Older tags: `v0.3.0`, `v0.2.0-single-light`, `v0.2.0-triple-light`,
   `checkpoint-2026-09-13` (= `develop`).
 
-## In-flight (not merged)
+## Branch layout
 
-A stack of branches, each PR targeting the branch below it. **Do not merge
-before the one below it.** None are merged.
+- `main` — released line, **protected**. Only releases reach it (`v0.4.0` = `834f7e4`).
+- `develop` — the single long-lived integration branch. All in-flight work is
+  already contained here.
+- `archive/*` tags — immutable safety refs from the 2026-10-09 cleanup.
 
-| Branch | PR | Base |
-|--------|----|------|
-| `feat/sse-client` | *(none yet)* | `develop` |
-| `feat/parked-fixes` | #1 | `feat/sse-client` |
-| `feat/parked-window` | #2 | `feat/parked-fixes` |
-| `feat/parked-producer` | #3 | `feat/parked-window` |
-| `chore/local-tooling` | #4 | `feat/parked-producer` |
+Short-lived work branches are created off `develop` and deleted once contained;
+feature branches are not kept after their commits land in `develop`.
 
-What each adds:
+## Cleanup (2026-10-09)
+
+The repo carried a linear PR stack plus two `backup/*` branches. Everything in
+the non-backup branches was already contained in the stack top, so the layout was
+collapsed:
+
+- The stack (`feat/sse-client` -> `feat/parked-fixes` -> `feat/parked-window` ->
+  `feat/parked-producer` -> `chore/local-tooling`, PRs #1-#4) was fast-forwarded
+  into `develop`; those branch refs were deleted. The PRs are superseded by
+  `develop` and can be closed.
+- `feat/agentlight-app` / `-toggle` / `-triple-light` / `architecture-redesign`
+  were already merged into `main`; their redundant refs were deleted.
+- `backup/2026-10-09` and `backup/pre-ui-revert` had one unique commit each;
+  those commits are preserved as the `archive/backup-2026-10-09` and
+  `archive/backup-pre-ui-revert` tags, and the branches were deleted.
+- A complete pre-cleanup snapshot (all refs, full history) was written outside
+  the tree as a git bundle and a bare mirror clone; see the manifest in
+  `AgentLight-cleanup-snapshot-2026-10-09/`.
+
+Nothing reachable from `main` or the old stack was lost: the whole pre-cleanup
+history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
+
+### What the integrated stack adds
 
 - `feat/sse-client` — initial SSE frame + `HubSource` live stream with poll
   fallback; CI runs on PRs into any base.

@@ -6,7 +6,7 @@ release; it is a parking lot so decisions are not silently forgotten.
 For the proposed source/engine/transport rework behind these items, see
 [`architecture-redesign.md`](architecture-redesign.md).
 
-Status legend: **Done** shipped on `feat/architecture-redesign`; **Partial**
+Status legend: **Done** shipped (merged into `main`); **Partial**
 some pieces exist; **Planned** recorded, not started; **Deferred** intentionally
 later. Statuses are as of the v0.4.0 line.
 
