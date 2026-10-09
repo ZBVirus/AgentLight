@@ -3,10 +3,12 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-10-09, `chore/local-tooling` @ `76b673f` (the hands-on
-testing rounds 2-5 are now committed; **PR #4** into `feat/parked-producer`).
-Backup branch `backup/2026-10-09`. See `local/HANDOFF.md` for environment
-facts and commands._
+_Last updated: 2026-10-09, `chore/local-tooling` @ `b378917` (the hands-on
+testing rounds 2-5 are committed; **PR #4** into `feat/parked-producer`). The
+native GUI was also verified end-to-end in the Windows Sandbox (Session 1):
+window behavior via `local/ui-harness.ps1`, and real-WebView2 interactions via
+Playwright over CDP (14/14). Backup branch `backup/2026-10-09`. See
+`local/HANDOFF.md` for environment facts and commands._
 
 ## Released
 
@@ -120,9 +122,11 @@ What each adds:
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
 | Server end-to-end (healthz, ingest, tombstone, URL template) | Linux | green |
-| Playwright (frontend + hub web client) | Windows / CI `ubuntu-latest` | green (Windows) |
-| Windows build (app + server) | GitHub Actions `windows-latest` | green |
-| Window behavior, notification/alarm triggers, drag/resize | Windows desktop | **not verified — needs a human** (`local/ui-harness.ps1`) |
+| Playwright (frontend + hub web client) | CI `ubuntu-latest`; in-sandbox via CDP | green |
+| Windows build (app + server) | GitHub Actions `windows-latest`; also built locally in the Windows Sandbox | green |
+| Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `local/ui-harness.ps1` | green (2026-10-09) |
+| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating) | Windows Sandbox, Playwright over WebView2 CDP | green 14/14 (2026-10-09) |
+| Toast actually rendered (header "AgentLight") | Windows desktop | AUMID registry entry verified; rendering still needs a human |
 
 ## Building a test exe
 
