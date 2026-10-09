@@ -18,6 +18,9 @@
 /node_modules
 node_modules/
 
+# Test output
+test-results/
+
 # OS / editor
 .DS_Store
 Thumbs.db
