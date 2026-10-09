@@ -11,7 +11,7 @@ module.exports = defineConfig({
     deviceScaleFactor: 1,
   },
   webServer: {
-    command: "node static-server.js /workspace/AgentLight/dist 4319",
+    command: "node static-server.js",
     url: "http://127.0.0.1:4319/index.html",
     reuseExistingServer: true,
     cwd: __dirname,

@@ -3,7 +3,9 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const root = process.argv[2] || "/workspace/AgentLight/dist";
+// Default to the repo's dist/ (two levels up from tests/playwright) so the
+// server works from any checkout, not just the dev container.
+const root = process.argv[2] || path.resolve(__dirname, "..", "..", "dist");
 const port = Number(process.argv[3] || 4319);
 const types = {
   ".html": "text/html; charset=utf-8",
