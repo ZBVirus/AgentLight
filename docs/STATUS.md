@@ -3,9 +3,10 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-10-09, `chore/local-tooling` @ `11ef4f7` plus the
-uncommitted hands-on testing rounds (rounds 2-5 below; backup branch
-`backup/2026-10-09`). See `local/HANDOFF.md` for environment facts and commands._
+_Last updated: 2026-10-09, `chore/local-tooling` @ `76b673f` (the hands-on
+testing rounds 2-5 are now committed; **PR #4** into `feat/parked-producer`).
+Backup branch `backup/2026-10-09`. See `local/HANDOFF.md` for environment
+facts and commands._
 
 ## Released
 
@@ -26,7 +27,7 @@ before the one below it.** None are merged.
 | `feat/parked-fixes` | #1 | `feat/sse-client` |
 | `feat/parked-window` | #2 | `feat/parked-fixes` |
 | `feat/parked-producer` | #3 | `feat/parked-window` |
-| `chore/local-tooling` | *(none yet)* | `feat/parked-producer` |
+| `chore/local-tooling` | #4 | `feat/parked-producer` |
 
 What each adds:
 
