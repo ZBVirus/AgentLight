@@ -10,6 +10,11 @@
 # tests\windows\run-cdp.ps1 can drive the real UI.
 #
 # Run inside the sandbox: powershell -File C:\Workspace\AgentLight\tests\windows\build-local.ps1
+[CmdletBinding()]
+param(
+    [switch]$SkipSetup
+)
+
 $ErrorActionPreference = 'Continue'
 $src = 'C:\Workspace\AgentLight'
 $work = 'C:\AL-build'
@@ -19,6 +24,19 @@ $cdpPort = 9222
 
 "== build start $(Get-Date -Format s) ==" | Tee-Object -FilePath $log
 "work=$work  target=$targetDir  TEMP=$env:TEMP" | Tee-Object -Append -FilePath $log
+
+# Provision the GUI toolchain when needed (SDK/MSVC, VC++ runtime, WebView2).
+# Idempotent and fast when everything is already present; -SkipSetup bypasses it.
+if (-not $SkipSetup) {
+    $setup = Join-Path $PSScriptRoot 'setup-toolchain.ps1'
+    if (Test-Path $setup) {
+        "== toolchain setup ==" | Tee-Object -Append -FilePath $log
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup *>&1 | Tee-Object -Append -FilePath $log
+        if ($LASTEXITCODE -ne 0) { "toolchain setup failed (exit $LASTEXITCODE)" | Tee-Object -Append -FilePath $log; exit 1 }
+    } else {
+        "setup-toolchain.ps1 not found; assuming the toolchain is present" | Tee-Object -Append -FilePath $log
+    }
+}
 
 if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $work | Out-Null

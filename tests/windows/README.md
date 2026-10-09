@@ -39,20 +39,15 @@ C:\Persistent\Tools\PSTools\PsExec64.exe -accepteula -i 1 -d powershell.exe `
   -Exe C:\AL-build\target\ci\agentlight.exe -OutDir C:\SandboxOutput\ui-report
 ```
 
-One-time prep (lost when the sandbox restarts; re-run):
+Provisioning (lost when the sandbox restarts; re-run):
 
 ```powershell
-# Windows SDK + MSVC (app + server builds)
-& C:\Persistent\Tools\vs_buildtools.exe --quiet --wait --norestart --nocache `
-    --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
-
-# VC++ runtime (missing in a fresh sandbox; the exe shows an "Error" dialog without it)
-powershell -File C:\Workspace\AgentLight\tests\windows\setup-vcredist.ps1
-
-# WebView2 (a fresh sandbox may register the runtime only in the 32-bit view, so
-# the x64 app reports "Could not find the WebView2 Runtime ... not available for this one")
-powershell -File C:\Workspace\AgentLight\tests\windows\setup-webview.ps1
+# idempotent: installs only what is missing (SDK/MSVC, VC++ runtime, WebView2)
+powershell -File C:\Workspace\AgentLight\tests\windows\setup-toolchain.ps1
 ```
+
+`build-local.ps1` calls it automatically before building, so a fresh sandbox
+needs no manual step.
 
 Build on the sandbox's local disk. Both mapped folders (`C:\SandboxOutput` and
 `C:\Persistent`) fail with `os error 1392` when executing freshly built scripts,

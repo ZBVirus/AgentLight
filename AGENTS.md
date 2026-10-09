@@ -86,8 +86,10 @@ In-container `npm install` needs `--include=dev` (`NODE_ENV=production` is set),
 and Playwright's Chromium cannot launch (missing system libs): run the jsdom
 suite in-container, and Playwright/CI and the Windows GUI suite elsewhere. The
 Windows GUI suite (Tauri/WebView2, Session 1 + PsExec) is in
-`tests/windows/README.md`; the `windows-sandbox` skill covers the sandbox
-mechanics (build on the local disk, ephemeral vs persistent, `os error 1392`).
+`tests/windows/README.md`; `tests/windows/build-local.ps1` provisions the sandbox
+toolchain automatically (`tests/windows/setup-toolchain.ps1`), and the
+`windows-sandbox` skill covers the sandbox mechanics (build on the local disk,
+ephemeral vs persistent, `os error 1392`).
 
 The GUI does **not** compile on a bare Linux box (needs `webkit2gtk`/glib); CI
 builds it on `windows-latest`. `agentlight-core` must keep compiling and testing
