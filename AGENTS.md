@@ -37,10 +37,15 @@ Read in this order: `README.md` (product + configuration), `docs/STATUS.md`
   geometry/resize, desktop toasts, alarm sound. No state semantics live here.
 - `dist/` — static HTML/CSS/JS frontend. No bundler, no Node. Tauri
   `withGlobalTauri` exposes `window.__TAURI__`; all IO goes through Rust commands.
-- `plugins/opencode/` — the opencode producer plugin (`agentlight.js` + node
-  tests). It is an event-bus observer: it only reports, never changes opencode.
+- `plugins/opencode/` — the opencode producer plugin (`agentlight.js`; tests in
+  `tests/plugin/`). It is an event-bus observer: it only reports, never changes
+  opencode.
+- `tests/` — app-level suites: `plugin/`, `frontend/` (jsdom), `playwright/`,
+  `windows/` (native harness + WebView2 CDP), plus the `run-linux.sh` /
+  `run-windows.ps1` runners. See `tests/README.md`.
 - `docs/` — the contract/design/status docs listed above.
-- `scripts/make_icons.py` — regenerates `src-tauri/icons/` with no deps.
+- `scripts/make_icons.py`, `scripts/make_alarm.py` — regenerate the icons and the
+  bundled default alarm with no deps.
 
 ## Architecture in one paragraph
 
