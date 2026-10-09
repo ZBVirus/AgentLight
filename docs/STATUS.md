@@ -123,10 +123,10 @@ What each adds:
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
 | Server end-to-end (healthz, ingest, tombstone, URL template) | Linux | green |
-| Playwright (frontend + hub web client) | CI `ubuntu-latest`; in-sandbox via CDP | green |
+| Playwright (frontend + hub web client) | CI `ubuntu-latest` | green |
 | Windows build (app + server) | GitHub Actions `windows-latest`; also built locally in the Windows Sandbox | green |
 | Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `tests/windows/ui-harness.ps1` | green (2026-10-09) |
-| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating) | Windows Sandbox, Playwright over WebView2 CDP | green 14/14 (2026-10-09) |
+| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating, not resizable) | CI `windows-latest` (`windows-gui`) and Windows Sandbox (`tests/windows/e2e-cdp.js`) | green 18/18 (2026-10-09) |
 | Toast actually rendered (header "AgentLight") | Windows desktop | AUMID registry entry verified; rendering still needs a human |
 
 ## Building a test exe
