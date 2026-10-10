@@ -37,8 +37,9 @@ Read in this order: `README.md` (product + configuration), `docs/STATUS.md`
   geometry/resize, desktop toasts, alarm sound. No state semantics live here.
 - `dist/` — static HTML/CSS/JS frontend. No bundler, no Node. Tauri
   `withGlobalTauri` exposes `window.__TAURI__`; all IO goes through Rust commands.
-- `plugins/opencode/` — the opencode producer plugin (`agentlight.js`; tests in
-  `tests/plugin/`). It is an event-bus observer: it only reports, never changes
+- `plugins/opencode/` — the opencode producer plugins: `agentlight.js` for the
+  OpenCode V1 plugin API and `agentlight-v2.js` for the V2 API (tests in
+  `tests/plugin/`). Both are event-bus observers: they only report, never change
   opencode.
 - `tests/` — app-level suites: `plugin/`, `frontend/` (jsdom), `playwright/`,
   `windows/` (native harness + WebView2 CDP), plus the `run-linux.sh` /

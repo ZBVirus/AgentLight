@@ -89,20 +89,33 @@ leak the secret into the process list and shell history.
 
 ## 3. Reference opencode plugin
 
-[`plugins/opencode/agentlight.js`](../plugins/opencode/agentlight.js) is a real
-plugin for the documented [opencode plugin API](https://opencode.ai/docs/plugins).
-It subscribes to the event bus and forwards status with `fetch`, coalescing
-bursts per session. It is a reference: it was written against the documented API
-and event names and has since been validated against a live opencode build in
-this repository. Other versions may rename events, so adapt the `handleEvent`
-switch if your version's names or payloads differ.
+AgentLight ships two reference plugins, one per OpenCode plugin API generation:
 
-Install it by copying the file into a plugin directory opencode loads at
-startup:
+| OpenCode | File | API |
+|---|---|---|
+| **V1** | [`plugins/opencode/agentlight.js`](../plugins/opencode/agentlight.js) | named function export returning a hooks object; events carry `event.properties` |
+| **V2** | [`plugins/opencode/agentlight-v2.js`](../plugins/opencode/agentlight-v2.js) | default export with `id` + `setup(ctx)`; events carry `event.data` |
+
+Both subscribe to opencode's event bus and forward status with `fetch`,
+coalescing bursts per session. They are references: each was written against its
+documented API and event names, and the V1 plugin has been validated against a
+live opencode V1 build. V2 does **not** run V1 plugin implementations — the
+server logs `Plugin must export a default definition with an id and an effect or
+setup function` for the V1 file — so install the file that matches the OpenCode
+major version you run. Do not copy both into one plugin directory; V2 attempts
+to load every file it discovers and logs a warning for the one that does not
+match.
+
+Install the matching file by copying it into a plugin directory opencode loads
+at startup:
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
-cp plugins/opencode/agentlight.js ~/.config/opencode/plugins/
+
+# OpenCode V1:
+cp plugins/opencode/agentlight.js    ~/.config/opencode/plugins/agentlight.js
+# OpenCode V2:
+cp plugins/opencode/agentlight-v2.js ~/.config/opencode/plugins/agentlight.js
 # project-local instead: .opencode/plugins/agentlight.js
 ```
 
@@ -156,9 +169,9 @@ a `url`, which only the events path populates; file-source sessions have none.
 The plugin logs one line at startup (`agentlight plugin <version> started`,
 with the producer, hub, heartbeat, and URL template) to opencode's logs. The
 plugin file is **copied** into opencode's plugin directory, so after updating
-this repo, re-copy `plugins/opencode/agentlight.js` or the running copy stays
-stale — the startup line is the quickest way to confirm which version is
-loaded.
+this repo, re-copy the matching `plugins/opencode/agentlight*.js` or the running
+copy stays stale — the startup line is the quickest way to confirm which version
+is loaded (`agentlight-v2.js` logs `(v2)`).
 
 `AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
 startup, the plugin spawns that binary detached, waits a few seconds for health,
@@ -172,17 +185,28 @@ Mapping (opencode → AgentLight):
 | `session.status` `busy` / `retry` | `active` (working) |
 | `session.status` `idle`, `session.idle` (main session) | `inactive` (paused) |
 | `session.status` `idle`, `session.idle` (subagent, has `parentID`) | `done` |
-| `permission.asked` / `permission.updated` | `needs_help` (waiting on you) |
-| `permission.replied` | `active` (resumes) |
-| `session.error` | `needs_help` |
+| `permission.asked` / `permission.replied` | `needs_help` / `active` |
 | `session.deleted` | `done` |
+| V1 only: `permission.updated` | `needs_help` (waiting on you) |
+| V1 only: `session.error` | `needs_help` |
+| V2 only: `session.execution.started` | `active` |
+| V2 only: `session.execution.failed` | `needs_help` |
+| V2 only: `session.execution.succeeded` / `.interrupted` | idle path (`done` for a subagent, `inactive` for a main session) |
+
+The V1 plugin reads event payloads from `event.properties`; the V2 plugin reads
+them from `event.data`. `session.created` carries `parentID` and `title` (V1
+under `properties.info`; V2 under `data` and `location.directory`), and a
+`session.renamed` event updates the display name. The V2 plugin also treats
+`session.execution.*` as an additional signal around a turn; `session.status` /
+`session.idle` remain the authoritative idle transition.
 
 A finished subagent never emits `session.deleted`; it only goes idle. The plugin
 therefore reports idle on a session that has a `parentID` as `done`, so "Clear
 done" can drop it, while a top-level idle session stays `inactive`. An idle
-event while a permission is still pending stays `needs_help`. This mapping is
-covered by `tests/plugin/agentlight.test.js` (run `node --test
-tests/plugin/agentlight.test.js`).
+event while a permission is still pending stays `needs_help`. Both mappings are
+covered by `tests/plugin/agentlight.test.js` (V1) and
+`tests/plugin/agentlight-v2.test.js` (V2); run both with `node --test
+tests/plugin/`.
 
 `name` and `project_path` come from the session (`title`, `directory`);
 `harness` is `opencode` and `last_updated` is stamped at send time. Transient

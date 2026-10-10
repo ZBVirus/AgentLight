@@ -5,7 +5,7 @@ All app-level test suites live here. Rust unit/integration tests stay in
 
 | Suite | Needs | Run |
 |-------|-------|-----|
-| `plugin/` | Node only | `node --test tests/plugin/agentlight.test.js` |
+| `plugin/` | Node only | `node --test tests/plugin/` |
 | `frontend/` | Node + jsdom | `cd tests/frontend && npm install --include=dev && node --test` |
 | `playwright/` | Node + Chromium | `cd tests/playwright && npm install --include=dev && npx playwright install chromium && npx playwright test` |
 | `windows/` | Windows + WebView2 (interactive desktop for the harness) | `powershell -File tests\run-windows.ps1` |

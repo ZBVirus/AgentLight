@@ -47,7 +47,7 @@ jobs:
           node-version: "20"
 
       - name: Test plugin
-        run: node --test tests/plugin/agentlight.test.js
+        run: node --test tests/plugin/
 
   # Frontend behaviour in jsdom: no browser, so it runs anywhere Node does.
   frontend:

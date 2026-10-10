@@ -106,8 +106,10 @@ producer side ships two pieces:
 
 - `agentlight-hook` — a CLI that reads a `SessionEvent` (or a batch) from stdin
   or `--json` and POSTs it to `POST /api/v1/ingest`.
-- A reference **opencode plugin**, validated against a live opencode build, that
-  forwards `session` / `tool` / `permission` events to the hub.
+- Reference **opencode plugins**, one per OpenCode plugin API generation (V1
+  and V2), that forward `session` / `tool` / `permission` events to the hub.
+  The V1 plugin is validated against a live opencode build; the V2 plugin is
+  covered by the same Node test suite against the V2 event shape.
 
 ```bash
 export AGENTLIGHT_SOURCE=events AGENTLIGHT_TOKEN=secret

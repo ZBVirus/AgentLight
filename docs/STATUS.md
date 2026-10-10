@@ -143,7 +143,7 @@ history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
 | `cargo test` (core 72, source-events 18, server 42, hub-client 21) | Linux | green |
-| `node --test tests/plugin/agentlight.test.js` (20) | Linux | green |
+| `node --test tests/plugin/` (44: V1 20 + V2 24) | Linux | green |
 | `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
@@ -180,7 +180,8 @@ these land under `C:\SandboxOutput\build\`.
 
 ## Producer environment variables
 
-Read by the opencode plugin (`plugins/opencode/agentlight.js`):
+Read by the opencode plugins (`plugins/opencode/agentlight.js` for V1,
+`plugins/opencode/agentlight-v2.js` for V2):
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

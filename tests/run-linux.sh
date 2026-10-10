@@ -41,7 +41,7 @@ step "cargo test" cargo test \
 
 report ""
 report "== Frontend / plugin =="
-step "plugin node tests" node --test tests/plugin/agentlight.test.js
+step "plugin node tests" node --test tests/plugin/
 js_ok=1
 while IFS= read -r f; do
   node --check "$f" >>"$REPORT" 2>&1 || js_ok=0

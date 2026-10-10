@@ -1,18 +1,24 @@
-// AgentLight opencode plugin (reference implementation) — OpenCode V1.
+// AgentLight opencode plugin, OpenCode V2 edition.
 //
-// Forwards opencode session state to an AgentLight hub running in events mode
-// (`AGENTLIGHT_SOURCE=events`). It is an event-bus observer: it never changes
-// opencode behavior, it only reports.
+// The V2 counterpart of `agentlight.js` (which targets the OpenCode V1 plugin
+// API). V1 plugin implementations do not run in V2: V2 loads a default export
+// with an `id` and a `setup(ctx)` function, subscribes to events through
+// `ctx.event.subscribe()`, and reads event payloads from `event.data` (V1 used
+// `event.properties`). This file keeps the same reporting behavior and hub
+// contract as the V1 plugin; the mapping table below is the only difference.
 //
-// This file targets the OpenCode V1 plugin API (`@opencode-ai/plugin`: a named
-// function export that returns a string-keyed hooks object, with event payloads
-// under `event.properties`). OpenCode V2 does not run V1 plugin implementations
-// and will log `Plugin must export a default definition...` for this file, so
-// V2 users install the sibling `agentlight-v2.js` instead.
+// Install (OpenCode V2): copy this file to `.opencode/plugins/agentlight.js`
+// (project) or `~/.config/opencode/plugins/agentlight.js` (global). V2 discovers
+// direct `.js`/`.ts` files and package directories under `.opencode/plugins/`.
+// Do not also copy the V1 `agentlight.js` into the same directory: V2 logs a
+// load warning for it because it has no V2 default export. Keep one or the
+// other.
 //
-// Install (V1): copy this file to `.opencode/plugins/agentlight.js` (project) or
-// `~/.config/opencode/plugins/agentlight.js` (global). opencode loads any
-// `*.js`/`*.ts` in those directories at startup.
+// The default export is the same shape `Plugin.define({ id, setup })` from
+// `@opencode/plugin` produces (that helper is an identity function for Promise
+// plugins). Inlining it keeps this file dependency-free for a hand-copy install
+// and lets the Node test harness import and drive it without an OpenCode
+// runtime.
 //
 // Environment (read from the opencode process):
 //   AGENTLIGHT_HUB_URL       Hub base URL. Default http://127.0.0.1:8787
@@ -49,15 +55,18 @@
 //                            the server on exit, and a failed start is logged,
 //                            never thrown.
 //
-// Mapping (opencode -> AgentLight `status`):
-//   session.status busy / retry      -> active      (working)
+// Mapping (OpenCode V2 -> AgentLight `status`):
+//   session.status busy / retry           -> active      (working)
 //   session.status idle, session.idle
-//     main session                   -> inactive    (paused, waiting on you)
-//     subagent (has a parentID)      -> done        (it has no more turns)
-//   permission.asked / .updated      -> needs_help  (waiting on you)
-//   permission.replied               -> active      (you answered, it resumes)
-//   session.error                    -> needs_help
-//   session.deleted                  -> done
+//     main session                        -> inactive    (paused, waiting on you)
+//     subagent (has a parentID)           -> done        (it has no more turns)
+//   session.execution.started             -> active
+//   session.execution.failed              -> needs_help
+//   session.execution.succeeded/          -> idle path   (done for a subagent,
+//     .interrupted                                        inactive for a main)
+//   permission.asked                      -> needs_help  (waiting on you)
+//   permission.replied                    -> active      (you answered, it resumes)
+//   session.deleted                       -> done
 //
 // A finished subagent does not emit `session.deleted`; it only goes idle, so
 // idle on a tool-spawned child session is reported as `done`. An idle event
@@ -76,61 +85,71 @@
 // starting or idle instance cannot wipe the hub. The snapshot carries the live
 // set: every session that is not `done`, plus the newest five `done` sessions
 // by update time.
-//
-// NOTE: this targets the documented V1 plugin API and the event names in
-// `@opencode-ai/sdk` at the time of writing, and has been validated against a
-// live opencode v1 build. The V2 sibling `agentlight-v2.js` covers the V2 event
-// names and the `event.data` payload; keep the two in sync.
 
 import { spawn as nodeSpawn } from "node:child_process";
 import os from "node:os";
 
-const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
+export const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 // Bumped when an operator must re-copy the plugin to get a behavior fix. The
 // copy is manual, so a stale file is a common failure mode; the startup log
 // below makes the installed version visible in opencode's logs.
-const PLUGIN_VERSION = "0.5.0-dev";
+export const PLUGIN_VERSION = "0.6.0-dev";
 const COALESCE_MS = 150;
 const DEFAULT_HEARTBEAT_MS = 30000;
 const MAX_DONE_SESSIONS = 5;
 const HARNESS = "opencode";
-const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1000;
-const DEFAULT_HEALTH_POLL_INTERVAL_MS = 250;
-const DEFAULT_HEALTH_POLL_TIMEOUT_MS = 5000;
+export const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1000;
+export const DEFAULT_HEALTH_POLL_INTERVAL_MS = 250;
+export const DEFAULT_HEALTH_POLL_TIMEOUT_MS = 5000;
 
-export const AgentLightPlugin = async (
-  { directory, client },
-  { spawn = nodeSpawn, fetch = globalThis.fetch, timing = {} } = {},
-) => {
-  const hubUrl = (process.env.AGENTLIGHT_HUB_URL || DEFAULT_HUB_URL).replace(/\/+$/, "");
-  const token = process.env.AGENTLIGHT_TOKEN || "";
+// Same shape as `Plugin.define` from `@opencode/plugin`. Kept local so the file
+// has no import that only an OpenCode runtime can resolve.
+const define = (plugin) => plugin;
+
+// Build the engine for one loaded plugin instance. All OpenCode access is
+// injected so the same code runs under `setup(ctx)` and under the Node test
+// harness. Returns the pieces the caller wires into OpenCode (`report` for the
+// tool hooks, `dispose` for cleanup) plus `handleEvent` for tests.
+export const createAgentLightV2 = async ({
+  directory,
+  getSession,
+  subscribe,
+  log,
+  opencodeVersion,
+  spawn = nodeSpawn,
+  fetch: fetchImpl = globalThis.fetch,
+  timing = {},
+  env = process.env,
+}) => {
+  const hubUrl = (env.AGENTLIGHT_HUB_URL || DEFAULT_HUB_URL).replace(/\/+$/, "");
+  const token = env.AGENTLIGHT_TOKEN || "";
   // Stable per project and host, so each opencode instance's snapshot prunes
   // only its own sessions.
   const producer =
-    (process.env.AGENTLIGHT_PRODUCER || "").trim() || `opencode:${os.hostname()}:${directory}`;
+    (env.AGENTLIGHT_PRODUCER || "").trim() || `opencode:${os.hostname()}:${directory}`;
   const ingestUrl = `${hubUrl}/api/v1/ingest`;
-  const parsedHeartbeat = Number.parseInt(process.env.AGENTLIGHT_HEARTBEAT_MS ?? "", 10);
+  const parsedHeartbeat = Number.parseInt(env.AGENTLIGHT_HEARTBEAT_MS ?? "", 10);
   const heartbeatMs = Number.isNaN(parsedHeartbeat)
     ? DEFAULT_HEARTBEAT_MS
     : Math.max(0, parsedHeartbeat);
 
-  const autostartBin = (process.env.AGENTLIGHT_AUTOSTART_BIN || "").trim();
+  const autostartBin = (env.AGENTLIGHT_AUTOSTART_BIN || "").trim();
   // Best-effort session deep link. Unset uses opencode's usual web address so
   // the desktop's "Open" action works with no setup; set an explicit empty
   // value to disable it, or a custom template (with `{id}`) to override it.
-  const sessionUrlEnv = process.env.AGENTLIGHT_SESSION_URL_TEMPLATE;
+  const sessionUrlEnv = env.AGENTLIGHT_SESSION_URL_TEMPLATE;
   const sessionUrlTemplate =
     sessionUrlEnv === undefined
       ? "http://localhost:4096/session/{id}"
-      : sessionUrlEnv.trim();
+      : String(sessionUrlEnv).trim();
   const healthProbeTimeoutMs = timing.probeTimeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
   const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
 
-  // Capture fetch at load so a heartbeat from this instance keeps using the
-  // transport it started with (and cannot reach the network after a test or
-  // sidecar swaps globals).
-  const postFetch = typeof fetch === "function" ? fetch.bind(globalThis) : fetch;
+  // Capture fetch so a heartbeat from this instance keeps using the transport it
+  // started with (and cannot reach the network after a test or sidecar swaps
+  // globals).
+  const postFetch = typeof fetchImpl === "function" ? fetchImpl.bind(globalThis) : fetchImpl;
 
   // sessionID -> { name, projectPath, parentID, status, updatedAt }
   const sessions = new Map();
@@ -139,20 +158,11 @@ export const AgentLightPlugin = async (
   // sessionID -> waiting on a permission reply; idle must not mark it done.
   const awaitingPermission = new Set();
 
-  const log = async (level, message, extra) => {
-    try {
-      await client.app.log({
-        body: { service: "agentlight", level, message, extra },
-      });
-    } catch {
-      if (level === "error") console.error(`agentlight: ${message}`, extra || "");
-    }
-  };
-
   // One line to confirm which copy is loaded (the file is installed by hand).
-  log("info", `agentlight plugin ${PLUGIN_VERSION} started`, {
+  log("info", `plugin ${PLUGIN_VERSION} started (opencode v2)`, {
     producer,
     hub: hubUrl,
+    opencode: opencodeVersion,
     heartbeat_ms: heartbeatMs,
     session_url: sessionUrlTemplate || "disabled",
     autostart: autostartBin ? "enabled" : "disabled",
@@ -194,11 +204,11 @@ export const AgentLightPlugin = async (
       const child = spawn(autostartBin, [], {
         detached: true,
         stdio: "ignore",
-        env: process.env,
+        env,
       });
       if (child && typeof child.unref === "function") child.unref();
     } catch (error) {
-      await log("warn", "could not start AgentLight hub", {
+      log("warn", "could not start AgentLight hub", {
         bin: autostartBin,
         error: String(error && error.message ? error.message : error),
       });
@@ -210,7 +220,7 @@ export const AgentLightPlugin = async (
       await sleep(healthPollIntervalMs);
       if (await probeHealth()) return;
     }
-    await log("warn", "AgentLight hub did not become healthy after autostart", {
+    log("warn", "AgentLight hub did not become healthy after autostart", {
       bin: autostartBin,
       waited_ms: healthPollTimeoutMs,
     });
@@ -251,13 +261,13 @@ export const AgentLightPlugin = async (
       const response = await postFetch(ingestUrl, { method: "POST", headers, body });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        await log("warn", `hub rejected event for ${sessionID}`, {
+        log("warn", `hub rejected event for ${sessionID}`, {
           status: response.status,
           body: text.slice(0, 200),
         });
       }
     } catch (error) {
-      await log("error", `could not reach hub at ${hubUrl}`, {
+      log("error", `could not reach hub at ${hubUrl}`, {
         error: String(error && error.message ? error.message : error),
       });
     }
@@ -284,14 +294,21 @@ export const AgentLightPlugin = async (
     pending.set(sessionID, { event, timer });
   };
 
+  // V2 `session.created` carries the fields under `data`; `session.get` returns
+  // the same `Session.Info` fields at the top level. Accept either a
+  // `{ sessionID }` payload or a `{ id }` info object.
   const remember = (info) => {
-    if (!info || !info.id) return;
-    const known = sessions.get(info.id) || {};
-    sessions.set(info.id, {
+    if (!info) return;
+    const id = info.sessionID || info.id;
+    if (!id) return;
+    const known = sessions.get(id) || {};
+    const location = info.location || {};
+    sessions.set(id, {
       ...known,
-      name: info.title || null,
-      projectPath: info.directory || null,
-      parentID: info.parentID || null,
+      name: info.title !== undefined ? info.title : known.name || null,
+      projectPath:
+        (location && location.directory) || info.directory || known.projectPath || null,
+      parentID: info.parentID !== undefined ? info.parentID : known.parentID || null,
     });
   };
 
@@ -323,13 +340,13 @@ export const AgentLightPlugin = async (
       const response = await postFetch(ingestUrl, { method: "POST", headers, body });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        await log("warn", "hub rejected snapshot", {
+        log("warn", "hub rejected snapshot", {
           status: response.status,
           body: text.slice(0, 200),
         });
       }
     } catch (error) {
-      await log("error", `could not reach hub at ${hubUrl}`, {
+      log("error", `could not reach hub at ${hubUrl}`, {
         error: String(error && error.message ? error.message : error),
       });
     }
@@ -342,14 +359,14 @@ export const AgentLightPlugin = async (
     const known = sessions.get(sessionID);
     if (known) return Boolean(known.parentID);
     try {
-      const result = await client.session.get({ path: { id: sessionID } });
-      const info = result && result.data;
+      const result = await getSession(sessionID);
+      const info = result && result.data ? result.data : result;
       if (info) {
-        remember(info);
+        remember({ ...info, sessionID: info.id || sessionID });
         return Boolean(info.parentID);
       }
     } catch (error) {
-      await log("warn", `could not read session ${sessionID}`, {
+      log("warn", `could not read session ${sessionID}`, {
         error: String(error && error.message ? error.message : error),
       });
     }
@@ -366,20 +383,29 @@ export const AgentLightPlugin = async (
   };
 
   const handleEvent = async (event) => {
-    const props = event.properties || {};
+    if (!event || !event.type) return;
+    // V2 nests the payload under `data`; `properties` is kept as a fallback for
+    // a build that still emits the V1 shape.
+    const props = event.data || event.properties || {};
     switch (event.type) {
       case "session.created":
       case "session.updated":
-        remember(props.info);
+        remember(props.info || props);
+        break;
+      case "session.renamed":
+        if (props.sessionID && props.title !== undefined) {
+          const known = sessions.get(props.sessionID) || {};
+          sessions.set(props.sessionID, { ...known, name: props.title });
+        }
         break;
       case "session.deleted":
-        if (props.info) {
+        if (props.sessionID) {
+          awaitingPermission.delete(props.sessionID);
+          report(props.sessionID, "done");
+        } else if (props.info && props.info.id) {
           remember(props.info);
           awaitingPermission.delete(props.info.id);
           report(props.info.id, "done");
-        } else if (props.sessionID) {
-          awaitingPermission.delete(props.sessionID);
-          report(props.sessionID, "done");
         }
         break;
       case "session.status": {
@@ -394,10 +420,20 @@ export const AgentLightPlugin = async (
       case "session.idle":
         await reportIdle(props.sessionID);
         break;
+      case "session.execution.started":
+        report(props.sessionID, "active");
+        break;
+      case "session.execution.failed":
+        report(props.sessionID, "needs_help");
+        break;
+      case "session.execution.succeeded":
+      case "session.execution.interrupted":
+        await reportIdle(props.sessionID);
+        break;
+      // V1 name for a session-level error; kept for payload compatibility.
       case "session.error":
         report(props.sessionID, "needs_help");
         break;
-      // opencode's SDK has used both names for the "waiting for approval" event.
       case "permission.asked":
       case "permission.updated":
         if (props.sessionID) awaitingPermission.add(props.sessionID);
@@ -415,34 +451,83 @@ export const AgentLightPlugin = async (
   // One snapshot shortly after startup, so a hub that restarted (or missed our
   // events while it was down) resyncs to the current live set. Deferred a tick
   // so sessions created during startup land in the first snapshot.
-  setTimeout(() => {
+  const startupTimer = setTimeout(() => {
     sendSnapshot();
   }, 0);
+  if (startupTimer && typeof startupTimer.unref === "function") startupTimer.unref();
 
+  let heartbeat = null;
   if (heartbeatMs > 0) {
-    const heartbeat = setInterval(() => {
+    heartbeat = setInterval(() => {
       sendSnapshot();
     }, heartbeatMs);
     // Allow opencode to exit without waiting on the heartbeat.
     if (heartbeat && typeof heartbeat.unref === "function") heartbeat.unref();
   }
 
-  return {
-    event: async ({ event }) => {
+  // V2 delivers the public server event stream as an async iterable. Consume it
+  // in the background and abort it from `dispose` on unload.
+  const controller = new AbortController();
+  const subscription = (async () => {
+    const stream = subscribe({ signal: controller.signal });
+    for await (const event of stream) {
       try {
         await handleEvent(event);
       } catch (error) {
-        await log("error", "failed to handle opencode event", {
+        log("error", "failed to handle opencode event", {
           type: event && event.type,
           error: String(error && error.message ? error.message : error),
         });
       }
-    },
-    "tool.execute.before": async ({ sessionID }) => {
-      report(sessionID, "active");
-    },
-    "tool.execute.after": async ({ sessionID }) => {
-      report(sessionID, "active");
-    },
+    }
+  })();
+  subscription.catch((error) => {
+    if (!controller.signal.aborted) {
+      log("error", "event subscription ended", {
+        error: String(error && error.message ? error.message : error),
+      });
+    }
+  });
+
+  const dispose = () => {
+    controller.abort();
+    if (heartbeat) clearInterval(heartbeat);
+    clearTimeout(startupTimer);
+    for (const entry of pending.values()) clearTimeout(entry.timer);
+    pending.clear();
   };
+
+  return { report, handleEvent, snapshotEvents, dispose };
 };
+
+export default define({
+  id: "agentlight",
+  async setup(ctx) {
+    const log = (level, message, extra) => {
+      const detail = extra ? ` ${JSON.stringify(extra)}` : "";
+      const line = `agentlight: ${message}${detail}`;
+      if (level === "error" || level === "warn") console.error(line);
+      else console.log(line);
+    };
+
+    const instance = await createAgentLightV2({
+      directory: ctx.location && ctx.location.directory,
+      opencodeVersion: ctx.app && ctx.app.version,
+      getSession: (sessionID) => ctx.session.get({ sessionID }),
+      subscribe: (options) => ctx.event.subscribe(options),
+      log,
+    });
+
+    // Tool execution is a strong "the session is working" signal. V2 registers
+    // each hook on the tool domain instead of returning a string-keyed map.
+    await ctx.tool.hook("execute.before", (event) => {
+      instance.report(event && event.sessionID, "active");
+    });
+    await ctx.tool.hook("execute.after", (event) => {
+      instance.report(event && event.sessionID, "active");
+    });
+
+    // Cleanup runs when the plugin unloads (reload or shutdown).
+    return () => instance.dispose();
+  },
+});

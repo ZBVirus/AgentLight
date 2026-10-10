@@ -76,8 +76,11 @@ state directly. This skips `state.json` entirely. Two shapes:
 
 - **Push. Status: Done, validated live.** The plugin POSTs events to the hub's
   ingest endpoint. `EventPushSource`, `POST /api/v1/ingest`, `agentlight-hook`,
-  and a reference opencode plugin exist. The plugin has since been validated
-  against a live opencode build.
+  and reference opencode plugins exist: `plugins/opencode/agentlight.js` for
+  the V1 plugin API and `plugins/opencode/agentlight-v2.js` for the V2 API
+  (`setup(ctx)` + `ctx.event.subscribe()` + `event.data`). The V1 plugin has
+  been validated against a live opencode build; the V2 plugin is covered by the
+  Node test suite.
 - **Pull. Status: Planned.** The plugin exposes a small HTTP/SSE source endpoint
   the hub subscribes to.
 
