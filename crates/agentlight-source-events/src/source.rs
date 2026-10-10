@@ -471,6 +471,7 @@ fn normalize(source: &SourceId, event: &SessionEvent) -> Session {
     }
     session.last_updated = event.last_updated.clone().unwrap_or_default();
     session.is_done = event.status == Status::Done;
+    session.subagent = event.subagent;
     if let Some(url) = event.url.as_deref() {
         session = session.with_url(url);
     }
@@ -494,6 +495,7 @@ fn session_to_event(session: &Session, producer: Option<String>) -> SessionEvent
         last_updated: (!session.last_updated.is_empty()).then(|| session.last_updated.clone()),
         url: session.url.clone(),
         producer,
+        subagent: session.subagent,
     }
 }
 
@@ -534,6 +536,7 @@ mod tests {
             last_updated: None,
             url: None,
             producer: None,
+            subagent: false,
         }
     }
 
@@ -649,6 +652,7 @@ mod tests {
             last_updated: Some("2026-01-01T01:00:00Z".to_string()),
             url: None,
             producer: None,
+            subagent: false,
         }]);
 
         let snapshot = source.snapshot(at());
@@ -677,6 +681,7 @@ mod tests {
                 last_updated: Some("2026-01-01T01:00:00Z".to_string()),
                 url: None,
                 producer: Some("p1".to_string()),
+                subagent: false,
             },
             event("b", Status::Done),
         ]);

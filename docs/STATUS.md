@@ -142,8 +142,8 @@ history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
 |-------|-------|--------|
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
-| `cargo test` (core 85, source-events 18, server 42, hub-client 21) | Linux | green |
-| `node --test tests/plugin/` (48: V1 20 + V2 28) | Linux | green |
+| `cargo test` (core 89, source-events 18, server 42, hub-client 21) | Linux | green |
+| `node --test tests/plugin/` (49: V1 20 + V2 29) | Linux | green |
 | `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |

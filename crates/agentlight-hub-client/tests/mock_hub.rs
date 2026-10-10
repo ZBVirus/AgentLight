@@ -528,6 +528,7 @@ fn ingest_posts_events_and_parses_accepted() {
             last_updated: Some("2026-09-12T10:00:00Z".to_string()),
             url: None,
             producer: None,
+            subagent: false,
         },
         SessionEvent {
             session_id: "s2".to_string(),
@@ -538,6 +539,7 @@ fn ingest_posts_events_and_parses_accepted() {
             last_updated: None,
             url: None,
             producer: None,
+            subagent: false,
         },
     ];
 
@@ -578,6 +580,7 @@ fn ingest_snapshot_sets_mode_and_upsert_omits_it() {
         last_updated: None,
         url: None,
         producer: None,
+        subagent: false,
     };
 
     let accepted = client

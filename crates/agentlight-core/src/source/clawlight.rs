@@ -170,6 +170,7 @@ fn build_sessions(source: &SourceId, state: &HookState) -> Vec<Session> {
                 is_done: session.status == crate::state::Status::Done,
                 last_updated: session.last_updated.clone().unwrap_or_default(),
                 url: None,
+                subagent: false,
             }
         })
         .collect()

@@ -211,9 +211,11 @@ under `properties.info`; V2 under `data` and `location.directory`), and a
 the authoritative idle transition.
 
 A finished subagent never emits `session.deleted`; it only goes idle. The plugin
-therefore reports idle on a session that has a `parentID` as `done`, so "Clear
-done" can drop it, while a top-level idle session stays `inactive`. An idle
-event while a permission is still pending stays `needs_help`. Both mappings are
+therefore reports idle on a session that has a `parentID` as `done`, and tags it
+`subagent: true` on the wire. The desktop hides subagent rows by default and
+only fires "A session finishes" for main sessions; a subagent that needs help
+still surfaces. An idle event while a permission is still pending stays
+`needs_help`. Both mappings are
 covered by `tests/plugin/agentlight.test.js` (V1) and
 `tests/plugin/agentlight-v2.test.js` (V2); run both with `node --test
 tests/plugin/`.

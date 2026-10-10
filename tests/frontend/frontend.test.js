@@ -27,6 +27,7 @@ function baseConfig(overrides = {}) {
     mini_show_labels: false,
     poll_ms: 1500,
     show_done: false,
+    show_subagents: false,
     source_kind: "hub",
     hub_url: "http://127.0.0.1:8787",
     hub_token: null,
@@ -230,6 +231,19 @@ test("loading any_status selects every trigger in the row", async () => {
   assert.equal(byId("set-notification-needs-help").checked, true);
   assert.equal(byId("set-notification-done").checked, true);
   assert.equal(byId("set-notification-any").checked, true);
+});
+
+test("subagent visibility and the subagent-finished trigger save", async () => {
+  await boot({
+    config: baseConfig({ show_subagents: false, notifications: true, notification_trigger: [] }),
+  });
+  assert.equal(byId("set-show-subagents").checked, false);
+  byId("set-show-subagents").checked = true;
+  byId("set-notification-subagent").checked = true;
+  await settings.saveSettings();
+  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
+  assert.equal(saved.args.config.show_subagents, true);
+  assert.deepEqual(saved.args.config.notification_trigger, ["subagent_done"]);
 });
 
 test("session link setting populates, hides its base for producer mode, and saves", async () => {

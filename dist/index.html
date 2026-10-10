@@ -142,6 +142,10 @@
                     <span>A session finishes</span>
                   </label>
                   <label class="field inline">
+                    <input type="checkbox" id="set-notification-subagent" />
+                    <span>A subagent finishes</span>
+                  </label>
+                  <label class="field inline">
                     <input type="checkbox" id="set-notification-any" />
                     <span>Any status change</span>
                   </label>
@@ -155,6 +159,14 @@
                 <span>Show every done session</span>
               </label>
               <small class="hint">Off (default): the list keeps only the newest 5 finished sessions. On: every finished session is listed, however old.</small>
+            </div>
+
+            <div class="field">
+              <label class="field inline">
+                <input type="checkbox" id="set-show-subagents" />
+                <span>Show subagent sessions</span>
+              </label>
+              <small class="hint">Off (default): child sessions are hidden and silent. On: they appear and can notify. Either way, a subagent that needs help still turns the light red.</small>
             </div>
 
             <label class="field inline">
@@ -172,6 +184,10 @@
                   <label class="field inline">
                     <input type="checkbox" id="set-alarm-done" />
                     <span>A session finishes</span>
+                  </label>
+                  <label class="field inline">
+                    <input type="checkbox" id="set-alarm-subagent" />
+                    <span>A subagent finishes</span>
                   </label>
                   <label class="field inline">
                     <input type="checkbox" id="set-alarm-any" />

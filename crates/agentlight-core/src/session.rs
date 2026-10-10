@@ -30,6 +30,10 @@ pub struct DisplaySession {
     /// Optional deep link back to the session in its harness UI.
     #[serde(default)]
     pub url: Option<String>,
+    /// True for tool-spawned child sessions (subagents). Additive; older
+    /// payloads omit it and default to a main session.
+    #[serde(default)]
+    pub is_subagent: bool,
 }
 
 /// Short badge for a harness: `oc`, `cx`, `co`, …; `None` for Claude Code
@@ -99,6 +103,7 @@ pub fn load_sessions(
                 last_updated: session.last_updated.clone().unwrap_or_default(),
                 is_done: session.status == Status::Done,
                 url: None,
+                is_subagent: false,
             }
         })
         .collect();
@@ -147,6 +152,7 @@ pub fn display_session(model: &crate::source::Session) -> DisplaySession {
         last_updated: model.last_updated.clone(),
         is_done: model.is_done,
         url: model.url.clone(),
+        is_subagent: model.subagent,
     }
 }
 
@@ -188,7 +194,7 @@ pub fn build_session_link(
             // The v2 web UI keys a server by its origin, URL-safe base64 with
             // the padding stripped, e.g. `/server/<key>/session/<id>`.
             let base = base
-                .unwrap_or("http://127.0.0.1:49374")
+                .unwrap_or("http://localhost:4096")
                 .trim_end_matches('/');
             let key = base64_url(base.as_bytes());
             Some(format!("{base}/server/{key}/session/{session_id}"))
@@ -346,7 +352,7 @@ mod tests {
         let link = build_session_link(SessionLink::OpencodeV2, None, "ses_1", None, None).unwrap();
         assert_eq!(
             link,
-            "http://127.0.0.1:49374/server/aHR0cDovLzEyNy4wLjAuMTo0OTM3NA/session/ses_1"
+            "http://localhost:4096/server/aHR0cDovL2xvY2FsaG9zdDo0MDk2/session/ses_1"
         );
     }
 

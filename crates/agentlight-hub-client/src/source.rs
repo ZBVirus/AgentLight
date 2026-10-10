@@ -179,6 +179,7 @@ fn normalize(source: &SourceId, row: &DisplaySession) -> Session {
         is_done: row.is_done,
         last_updated: row.last_updated.clone(),
         url: row.url.clone(),
+        subagent: row.is_subagent,
     }
 }
 

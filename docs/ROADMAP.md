@@ -187,6 +187,11 @@ decide and prioritize later.
   expands/collapses within that monitor, preserving the left edge. A window
   exactly on the seam is therefore stable. Verified by unit tests on the
   pure geometry helpers in `src-tauri`.
+- **Subagent visibility. Done (v0.5 line).** Producers tag tool-spawned child
+  sessions `subagent: true`. The desktop hides them by default and only fires "A
+  session finishes" for main sessions, with an opt-in "Show subagent sessions"
+  and a separate "A subagent finishes" trigger. A subagent that needs help still
+  turns the light red so a prompt is never missed.
 - **Jump to a session in the opencode web UI. Done (v0.5 line, best-effort).**
   The detail view shows an "Open" action built from the app's **Session link**
   setting: OpenCode v2 by default (`<base>/server/<base64url(base)>/session/<id>`,

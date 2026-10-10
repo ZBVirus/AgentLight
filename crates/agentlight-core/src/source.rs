@@ -93,6 +93,9 @@ pub struct Session {
     /// Optional deep link back to the session in its harness UI, when the
     /// producer knows one.
     pub url: Option<String>,
+    /// True when the producer reported this as a tool-spawned child session
+    /// (a subagent). Drives default hiding and the finish trigger.
+    pub subagent: bool,
 }
 
 impl Session {
@@ -108,7 +111,13 @@ impl Session {
             is_done: status == Status::Done,
             last_updated: String::new(),
             url: None,
+            subagent: false,
         }
+    }
+
+    pub fn with_subagent(mut self, subagent: bool) -> Self {
+        self.subagent = subagent;
+        self
     }
 
     pub fn with_url(mut self, url: impl Into<String>) -> Self {

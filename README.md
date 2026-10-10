@@ -237,7 +237,7 @@ can be edited by hand.
 | `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
 | `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `producer` (use the URL the hub/plugin attached), or `off`. |
-| `session_link_base` | *(mode default)* | Base URL of the opencode web server for the v1/v2 modes (`http://127.0.0.1:49374` for v2, `http://localhost:4096` for v1). |
+| `session_link_base` | *(mode default)* | Base URL of the opencode web server for the v1/v2 modes (default `http://localhost:4096`). |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
@@ -245,10 +245,11 @@ can be edited by hand.
 | `mini_show_labels` | `false`         | Show labels beside the collapsed lights.           |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
+| `show_subagents` | `false`           | Show tool-spawned subagent sessions. Hidden ones stay silent, but a subagent that needs help still turns the light red. |
 | `notifications`  | `false`           | Desktop notification when a session hits a `notification_trigger`. |
-| `notification_trigger` | `["needs_help"]` | Any combination of `needs_help`, `done`, `any_status`; fires on the first match. |
+| `notification_trigger` | `["needs_help"]` | Any combination of `needs_help`, `done`, `subagent_done`, `any_status`; fires on the first match. |
 | `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
-| `alarm_trigger`  | `["needs_help"]`  | Any combination of `needs_help`, `done`, `any_status`; fires on the first match. |
+| `alarm_trigger`  | `["needs_help"]`  | Any combination of `needs_help`, `done`, `subagent_done`, `any_status`; fires on the first match. |
 | `alarm_sound`    | *(bundled chime)* | `.wav` file for the alarm; empty plays the bundled two-note chime through the Win32 sound API (no console window). |
 | `alarm_volume`   | `70`              | Alarm volume percent (`0`–`100`), applied by scaling the sound's samples. |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |

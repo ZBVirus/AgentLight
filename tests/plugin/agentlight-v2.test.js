@@ -537,6 +537,29 @@ test("a later empty title does not erase a learned name", async (t) => {
   assert.equal(event.name, "Real name");
 });
 
+test("a subagent session is tagged on the wire", async (t) => {
+  const h = await harness();
+  t.after(h.restore);
+
+  h.event("session.created", {
+    sessionID: "sub",
+    parentID: "main",
+    title: "Sub",
+    location: { directory: "/work/project" },
+  });
+  h.event("session.status", { sessionID: "sub", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+
+  const reported = h.calls.find((call) => call.event && call.event.session_id === "sub");
+  assert.ok(reported, "expected a reported event");
+  assert.equal(reported.event.subagent, true);
+
+  h.event("session.status", { sessionID: "main", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS);
+  const main = h.calls.find((call) => call.event && call.event.session_id === "main");
+  assert.equal(main.event.subagent, false);
+});
+
 test("debug mode logs event types and payload keys", async (t) => {
   const logs = [];
   const instance = await createAgentLightV2({

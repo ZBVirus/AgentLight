@@ -29,4 +29,8 @@ pub struct SessionEvent {
     /// each other. Absent means legacy global pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub producer: Option<String>,
+    /// True when the producer reports a tool-spawned child session (a
+    /// subagent). Additive; absent means a main session.
+    #[serde(default)]
+    pub subagent: bool,
 }

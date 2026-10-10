@@ -85,6 +85,7 @@ export function populateSettings() {
   $("set-notifications").checked = !!config.notifications;
   setTriggers("notification", config.notification_trigger);
   $("set-show-done").checked = !!config.show_done;
+  $("set-show-subagents").checked = !!config.show_subagents;
   $("set-alarms-enabled").checked = !!config.alarms_enabled;
   setTriggers("alarm", config.alarm_trigger);
   $("set-alarm-sound").value = config.alarm_sound || "";
@@ -347,11 +348,13 @@ const TRIGGER_IDS = {
   notification: {
     needsHelp: "set-notification-needs-help",
     done: "set-notification-done",
+    subagent: "set-notification-subagent",
     any: "set-notification-any",
   },
   alarm: {
     needsHelp: "set-alarm-needs-help",
     done: "set-alarm-done",
+    subagent: "set-alarm-subagent",
     any: "set-alarm-any",
   },
 };
@@ -369,11 +372,12 @@ function triggerValues(value) {
 function setTriggers(kind, value) {
   let selected = triggerValues(value);
   if (selected.includes("any_status")) {
-    selected = ["needs_help", "done", "any_status"];
+    selected = ["needs_help", "done", "subagent_done", "any_status"];
   }
   const ids = TRIGGER_IDS[kind];
   $(ids.needsHelp).checked = selected.includes("needs_help");
   $(ids.done).checked = selected.includes("done");
+  $(ids.subagent).checked = selected.includes("subagent_done");
   $(ids.any).checked = selected.includes("any_status");
 }
 
@@ -384,6 +388,7 @@ function syncAnyTrigger(kind) {
   const on = $(ids.any).checked;
   $(ids.needsHelp).checked = on;
   $(ids.done).checked = on;
+  $(ids.subagent).checked = on;
 }
 
 function readTriggers(kind) {
@@ -391,6 +396,7 @@ function readTriggers(kind) {
   const selected = [];
   if ($(ids.needsHelp).checked) selected.push("needs_help");
   if ($(ids.done).checked) selected.push("done");
+  if ($(ids.subagent).checked) selected.push("subagent_done");
   if ($(ids.any).checked) selected.push("any_status");
   return selected;
 }
@@ -414,6 +420,7 @@ export async function saveSettings(event) {
     notifications: $("set-notifications").checked,
     notification_trigger: readTriggers("notification"),
     show_done: $("set-show-done").checked,
+    show_subagents: $("set-show-subagents").checked,
     alarms_enabled: $("set-alarms-enabled").checked,
     alarm_trigger: readTriggers("alarm"),
     alarm_sound: $("set-alarm-sound").value.trim() || null,

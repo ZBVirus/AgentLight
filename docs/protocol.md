@@ -323,6 +323,8 @@ Each event:
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
 | `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means the batch only upserts and never prunes. |
+| `subagent` | bool | Optional, additive. `true` marks a tool-spawned child session. Hidden and silenced by default; the desktop's "A session finishes" trigger ignores it (use `subagent_done`). |
+| `url` | string \| null | Optional deep link back to the session in its harness UI. |
 
 `mode` is optional and selects how the batch is applied: `"upsert"` (default)
 merges keyed by `session_id`, while `"snapshot"` upserts the batch and then

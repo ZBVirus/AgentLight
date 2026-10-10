@@ -53,6 +53,8 @@ pub enum AlarmTrigger {
     NeedsHelp,
     /// A session becomes `done`.
     Done,
+    /// A subagent (a child session) becomes `done`.
+    SubagentDone,
     /// Any status change after the session is first seen.
     AnyStatus,
 }
@@ -140,6 +142,9 @@ pub struct Config {
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
     pub show_done: bool,
+    /// Show tool-spawned subagent sessions. Off by default: a subagent reports
+    /// through its parent, but one that needs help still surfaces.
+    pub show_subagents: bool,
     /// Where session state comes from: `file` (default) or `hub`.
     pub source_kind: SourceKind,
     /// Base URL of the remote hub, e.g. `http://127.0.0.1:8787`. Used only when
@@ -178,8 +183,8 @@ pub struct Config {
     /// How the detail view builds a session's "Open" link.
     pub session_link: SessionLink,
     /// Base server URL used to build the link. `None` uses the default for the
-    /// selected mode (`http://127.0.0.1:49374` for V2, `http://localhost:4096`
-    /// for V1). Ignored in the `producer` and `off` modes.
+    /// selected mode (`http://localhost:4096` for V1 and V2). Ignored in the
+    /// `producer` and `off` modes.
     pub session_link_base: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
@@ -211,6 +216,7 @@ impl Default for Config {
             mini_show_labels: false,
             poll_ms: 1500,
             show_done: false,
+            show_subagents: false,
             source_kind: SourceKind::File,
             hub_url: DEFAULT_HUB_URL.to_string(),
             hub_token: None,

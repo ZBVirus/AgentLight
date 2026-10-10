@@ -350,6 +350,7 @@ impl Inner {
             .iter()
             .flat_map(|source| source.sessions.iter().cloned())
             .collect();
+        sessions.retain(|session| session_visible(&config, session));
         sessions.sort_by(compare_sessions);
 
         let counts = count_models(&sessions);
@@ -395,12 +396,18 @@ impl Inner {
         let models: Vec<&Session> = sources
             .iter()
             .flat_map(|source| source.sessions.iter())
+            .filter(|model| session_visible(&config, model))
             .collect();
 
         let mut notifications = Vec::new();
         for model in &models {
             let before = previous.get(&model.key).copied();
-            if triggers_fire(&config.notification_trigger, model.status, before) {
+            if triggers_fire(
+                &config.notification_trigger,
+                model.status,
+                before,
+                model.subagent,
+            ) {
                 notifications.push(attention_notification(model));
             }
         }
@@ -422,13 +429,14 @@ impl Inner {
         let models: Vec<&Session> = sources
             .iter()
             .flat_map(|source| source.sessions.iter())
+            .filter(|model| session_visible(&config, model))
             .collect();
         let mut previous = self.alarm_previous.lock().unwrap();
 
         let mut alarms = Vec::new();
         for model in &models {
             let before = previous.get(&model.key).copied();
-            if triggers_fire(&config.alarm_trigger, model.status, before) {
+            if triggers_fire(&config.alarm_trigger, model.status, before, model.subagent) {
                 alarms.push(attention_notification(model));
             }
         }
@@ -441,16 +449,35 @@ impl Inner {
     }
 }
 
+/// Whether a session belongs in the rendered view and the attention edges.
+///
+/// A subagent is hidden unless the user opts in, but one that needs help always
+/// surfaces so a prompt is never missed.
+fn session_visible(config: &Config, model: &Session) -> bool {
+    config.show_subagents || !model.subagent || model.status == Status::NeedsHelp
+}
+
 /// Whether a status transition fires an attention edge for any of `triggers`.
 ///
 /// `before` is the status last seen for the session; a newly seen session has
-/// `None`. `NeedsHelp`/`Done` fire on entering the status even when first seen;
-/// `AnyStatus` only fires on an actual change, so a first sight does not fire.
-/// An empty set never fires.
-fn triggers_fire(triggers: &[AlarmTrigger], status: Status, before: Option<Status>) -> bool {
+/// `None`. `NeedsHelp` fires on entering the status even when first seen; `Done`
+/// and `SubagentDone` split on whether the session is a subagent; `AnyStatus`
+/// only fires on an actual change, so a first sight does not fire. An empty set
+/// never fires.
+fn triggers_fire(
+    triggers: &[AlarmTrigger],
+    status: Status,
+    before: Option<Status>,
+    is_subagent: bool,
+) -> bool {
     triggers.iter().any(|trigger| match trigger {
         AlarmTrigger::NeedsHelp => status == Status::NeedsHelp && before != Some(Status::NeedsHelp),
-        AlarmTrigger::Done => status == Status::Done && before != Some(Status::Done),
+        AlarmTrigger::Done => {
+            status == Status::Done && before != Some(Status::Done) && !is_subagent
+        }
+        AlarmTrigger::SubagentDone => {
+            status == Status::Done && before != Some(Status::Done) && is_subagent
+        }
         AlarmTrigger::AnyStatus => before.is_some_and(|before| before != status),
     })
 }
@@ -541,6 +568,11 @@ mod tests {
             status,
         )
         .with_updated_at(at(hour))
+    }
+
+    /// A tool-spawned child session (subagent).
+    fn subagent_frame(source: &str, id: &str, status: Status, hour: u32) -> Session {
+        frame(source, id, status, hour).with_subagent(true)
     }
 
     #[test]
@@ -755,6 +787,114 @@ mod tests {
             DONE_RETENTION
         );
         assert_eq!(snapshot.sessions.iter().filter(|s| !s.is_done).count(), 1);
+    }
+
+    #[test]
+    fn subagents_are_hidden_by_default_but_needs_help_surfaces() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::Active, 1),
+        ]));
+        engine.add_source(source.clone());
+        let snapshot = engine.snapshot(at(2));
+        assert_eq!(snapshot.counts.total, 1);
+        assert_eq!(snapshot.sessions.len(), 1);
+
+        source.set_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::NeedsHelp, 2),
+        ]);
+        let snapshot = engine.snapshot(at(3));
+        assert_eq!(snapshot.aggregate, "red");
+        assert!(snapshot.sessions.iter().any(|s| s.is_subagent));
+    }
+
+    #[test]
+    fn showing_subagents_includes_them() {
+        let config = Config {
+            show_subagents: true,
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(FixtureSource::new("a").with_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::Active, 1),
+        ])));
+        assert_eq!(engine.snapshot(at(2)).counts.total, 2);
+    }
+
+    #[test]
+    fn done_trigger_skips_subagents_but_subagent_done_fires() {
+        let config = Config {
+            notifications: true,
+            show_subagents: true,
+            notification_trigger: vec![AlarmTrigger::Done],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![subagent_frame(
+                "a",
+                "sub",
+                Status::Done,
+                1,
+            )]),
+        ));
+        engine.refresh();
+        assert!(
+            notifications.lock().unwrap().is_empty(),
+            "Done must skip a subagent"
+        );
+
+        let sub_config = Config {
+            notifications: true,
+            show_subagents: true,
+            notification_trigger: vec![AlarmTrigger::SubagentDone],
+            ..Config::default()
+        };
+        let engine2 = Engine::new(sub_config);
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let captured2 = notes.clone();
+        engine2.subscribe(Arc::new(move |update: Update| {
+            captured2.lock().unwrap().extend(update.notifications);
+        }));
+        engine2.add_source(Arc::new(FixtureSource::new("a").with_sessions(vec![
+            subagent_frame("a", "sub", Status::Done, 1),
+            frame("a", "main", Status::Done, 1),
+        ])));
+        engine2.refresh();
+        let fired = notes.lock().unwrap();
+        assert_eq!(fired.len(), 1, "only the subagent fires");
+        assert_eq!(fired[0].key.session_id, "sub");
+    }
+
+    #[test]
+    fn hidden_subagent_completion_is_silent() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![
+                AlarmTrigger::AnyStatus,
+                AlarmTrigger::Done,
+                AlarmTrigger::SubagentDone,
+            ],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![subagent_frame(
+                "a",
+                "sub",
+                Status::Done,
+                1,
+            )]),
+        ));
+        assert!(engine.refresh().notifications.is_empty());
     }
 
     #[test]

@@ -253,6 +253,7 @@ export const createAgentLightV2 = async ({
       harness: HARNESS,
       last_updated: known.updatedAt || now(),
       producer,
+      subagent: Boolean(known.parentID),
     };
   };
 
