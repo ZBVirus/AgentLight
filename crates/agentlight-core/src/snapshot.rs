@@ -5,7 +5,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::session::{load_sessions, DisplaySession, DONE_RETENTION};
+use crate::session::{build_session_link, load_sessions, DisplaySession, DONE_RETENTION};
 use crate::state::{self, aggregate, reap_stale, HookState, Load, STALE_AFTER_HOURS};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -88,7 +88,17 @@ pub fn build_snapshot_at(
             reap_stale(&mut state, now, STALE_AFTER_HOURS);
             snap.counts = count(&state);
             snap.aggregate = aggregate(&state, config.yellow_mode).as_str().to_string();
-            snap.sessions = load_sessions(&state, config.show_done, DONE_RETENTION);
+            let mut rows = load_sessions(&state, config.show_done, DONE_RETENTION);
+            for row in rows.iter_mut() {
+                row.url = build_session_link(
+                    config.session_link,
+                    config.session_link_base.as_deref(),
+                    &row.session_id,
+                    row.harness.as_deref(),
+                    row.url.as_deref(),
+                );
+            }
+            snap.sessions = rows;
             snap.ok = true;
         }
         Load::Missing => {

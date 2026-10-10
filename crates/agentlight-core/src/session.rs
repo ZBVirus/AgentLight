@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::SessionLink;
 use crate::state::{HookState, Status};
 
 /// Number of newest `done` sessions kept when `show_done` is off. Matches
@@ -149,6 +150,73 @@ pub fn display_session(model: &crate::source::Session) -> DisplaySession {
     }
 }
 
+/// Build a session's "Open" URL from the configured link mode.
+///
+/// `producer_url` is the URL the source attached (the plugin or hub template);
+/// it is used only in [`SessionLink::Producer`] mode, so the app can follow the
+/// producer when asked while defaulting to its own OpenCode v2 link.
+pub fn build_session_link(
+    mode: SessionLink,
+    base: Option<&str>,
+    session_id: &str,
+    harness: Option<&str>,
+    producer_url: Option<&str>,
+) -> Option<String> {
+    if session_id.trim().is_empty() {
+        return None;
+    }
+    // A v1/v2 web link only makes sense for an opencode session; leave other
+    // harnesses (codex, copilot, claude) without one rather than open a dead URL.
+    let is_opencode = harness.is_none_or(|h| h.trim().eq_ignore_ascii_case("opencode"));
+    if !is_opencode && matches!(mode, SessionLink::OpencodeV1 | SessionLink::OpencodeV2) {
+        return None;
+    }
+    let base = base.map(str::trim).filter(|value| !value.is_empty());
+    match mode {
+        SessionLink::Off => None,
+        SessionLink::Producer => producer_url
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_string),
+        SessionLink::OpencodeV1 => {
+            let base = base
+                .unwrap_or("http://localhost:4096")
+                .trim_end_matches('/');
+            Some(format!("{base}/session/{session_id}"))
+        }
+        SessionLink::OpencodeV2 => {
+            // The v2 web UI keys a server by its origin, URL-safe base64 with
+            // the padding stripped, e.g. `/server/<key>/session/<id>`.
+            let base = base
+                .unwrap_or("http://127.0.0.1:49374")
+                .trim_end_matches('/');
+            let key = base64_url(base.as_bytes());
+            Some(format!("{base}/server/{key}/session/{session_id}"))
+        }
+    }
+}
+
+/// URL-safe base64 without padding, matching OpenCode v2's `serverKey`.
+fn base64_url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(n & 63) as usize] as char);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +339,87 @@ mod tests {
             display_session(&model).url.as_deref(),
             Some("http://localhost:4096/session/s1")
         );
+    }
+
+    #[test]
+    fn session_link_defaults_to_the_v2_route() {
+        let link = build_session_link(SessionLink::OpencodeV2, None, "ses_1", None, None).unwrap();
+        assert_eq!(
+            link,
+            "http://127.0.0.1:49374/server/aHR0cDovLzEyNy4wLjAuMTo0OTM3NA/session/ses_1"
+        );
+    }
+
+    #[test]
+    fn session_link_v1_uses_the_session_route() {
+        let link = build_session_link(SessionLink::OpencodeV1, None, "abc", None, None).unwrap();
+        assert_eq!(link, "http://localhost:4096/session/abc");
+    }
+
+    #[test]
+    fn session_link_honors_a_custom_base() {
+        let link = build_session_link(
+            SessionLink::OpencodeV2,
+            Some("http://localhost:49374/"),
+            "s1",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            link,
+            "http://localhost:49374/server/aHR0cDovL2xvY2FsaG9zdDo0OTM3NA/session/s1"
+        );
+    }
+
+    #[test]
+    fn session_link_producer_uses_the_attached_url() {
+        let link = build_session_link(
+            SessionLink::Producer,
+            None,
+            "s1",
+            None,
+            Some("http://opencode/session/s1"),
+        );
+        assert_eq!(link.as_deref(), Some("http://opencode/session/s1"));
+        assert_eq!(
+            build_session_link(SessionLink::Producer, None, "s1", None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn session_link_skips_non_opencode_harnesses() {
+        assert_eq!(
+            build_session_link(SessionLink::OpencodeV2, None, "s1", Some("claude"), None),
+            None
+        );
+        assert!(
+            build_session_link(SessionLink::OpencodeV2, None, "s1", Some("opencode"), None)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn session_link_off_and_empty_id_produce_nothing() {
+        assert_eq!(
+            build_session_link(SessionLink::Off, None, "s1", None, Some("http://x/1")),
+            None
+        );
+        assert_eq!(
+            build_session_link(SessionLink::OpencodeV2, None, "", None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn base64_url_is_unpadded_and_url_safe() {
+        assert_eq!(
+            base64_url(b"http://127.0.0.1:49374"),
+            "aHR0cDovLzEyNy4wLjAuMTo0OTM3NA"
+        );
+        // 0xfb 0xff would map to '+' and '/' in standard base64.
+        assert_eq!(base64_url(&[0xfb, 0xff]), "-_8");
     }
 
     #[test]

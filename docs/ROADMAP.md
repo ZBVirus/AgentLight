@@ -188,11 +188,13 @@ decide and prioritize later.
   exactly on the seam is therefore stable. Verified by unit tests on the
   pure geometry helpers in `src-tauri`.
 - **Jump to a session in the opencode web UI. Done (v0.5 line, best-effort).**
-  The plugin sets `url` from `AGENTLIGHT_SESSION_URL_TEMPLATE` (for example
-  `http://localhost:4096/session/{id}`), the wire carries it on the session row,
-  and the detail view shows an "Open" action. Exact browser window/tab focus is
-  still not possible from a native app; the browser decides whether to reuse or
-  open a tab. Full focus would need a browser extension or remote debugging.
+  The detail view shows an "Open" action built from the app's **Session link**
+  setting: OpenCode v2 by default (`<base>/server/<base64url(base)>/session/<id>`,
+  matching `opencode pair`), with `opencode_v1`, `producer` (the hub/plugin URL
+  from `AGENTLIGHT_SESSION_URL_TEMPLATE`), and `off` options. Exact browser
+  window/tab focus is still not possible from a native app; the browser decides
+  whether to reuse or open a tab. Full focus would need a browser extension or
+  remote debugging.
 - **Attention alarms and custom sounds. Done (v0.5 line).** `alarms_enabled`
   plays a sound on an alarm edge; `alarm_trigger` (and `notification_trigger`)
   accept **any combination** of `needs_help`, `done`, and `any_status`, and the

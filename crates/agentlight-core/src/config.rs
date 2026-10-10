@@ -62,6 +62,14 @@ fn default_triggers() -> Vec<AlarmTrigger> {
     vec![AlarmTrigger::NeedsHelp]
 }
 
+/// Default alarm volume, in percent. The bundled chime is mastered loud, so
+/// leave headroom instead of blasting at full scale.
+const DEFAULT_ALARM_VOLUME: u8 = 70;
+
+fn default_alarm_volume() -> u8 {
+    DEFAULT_ALARM_VOLUME
+}
+
 /// Accept either a single trigger or a list, so an older config that stored
 /// `"needs_help"` still loads now that the field is a set.
 fn one_or_many_triggers<'de, D>(deserializer: D) -> std::result::Result<Vec<AlarmTrigger>, D::Error>
@@ -78,6 +86,21 @@ where
         OneOrMany::One(trigger) => vec![trigger],
         OneOrMany::Many(triggers) => triggers,
     })
+}
+
+/// How the desktop builds the "Open session" link in the detail view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLink {
+    /// OpenCode v2 web UI (`opencode pair`). Default.
+    #[default]
+    OpencodeV2,
+    /// OpenCode v1 web UI (fixed `:4096`).
+    OpencodeV1,
+    /// Use the URL the producer or hub attached, if any.
+    Producer,
+    /// Never show an Open action.
+    Off,
 }
 
 /// Collapsed (mini) window layout.
@@ -148,6 +171,16 @@ pub struct Config {
     pub alarm_trigger: Vec<AlarmTrigger>,
     /// Custom sound file for alarms. `None` uses the system/default sound.
     pub alarm_sound: Option<String>,
+    /// Alarm playback volume as a percentage, 0-100. Applied by scaling the WAV
+    /// samples, so it affects only AgentLight's alarm, never other apps.
+    #[serde(default = "default_alarm_volume")]
+    pub alarm_volume: u8,
+    /// How the detail view builds a session's "Open" link.
+    pub session_link: SessionLink,
+    /// Base server URL used to build the link. `None` uses the default for the
+    /// selected mode (`http://127.0.0.1:49374` for V2, `http://localhost:4096`
+    /// for V1). Ignored in the `producer` and `off` modes.
+    pub session_link_base: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
     /// Serve the engine over HTTP on the LAN. Off by default.
@@ -186,6 +219,9 @@ impl Default for Config {
             alarms_enabled: false,
             alarm_trigger: default_triggers(),
             alarm_sound: None,
+            alarm_volume: DEFAULT_ALARM_VOLUME,
+            session_link: SessionLink::default(),
+            session_link_base: None,
             start_at_login: false,
             server_enabled: false,
             server_bind: DEFAULT_SERVER_BIND.to_string(),
@@ -213,6 +249,7 @@ impl Config {
     /// pathological watcher interval.
     pub fn sanitized(mut self) -> Self {
         self.poll_ms = self.poll_ms.clamp(250, 60_000);
+        self.alarm_volume = self.alarm_volume.min(100);
         for color in [
             &mut self.mini_red,
             &mut self.mini_orange,
@@ -246,6 +283,12 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .filter(|sound| !sound.is_empty())
+            .map(str::to_string);
+        self.session_link_base = self
+            .session_link_base
+            .as_deref()
+            .map(str::trim)
+            .filter(|base| !base.is_empty())
             .map(str::to_string);
         self.server_bind = self.server_bind.trim().to_string();
         if self.server_bind.is_empty() {

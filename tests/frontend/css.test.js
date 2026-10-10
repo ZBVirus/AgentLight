@@ -38,6 +38,10 @@ test("collapsed labels keep their fixed size", () => {
   assert.match(rule(".mini-label"), /font-size:\s*10px/);
 });
 
+test("horizontal triple lights run green to red", () => {
+  assert.match(rule('body[data-collapse="triple"] .mini-triple'), /row-reverse/);
+});
+
 test("the vmin scaling and the mini light override are gone", () => {
   assert.doesNotMatch(css, /vmin/);
   assert.doesNotMatch(css, /\.view\.mini \.light\s*\{/);

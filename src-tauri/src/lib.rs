@@ -858,7 +858,7 @@ fn emit_update(app: &AppHandle, update: &Update) {
     if !update.alarms.is_empty() {
         let config = current_config(&app.state::<AppState>());
         if config.alarms_enabled {
-            play_alarm(config.alarm_sound);
+            play_alarm(config.alarm_sound, config.alarm_volume);
         }
     }
 }
@@ -871,11 +871,11 @@ static DEFAULT_ALARM: &[u8] = include_bytes!("../assets/alarm.wav");
 /// Play the attention alarm on a detached thread so the engine's update sink
 /// never blocks on playback.
 ///
-/// Windows-only playback through the Win32 `PlaySoundW` API: a custom file is
-/// played from disk, the default from the bundled WAV in memory. No child
-/// process is spawned, so no console window flashes. Everywhere else this is a
-/// no-op.
-fn play_alarm(sound: Option<String>) {
+/// Windows-only playback through the Win32 `PlaySoundW` API. The clip (the
+/// bundled default or a custom file) is loaded into memory and its samples are
+/// scaled by `volume`, so the setting affects only this alarm. No child process
+/// is spawned, so no console window flashes. Everywhere else this is a no-op.
+fn play_alarm(sound: Option<String>, volume: u8) {
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         {
@@ -892,42 +892,60 @@ fn play_alarm(sound: Option<String>) {
             const SND_FILENAME: u32 = 0x0002_0000;
             const SND_SYSTEM: u32 = 0x0020_0000;
 
-            let wide = |value: &OsStr| -> Vec<u16> {
-                value.encode_wide().chain(std::iter::once(0)).collect()
+            // A zero volume means silence: play nothing.
+            if volume == 0 {
+                return;
+            }
+
+            let custom = sound
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty());
+
+            // Read the clip into memory and scale its samples. An unreadable
+            // custom file falls back to filename playback, unscaled.
+            let clip: Vec<u8> = match custom {
+                Some(path) => match std::fs::read(path) {
+                    Ok(bytes) => agentlight_core::wav::scale_wav_pcm16(&bytes, volume),
+                    Err(_) => Vec::new(),
+                },
+                None => agentlight_core::wav::scale_wav_pcm16(DEFAULT_ALARM, volume),
             };
 
-            // Safety: `SND_MEMORY` playback is synchronous, so both the static
-            // buffer and the local wide path outlive the call, and the flags
-            // are the documented `PlaySound` constants. `SND_SYSTEM` routes the
-            // alarm to the system-notification audio session.
-            unsafe {
-                match sound
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|path| !path.is_empty())
-                {
-                    Some(path) => {
-                        let path = wide(OsStr::new(path));
+            if clip.is_empty() {
+                if let Some(path) = custom {
+                    let wide: Vec<u16> = OsStr::new(path)
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    // Safety: `wide` outlives the synchronous call and the flags
+                    // are the documented `PlaySound` constants.
+                    unsafe {
                         PlaySoundW(
-                            path.as_ptr(),
+                            wide.as_ptr(),
                             std::ptr::null_mut(),
                             SND_FILENAME | SND_NODEFAULT | SND_SYSTEM,
                         );
                     }
-                    None => {
-                        PlaySoundW(
-                            DEFAULT_ALARM.as_ptr().cast(),
-                            std::ptr::null_mut(),
-                            SND_MEMORY | SND_NODEFAULT | SND_SYSTEM,
-                        );
-                    }
                 }
+                return;
+            }
+
+            // Safety: `SND_MEMORY` playback is synchronous, so `clip` outlives
+            // the call. `SND_SYSTEM` routes the alarm to the system-notification
+            // audio session.
+            unsafe {
+                PlaySoundW(
+                    clip.as_ptr().cast(),
+                    std::ptr::null_mut(),
+                    SND_MEMORY | SND_NODEFAULT | SND_SYSTEM,
+                );
             }
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = sound;
+            let _ = (sound, volume);
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 eprintln!("agentlight: alarm sound is only implemented on Windows");

@@ -66,6 +66,9 @@
 //     .interrupted                                        inactive for a main)
 //   permission.asked                      -> needs_help  (waiting on you)
 //   permission.replied                    -> active      (you answered, it resumes)
+//   form.created                          -> needs_help  (opencode asks a question)
+//   form.replied                          -> active
+//   form.cancelled                        -> idle path
 //   session.deleted                       -> done
 //
 // A finished subagent does not emit `session.deleted`; it only goes idle, so
@@ -146,6 +149,10 @@ export const createAgentLightV2 = async ({
   const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
 
+  // Opt-in event tracing: log each event `type` and the keys of its payload, so
+  // the shape a given opencode build emits can be confirmed from the logs.
+  const debugEvents = /^(1|true|yes|on)$/i.test((env.AGENTLIGHT_DEBUG || "").trim());
+
   // Capture fetch so a heartbeat from this instance keeps using the transport it
   // started with (and cannot reach the network after a test or sidecar swaps
   // globals).
@@ -166,6 +173,7 @@ export const createAgentLightV2 = async ({
     heartbeat_ms: heartbeatMs,
     session_url: sessionUrlTemplate || "disabled",
     autostart: autostartBin ? "enabled" : "disabled",
+    debug: debugEvents ? "on" : "off",
   });
 
   const now = () => new Date().toISOString();
@@ -296,16 +304,18 @@ export const createAgentLightV2 = async ({
 
   // V2 `session.created` carries the fields under `data`; `session.get` returns
   // the same `Session.Info` fields at the top level. Accept either a
-  // `{ sessionID }` payload or a `{ id }` info object.
+  // `{ sessionID }` payload or a `{ id }` info object. A missing or empty title
+  // must not erase a name already learned (titles are generated after creation).
   const remember = (info) => {
     if (!info) return;
     const id = info.sessionID || info.id;
     if (!id) return;
     const known = sessions.get(id) || {};
     const location = info.location || {};
+    const title = typeof info.title === "string" && info.title.trim() ? info.title : null;
     sessions.set(id, {
       ...known,
-      name: info.title !== undefined ? info.title : known.name || null,
+      name: title || known.name || null,
       projectPath:
         (location && location.directory) || info.directory || known.projectPath || null,
       parentID: info.parentID !== undefined ? info.parentID : known.parentID || null,
@@ -387,6 +397,12 @@ export const createAgentLightV2 = async ({
     // V2 nests the payload under `data`; `properties` is kept as a fallback for
     // a build that still emits the V1 shape.
     const props = event.data || event.properties || {};
+    if (debugEvents) {
+      log("info", `event ${event.type}`, {
+        event_keys: Object.keys(event),
+        payload_keys: Object.keys(props),
+      });
+    }
     switch (event.type) {
       case "session.created":
       case "session.updated":
@@ -442,6 +458,22 @@ export const createAgentLightV2 = async ({
       case "permission.replied":
         if (props.sessionID) awaitingPermission.delete(props.sessionID);
         report(props.sessionID, "active");
+        break;
+      // A V2 interactive form is opencode asking the user a question. `created`
+      // waits on the user, `replied` resumes, `cancelled` falls back to idle.
+      case "form.created": {
+        const sid = props.sessionID || (props.form && props.form.sessionID);
+        if (sid) awaitingPermission.add(sid);
+        report(sid, "needs_help");
+        break;
+      }
+      case "form.replied":
+        if (props.sessionID) awaitingPermission.delete(props.sessionID);
+        report(props.sessionID, "active");
+        break;
+      case "form.cancelled":
+        if (props.sessionID) awaitingPermission.delete(props.sessionID);
+        await reportIdle(props.sessionID);
         break;
       default:
         break;

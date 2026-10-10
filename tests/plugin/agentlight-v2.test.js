@@ -480,9 +480,85 @@ test("a tool hook reports the session active", async (t) => {
   assert.equal(h.lastStatus(), "active");
 });
 
+test("an interactive form is needs_help, and replying resumes", async (t) => {
+  const h = await harness();
+  t.after(h.restore);
+
+  h.event("form.created", { form: { id: "f1", sessionID: "main", title: "Which option?" } });
+  await sleep(COALESCE_WAIT_MS);
+  assert.equal(h.lastStatus(), "needs_help");
+
+  h.event("form.replied", { id: "f1", sessionID: "main", answer: "A" });
+  await sleep(COALESCE_WAIT_MS);
+  assert.equal(h.lastStatus(), "active");
+});
+
+test("session.created data sets the name and project directly", async (t) => {
+  process.env.AGENTLIGHT_HEARTBEAT_MS = "20";
+  t.after(() => {
+    delete process.env.AGENTLIGHT_HEARTBEAT_MS;
+  });
+  const h = await harness();
+  t.after(h.restore);
+
+  h.event("session.created", {
+    sessionID: "main",
+    title: "Direct title",
+    location: { directory: "/work/project" },
+  });
+  await sleep(150);
+
+  const event = h.lastSnapshot().events.find((e) => e.session_id === "main");
+  assert.equal(event.name, "Direct title");
+  assert.equal(event.project_path, "/work/project");
+});
+
+test("a later empty title does not erase a learned name", async (t) => {
+  process.env.AGENTLIGHT_HEARTBEAT_MS = "20";
+  t.after(() => {
+    delete process.env.AGENTLIGHT_HEARTBEAT_MS;
+  });
+  const h = await harness();
+  t.after(h.restore);
+
+  h.event("session.created", {
+    sessionID: "main",
+    title: "Real name",
+    location: { directory: "/work/project" },
+  });
+  h.event("session.created", {
+    sessionID: "main",
+    title: null,
+    location: { directory: "/work/project" },
+  });
+  await sleep(150);
+
+  const event = h.lastSnapshot().events.find((e) => e.session_id === "main");
+  assert.equal(event.name, "Real name");
+});
+
+test("debug mode logs event types and payload keys", async (t) => {
+  const logs = [];
+  const instance = await createAgentLightV2({
+    directory: "/work/project",
+    getSession: async () => undefined,
+    subscribe: () => (async function* () {})(),
+    log: (level, message, extra) => logs.push({ level, message, extra }),
+    fetch: async () => ({ ok: true, status: 200, text: async () => "" }),
+    env: { AGENTLIGHT_DEBUG: "1" },
+    timing: FAST_TIMING,
+  });
+  t.after(() => instance.dispose());
+
+  await instance.handleEvent({ type: "permission.asked", data: { sessionID: "s1", id: "p1" } });
+
+  const entry = logs.find((line) => line.message === "event permission.asked");
+  assert.ok(entry, "expected a debug log line for the event");
+  assert.deepEqual(entry.extra.payload_keys, ["sessionID", "id"]);
+});
+
 // Autostart tests drive the exported factory directly so `spawn`, `fetch`, and
 // `timing` can be injected.
-
 test("a healthy hub is not spawned", async (t) => {
   t.after(setEnv("AGENTLIGHT_AUTOSTART_BIN", "/opt/agentlight/agentlight-server"));
 

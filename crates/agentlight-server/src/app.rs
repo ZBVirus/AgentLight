@@ -164,7 +164,11 @@ pub fn build_engine(config: &ServerConfig) -> Engine {
 /// Build the engine for `config`, returning the push source when events mode is
 /// selected so the caller can keep it for the ingest route.
 pub fn build_engine_with_source(config: &ServerConfig) -> (Engine, Option<Arc<EventPushSource>>) {
-    let engine = Engine::new(config.core.clone());
+    // The hub relays session state and must not impose the desktop's link shape;
+    // it passes the producer/template URL through untouched.
+    let mut core = config.core.clone();
+    core.session_link = agentlight_core::SessionLink::Producer;
+    let engine = Engine::new(core);
     if config.source_kind == SourceKind::Push {
         let mut events = EventPushSource::with_store(EVENTS_SOURCE_ID, config.events_path.clone());
         if config.heartbeat_ms > 0 {

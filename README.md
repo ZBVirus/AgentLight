@@ -236,6 +236,8 @@ can be edited by hand.
 | `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`; `push` is a server-only mode. |
 | `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
+| `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `producer` (use the URL the hub/plugin attached), or `off`. |
+| `session_link_base` | *(mode default)* | Base URL of the opencode web server for the v1/v2 modes (`http://127.0.0.1:49374` for v2, `http://localhost:4096` for v1). |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
@@ -248,6 +250,7 @@ can be edited by hand.
 | `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
 | `alarm_trigger`  | `["needs_help"]`  | Any combination of `needs_help`, `done`, `any_status`; fires on the first match. |
 | `alarm_sound`    | *(bundled chime)* | `.wav` file for the alarm; empty plays the bundled two-note chime through the Win32 sound API (no console window). |
+| `alarm_volume`   | `70`              | Alarm volume percent (`0`–`100`), applied by scaling the sound's samples. |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 | `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
 | `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |

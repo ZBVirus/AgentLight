@@ -88,6 +88,9 @@ export function populateSettings() {
   $("set-alarms-enabled").checked = !!config.alarms_enabled;
   setTriggers("alarm", config.alarm_trigger);
   $("set-alarm-sound").value = config.alarm_sound || "";
+  $("set-alarm-volume").value = config.alarm_volume ?? 70;
+  $("set-alarm-volume").oninput = renderAlarmVolume;
+  renderAlarmVolume();
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
   $("set-collapse-style").value = config.collapse_style || "single";
   // A color input only understands #rrggbb, so seed the built-in hex when the
@@ -100,6 +103,8 @@ export function populateSettings() {
   }
   $("set-mini-show-labels").checked = config.mini_show_labels !== false;
   $("set-poll").value = config.poll_ms || 1500;
+  $("set-session-link").value = config.session_link || "opencode_v2";
+  $("set-session-link-base").value = config.session_link_base || "";
   $("set-server-bind").value = config.server_bind || DEFAULT_SERVER_BIND;
   // The admin token is write-only: never render the stored hash back here.
   $("set-server-token").value = "";
@@ -110,6 +115,13 @@ export function populateSettings() {
   $("set-server-token").oninput = renderServerUrl;
   $("set-notifications").onchange = renderNotificationRows;
   $("set-alarms-enabled").onchange = renderAlarmRows;
+  $("set-session-link").onchange = renderSessionLinkFields;
+  // "Any status change" acts as a select-all within its trigger row.
+  $("set-notification-any").onchange = () => syncAnyTrigger("notification");
+  $("set-alarm-any").onchange = () => syncAnyTrigger("alarm");
+  // Apply "Always on top" immediately so the toolbar pin and this checkbox
+  // stay in sync without a Save.
+  $("set-top").onchange = applyAlwaysOnTop;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
   $("btn-server-token-clear").onclick = clearAdminToken;
@@ -119,6 +131,7 @@ export function populateSettings() {
   renderSourceFields();
   renderNotificationRows();
   renderAlarmRows();
+  renderSessionLinkFields();
   renderServerUrl();
   refreshServerStatus();
 }
@@ -222,6 +235,17 @@ function clearTokenInput() {
   renderServerUrl();
 }
 
+// Apply the "Always on top" checkbox right away; the shell persists it and
+// emits `config-changed`, which refreshes the toolbar pin.
+async function applyAlwaysOnTop() {
+  if (!invoke) return;
+  try {
+    await invoke("set_always_on_top", { enabled: $("set-top").checked });
+  } catch (error) {
+    toast(`Pin failed: ${error}`);
+  }
+}
+
 async function toggleServer() {
   if (!invoke || !config) return;
   const running = $("btn-server-toggle").textContent === "Stop server";
@@ -261,6 +285,15 @@ function renderNotificationRows() {
   for (const el of rows.querySelectorAll("input, select, button")) {
     el.disabled = !enabled;
   }
+}
+
+// Show the server base URL field only for the modes that use it.
+function renderSessionLinkFields() {
+  const mode = $("set-session-link").value;
+  const usesBase = mode === "opencode_v1" || mode === "opencode_v2";
+  $("set-session-link-base-field").classList.toggle("hidden", !usesBase);
+  $("set-session-link-base").placeholder =
+    mode === "opencode_v1" ? "http://localhost:4096" : "http://127.0.0.1:49374";
 }
 
 // Show and enable the alarm trigger/sound rows only while alarms are on.
@@ -303,6 +336,11 @@ function clearAlarmSound() {
   $("set-alarm-sound").value = "";
 }
 
+// Show the current alarm volume beside the slider.
+function renderAlarmVolume() {
+  $("set-alarm-volume-value").textContent = `${$("set-alarm-volume").value}%`;
+}
+
 // Trigger fields (`notification_trigger` / `alarm_trigger`) are lists of
 // `needs_help` / `done` / `any_status`. A single string is accepted too.
 const TRIGGER_IDS = {
@@ -326,12 +364,26 @@ function triggerValues(value) {
   return ["needs_help"];
 }
 
+// "Any status change" is a select-all: it already matches every transition, so
+// when it is set the specific triggers are shown selected too.
 function setTriggers(kind, value) {
-  const selected = triggerValues(value);
+  let selected = triggerValues(value);
+  if (selected.includes("any_status")) {
+    selected = ["needs_help", "done", "any_status"];
+  }
   const ids = TRIGGER_IDS[kind];
   $(ids.needsHelp).checked = selected.includes("needs_help");
   $(ids.done).checked = selected.includes("done");
   $(ids.any).checked = selected.includes("any_status");
+}
+
+// Checking "Any status change" selects the specific triggers; clearing it
+// clears them, so the row behaves as one "select all" control.
+function syncAnyTrigger(kind) {
+  const ids = TRIGGER_IDS[kind];
+  const on = $(ids.any).checked;
+  $(ids.needsHelp).checked = on;
+  $(ids.done).checked = on;
 }
 
 function readTriggers(kind) {
@@ -365,6 +417,7 @@ export async function saveSettings(event) {
     alarms_enabled: $("set-alarms-enabled").checked,
     alarm_trigger: readTriggers("alarm"),
     alarm_sound: $("set-alarm-sound").value.trim() || null,
+    alarm_volume: Number($("set-alarm-volume").value),
     yellow_mode: $("set-yellow-mode").value,
     collapse_style: $("set-collapse-style").value,
     mini_red: miniColorValue("red"),
@@ -372,6 +425,8 @@ export async function saveSettings(event) {
     mini_green: miniColorValue("green"),
     mini_show_labels: $("set-mini-show-labels").checked,
     poll_ms: Number($("set-poll").value) || 1500,
+    session_link: $("set-session-link").value,
+    session_link_base: $("set-session-link-base").value.trim() || null,
   });
   try {
     setConfig(await invoke("set_config", { config: next }));

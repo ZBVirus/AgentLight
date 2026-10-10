@@ -142,8 +142,8 @@ history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
 |-------|-------|--------|
 | `cargo fmt --all --check` | Linux container | green |
 | `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
-| `cargo test` (core 72, source-events 18, server 42, hub-client 21) | Linux | green |
-| `node --test tests/plugin/` (44: V1 20 + V2 24) | Linux | green |
+| `cargo test` (core 85, source-events 18, server 42, hub-client 21) | Linux | green |
+| `node --test tests/plugin/` (48: V1 20 + V2 28) | Linux | green |
 | `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
@@ -191,6 +191,7 @@ Read by the opencode plugins (`plugins/opencode/agentlight.js` for V1,
 | `AGENTLIGHT_HEARTBEAT_MS` | `30000` | Snapshot interval; `0` disables. |
 | `AGENTLIGHT_SESSION_URL_TEMPLATE` | `http://localhost:4096/session/{id}` | Deep link; empty disables. |
 | `AGENTLIGHT_AUTOSTART_BIN` | *(none)* | Spawn this hub binary if `/healthz` is down. |
+| `AGENTLIGHT_DEBUG` | *(off)* | `1` logs each event type and payload keys to opencode's logs. |
 
 Server (`agentlight-server`): `AGENTLIGHT_BIND`, `AGENTLIGHT_TOKEN`,
 `AGENTLIGHT_SOURCE` (`file`/`events`), `AGENTLIGHT_EVENTS_FILE`,

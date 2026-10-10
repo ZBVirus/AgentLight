@@ -102,6 +102,21 @@
               </label>
             </div>
 
+            <label class="field">
+              <span>Session link</span>
+              <select id="set-session-link">
+                <option value="opencode_v2">OpenCode v2 (default)</option>
+                <option value="opencode_v1">OpenCode v1</option>
+                <option value="producer">From the hub / producer</option>
+                <option value="off">Off (hide the Open button)</option>
+              </select>
+              <small class="hint">The URL the “Open” button uses. v2 opens the opencode pair web UI; set the server address below if it is not the default.</small>
+            </label>
+            <label class="field" id="set-session-link-base-field">
+              <span>OpenCode server</span>
+              <input type="text" id="set-session-link-base" placeholder="http://127.0.0.1:49374" />
+              <small class="hint">Base URL of the opencode web server, used by the v1 and v2 link modes.</small>
+            </label>
             <label class="field inline">
               <input type="checkbox" id="set-top" />
               <span>Always on top</span>
@@ -134,10 +149,13 @@
               </div>
               <small class="hint">If nothing appears, check Focus Assist and Settings → Notifications for AgentLight.</small>
             </div>
-            <label class="field inline">
-              <input type="checkbox" id="set-show-done" />
-              <span>Show every done session</span>
-            </label>
+            <div class="field">
+              <label class="field inline">
+                <input type="checkbox" id="set-show-done" />
+                <span>Show every done session</span>
+              </label>
+              <small class="hint">Off (default): the list keeps only the newest 5 finished sessions. On: every finished session is listed, however old.</small>
+            </div>
 
             <label class="field inline">
               <input type="checkbox" id="set-alarms-enabled" />
@@ -167,6 +185,13 @@
                   <input type="text" id="set-alarm-sound" readonly placeholder="System default" />
                   <button type="button" class="ghost" id="btn-alarm-sound-pick">Choose…</button>
                   <button type="button" class="ghost" id="btn-alarm-sound-clear">Clear</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>Volume</span>
+                <div class="row">
+                  <input type="range" id="set-alarm-volume" min="0" max="100" step="5" />
+                  <small class="hint" id="set-alarm-volume-value"></small>
                 </div>
               </label>
             </div>

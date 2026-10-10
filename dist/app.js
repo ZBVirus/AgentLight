@@ -75,6 +75,10 @@ function wire() {
       setConfig(event.payload);
       renderPin();
       applyCollapseStyle();
+      // Keep the Settings checkbox in step with the toolbar pin (and any other
+      // path that flips topmost) while Settings is open.
+      const top = $("set-top");
+      if (top) top.checked = !!(event.payload && event.payload.always_on_top);
     });
     listen("open-settings", () => {
       populateSettings();

@@ -188,6 +188,12 @@ body[data-collapse="triple_vertical"] .mini-triple {
   flex-direction: column;
 }
 
+/* Horizontal lights read green | orange | red, left to right (vertical keeps
+   the traffic-light order, red on top). */
+body[data-collapse="triple"] .mini-triple {
+  flex-direction: row-reverse;
+}
+
 .mini-light {
   display: grid;
   place-items: center;
@@ -239,6 +245,12 @@ body[data-collapse="triple_vertical"] .mini-triple {
   border-radius: 8px;
   background: var(--bg-soft);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+
+.context-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--rule);
 }
 
 .context-item {

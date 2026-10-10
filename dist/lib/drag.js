@@ -1,12 +1,19 @@
 "use strict";
 
 import { getCurrentWindow, invoke } from "./ipc.js";
-import { setView, view } from "./store.js";
+import { applyCollapseStyle, collapseStyle, config, setConfig, setView, view } from "./store.js";
 
 const $ = (id) => document.getElementById(id);
 
 const MENU_ID = "mini-context-menu";
 let menuOpen = false;
+
+// Collapsed-view layouts offered in the right-click menu, in the order shown.
+const LAYOUTS = [
+  ["single", "Single light"],
+  ["triple", "Horizontal lights"],
+  ["triple_vertical", "Vertical lights"],
+];
 
 function closeMenu() {
   const menu = document.getElementById(MENU_ID);
@@ -14,24 +21,53 @@ function closeMenu() {
   menuOpen = false;
 }
 
+function menuItem(label, onClick) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "context-item";
+  item.setAttribute("role", "menuitem");
+  item.textContent = label;
+  item.addEventListener("click", onClick);
+  return item;
+}
+
+// Switch the collapsed layout from the context menu, persisting the choice.
+function applyLayout(style) {
+  closeMenu();
+  if (!invoke || !config) return;
+  invoke("set_config", { config: { ...config, collapse_style: style } })
+    .then((next) => {
+      if (next) setConfig(next);
+      applyCollapseStyle();
+    })
+    .catch(() => {});
+}
+
 function ensureMenu() {
   let menu = document.getElementById(MENU_ID);
-  if (menu) return menu;
-  menu = document.createElement("div");
-  menu.id = MENU_ID;
-  menu.className = "context-menu hidden";
-  menu.setAttribute("role", "menu");
-  const hide = document.createElement("button");
-  hide.type = "button";
-  hide.className = "context-item";
-  hide.setAttribute("role", "menuitem");
-  hide.textContent = "Hide";
-  hide.addEventListener("click", () => {
-    closeMenu();
-    if (invoke) invoke("window_hide").catch(() => {});
-  });
-  menu.appendChild(hide);
-  document.body.appendChild(menu);
+  if (!menu) {
+    menu = document.createElement("div");
+    menu.id = MENU_ID;
+    menu.className = "context-menu hidden";
+    menu.setAttribute("role", "menu");
+    document.body.appendChild(menu);
+  }
+  // Rebuild each time so the check mark tracks the current layout.
+  menu.replaceChildren();
+  const current = collapseStyle();
+  for (const [value, label] of LAYOUTS) {
+    const mark = value === current ? "\u2713 " : "\u2003";
+    menu.appendChild(menuItem(`${mark}${label}`, () => applyLayout(value)));
+  }
+  const separator = document.createElement("div");
+  separator.className = "context-sep";
+  menu.appendChild(separator);
+  menu.appendChild(
+    menuItem("Hide", () => {
+      closeMenu();
+      if (invoke) invoke("window_hide").catch(() => {});
+    }),
+  );
   return menu;
 }
 

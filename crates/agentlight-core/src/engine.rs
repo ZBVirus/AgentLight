@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::config::{AlarmTrigger, Config, SourceKind};
-use crate::session::{display_session, DisplaySession, DONE_RETENTION};
+use crate::session::{build_session_link, display_session, DisplaySession, DONE_RETENTION};
 use crate::snapshot::{Counts, Snapshot};
 use crate::source::{
     Session, SessionKey, SourceCommand, SourceHealth, SourceId, SourceSnapshot, StateSource,
@@ -359,6 +359,17 @@ impl Inner {
 
         let mut rows: Vec<DisplaySession> = sessions.iter().map(display_session).collect();
         apply_retention(&mut rows, config.show_done);
+        // The desktop owns the "Open" link shape, so it can default to OpenCode
+        // v2 while still offering v1 or the producer's own URL.
+        for row in rows.iter_mut() {
+            row.url = build_session_link(
+                config.session_link,
+                config.session_link_base.as_deref(),
+                &row.session_id,
+                row.harness.as_deref(),
+                row.url.as_deref(),
+            );
+        }
 
         Snapshot {
             ok,

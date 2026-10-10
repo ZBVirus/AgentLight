@@ -127,6 +127,10 @@ export const AgentLightPlugin = async (
   const healthPollIntervalMs = timing.pollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const healthPollTimeoutMs = timing.pollTimeoutMs ?? DEFAULT_HEALTH_POLL_TIMEOUT_MS;
 
+  // Opt-in event tracing: log each event `type` and the keys of its payload, so
+  // the shape a given opencode build emits can be confirmed from the logs.
+  const debugEvents = /^(1|true|yes|on)$/i.test((process.env.AGENTLIGHT_DEBUG || "").trim());
+
   // Capture fetch at load so a heartbeat from this instance keeps using the
   // transport it started with (and cannot reach the network after a test or
   // sidecar swaps globals).
@@ -156,6 +160,7 @@ export const AgentLightPlugin = async (
     heartbeat_ms: heartbeatMs,
     session_url: sessionUrlTemplate || "disabled",
     autostart: autostartBin ? "enabled" : "disabled",
+    debug: debugEvents ? "on" : "off",
   });
 
   const now = () => new Date().toISOString();
@@ -367,6 +372,12 @@ export const AgentLightPlugin = async (
 
   const handleEvent = async (event) => {
     const props = event.properties || {};
+    if (debugEvents) {
+      await log("info", `event ${event.type}`, {
+        event_keys: Object.keys(event),
+        payload_keys: Object.keys(props),
+      });
+    }
     switch (event.type) {
       case "session.created":
       case "session.updated":

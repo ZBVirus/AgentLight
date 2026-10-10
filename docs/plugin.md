@@ -163,8 +163,11 @@ override the link for every ingested session with its own
 `AGENTLIGHT_SESSION_URL_TEMPLATE`; that hub-side setting wins over the value the
 plugin sent.
 
-The desktop's detail row shows the **Open** action only for sessions that carry
-a `url`, which only the events path populates; file-source sessions have none.
+The desktop's detail row shows the **Open** action for the URL it builds from the
+**Session link** setting: OpenCode v2 by default
+(`<base>/server/<base64url(base)>/session/<id>`, matching `opencode pair`),
+OpenCode v1, `producer` (the URL the hub or plugin attached), or off. So the
+plugin's `url` matters only in `producer` mode.
 
 The plugin logs one line at startup (`agentlight plugin <version> started`,
 with the producer, hub, heartbeat, and URL template) to opencode's logs. The
@@ -172,6 +175,11 @@ plugin file is **copied** into opencode's plugin directory, so after updating
 this repo, re-copy the matching `plugins/opencode/agentlight*.js` or the running
 copy stays stale — the startup line is the quickest way to confirm which version
 is loaded (`agentlight-v2.js` logs `(v2)`).
+
+Set `AGENTLIGHT_DEBUG=1` to log every event's `type` and the keys of its payload
+(`event.properties` for V1, `event.data` for V2) to opencode's logs. It is off by
+default and adds one line per event; use it to confirm the shape a given opencode
+build emits when a mapping looks wrong.
 
 `AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
 startup, the plugin spawns that binary detached, waits a few seconds for health,
@@ -192,13 +200,15 @@ Mapping (opencode → AgentLight):
 | V2 only: `session.execution.started` | `active` |
 | V2 only: `session.execution.failed` | `needs_help` |
 | V2 only: `session.execution.succeeded` / `.interrupted` | idle path (`done` for a subagent, `inactive` for a main session) |
+| V2 only: `form.created` / `form.replied` / `form.cancelled` | `needs_help` / `active` / idle path (a question from opencode) |
 
 The V1 plugin reads event payloads from `event.properties`; the V2 plugin reads
 them from `event.data`. `session.created` carries `parentID` and `title` (V1
 under `properties.info`; V2 under `data` and `location.directory`), and a
-`session.renamed` event updates the display name. The V2 plugin also treats
-`session.execution.*` as an additional signal around a turn; `session.status` /
-`session.idle` remain the authoritative idle transition.
+`session.renamed` event updates the display name. V2 has no `session.updated` or
+`session.error` (the V1 shapes); its "waiting on you" signals are
+`permission.asked` and `form.created`. `session.status` / `session.idle` remain
+the authoritative idle transition.
 
 A finished subagent never emits `session.deleted`; it only goes idle. The plugin
 therefore reports idle on a session that has a `parentID` as `done`, so "Clear

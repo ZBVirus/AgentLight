@@ -35,10 +35,13 @@ function baseConfig(overrides = {}) {
     alarms_enabled: false,
     alarm_trigger: [],
     alarm_sound: null,
+    alarm_volume: 70,
     start_at_login: false,
     server_enabled: false,
     server_bind: "127.0.0.1:8787",
     server_token_hash: null,
+    session_link: "opencode_v2",
+    session_link_base: null,
     ...overrides,
   };
 }
@@ -99,6 +102,7 @@ global.document = first.window.document;
 
 const store = await import(pathToFileURL(path.join(dist, "lib", "store.js")).href);
 const settings = await import(pathToFileURL(path.join(dist, "views", "settings.js")).href);
+const drag = await import(pathToFileURL(path.join(dist, "lib", "drag.js")).href);
 
 async function boot({ config = baseConfig(), snapshot = baseSnapshot() } = {}) {
   const dom = new JSDOM(html, { url: "http://localhost/" });
@@ -192,4 +196,98 @@ test("a session without a url has no Open button", async () => {
   await boot({ snapshot });
   store.setView("detail");
   assert.equal(doc().querySelectorAll("#sessions .open").length, 0);
+});
+
+test("show-every-done carries an explanatory hint", () => {
+  assert.match(html, /Show every done session[\s\S]{0,200}newest 5/);
+});
+
+test("any-status acts as a select-all in its trigger row", async () => {
+  await boot({
+    config: baseConfig({
+      notifications: true,
+      notification_trigger: [],
+      alarms_enabled: true,
+      alarm_trigger: [],
+    }),
+  });
+  assert.equal(byId("set-notification-needs-help").checked, false);
+  const any = byId("set-notification-any");
+  any.checked = true;
+  any.dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-notification-needs-help").checked, true);
+  assert.equal(byId("set-notification-done").checked, true);
+
+  // Clearing the select-all clears the specific triggers too.
+  any.checked = false;
+  any.dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-notification-needs-help").checked, false);
+  assert.equal(byId("set-notification-done").checked, false);
+});
+
+test("loading any_status selects every trigger in the row", async () => {
+  await boot({ config: baseConfig({ notification_trigger: ["any_status"] }) });
+  assert.equal(byId("set-notification-needs-help").checked, true);
+  assert.equal(byId("set-notification-done").checked, true);
+  assert.equal(byId("set-notification-any").checked, true);
+});
+
+test("session link setting populates, hides its base for producer mode, and saves", async () => {
+  await boot({
+    config: baseConfig({ session_link: "opencode_v1", session_link_base: "http://localhost:4096" }),
+  });
+  assert.equal(byId("set-session-link").value, "opencode_v1");
+  assert.equal(byId("set-session-link-base").value, "http://localhost:4096");
+  assert.equal(byId("set-session-link-base-field").classList.contains("hidden"), false);
+
+  byId("set-session-link").value = "producer";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base-field").classList.contains("hidden"), true);
+
+  await settings.saveSettings();
+  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
+  assert.equal(saved.args.config.session_link, "producer");
+});
+
+test("alarm volume populates and saves", async () => {
+  await boot({ config: baseConfig({ alarms_enabled: true, alarm_volume: 40 }) });
+  assert.equal(byId("set-alarm-volume").value, "40");
+  assert.equal(byId("set-alarm-volume-value").textContent, "40%");
+  byId("set-alarm-volume").value = "85";
+  await settings.saveSettings();
+  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
+  assert.equal(saved.args.config.alarm_volume, 85);
+});
+
+test("changing Always on top applies immediately", async () => {
+  await boot({ config: baseConfig({ always_on_top: true }) });
+  const top = byId("set-top");
+  assert.equal(top.checked, true);
+  top.checked = false;
+  top.dispatchEvent(new global.window.Event("change"));
+  await tick();
+  const call = [...state.calls].reverse().find((c) => c.cmd === "set_always_on_top");
+  assert.ok(call, "expected set_always_on_top");
+  assert.equal(call.args.enabled, false);
+});
+
+test("collapsed right-click menu offers layouts and persists the choice", async () => {
+  const dom = await boot({ config: baseConfig({ collapse_style: "single" }) });
+  store.setView("mini");
+  drag.wireMini();
+  const mini = dom.window.document.getElementById("view-mini");
+  mini.dispatchEvent(
+    new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
+  );
+  const items = [...dom.window.document.querySelectorAll("#mini-context-menu .context-item")];
+  const labels = items.map((item) => item.textContent.replace(/[\u2713\u2003]/g, "").trim());
+  assert.deepEqual(labels, ["Single light", "Horizontal lights", "Vertical lights", "Hide"]);
+  assert.match(items[0].textContent, /\u2713/, "current layout is marked");
+
+  items[1].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  await tick();
+  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
+  assert.ok(saved, "expected set_config");
+  assert.equal(saved.args.config.collapse_style, "triple");
+  assert.equal(saved.args.config.always_on_top, true, "other config fields are preserved");
 });
