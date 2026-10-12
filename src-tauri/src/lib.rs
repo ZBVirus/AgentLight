@@ -1000,8 +1000,12 @@ fn show_mini_menu(app: AppHandle) -> Result<(), String> {
     let hide = item("mini-hide", "Hide".to_string())?;
     let menu = Menu::with_items(&app, &[&single, &horizontal, &vertical, &separator, &hide])
         .map_err(|e| e.to_string())?;
-    let window = app.get_window("main").ok_or("no window")?;
-    menu.popup(window).map_err(|e| e.to_string())
+    let webview = app
+        .get_webview_window("main")
+        .ok_or("no window")?
+        .as_ref()
+        .window();
+    menu.popup(webview).map_err(|e| e.to_string())
 }
 
 fn show_window(app: &AppHandle) {
