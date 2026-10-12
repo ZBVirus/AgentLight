@@ -263,6 +263,12 @@ test("session link setting populates, hides its base for producer mode, and save
   assert.equal(saved.args.config.session_link, "producer");
 });
 
+test("openchamber link mode keeps the server field and its default", async () => {
+  await boot({ config: baseConfig({ session_link: "openchamber" }) });
+  assert.equal(byId("set-session-link-base-field").classList.contains("hidden"), false);
+  assert.equal(byId("set-session-link-base").placeholder, "http://localhost:3000");
+});
+
 test("alarm volume populates and saves", async () => {
   await boot({ config: baseConfig({ alarms_enabled: true, alarm_volume: 40 }) });
   assert.equal(byId("set-alarm-volume").value, "40");

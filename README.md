@@ -236,8 +236,8 @@ can be edited by hand.
 | `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`; `push` is a server-only mode. |
 | `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
-| `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `producer` (use the URL the hub/plugin attached), or `off`. |
-| `session_link_base` | *(mode default)* | Base URL of the opencode web server for the v1/v2 modes (default `http://localhost:4096`). |
+| `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `openchamber`, `producer` (use the URL the hub/plugin attached), or `off`. |
+| `session_link_base` | *(mode default)* | Base URL of the session server for the v1/v2/OpenChamber modes (default `http://localhost:4096` for opencode, `http://localhost:3000` for OpenChamber). |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |

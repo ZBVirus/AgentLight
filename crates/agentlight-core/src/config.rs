@@ -99,6 +99,8 @@ pub enum SessionLink {
     OpencodeV2,
     /// OpenCode v1 web UI (fixed `:4096`).
     OpencodeV1,
+    /// OpenChamber web UI (`?session=<id>`).
+    Openchamber,
     /// Use the URL the producer or hub attached, if any.
     Producer,
     /// Never show an Open action.
@@ -183,8 +185,8 @@ pub struct Config {
     /// How the detail view builds a session's "Open" link.
     pub session_link: SessionLink,
     /// Base server URL used to build the link. `None` uses the default for the
-    /// selected mode (`http://localhost:4096` for V1 and V2). Ignored in the
-    /// `producer` and `off` modes.
+    /// selected mode (`http://localhost:4096` for V1/V2, `http://localhost:3000`
+    /// for OpenChamber). Ignored in the `producer` and `off` modes.
     pub session_link_base: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,

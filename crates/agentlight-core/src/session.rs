@@ -174,7 +174,12 @@ pub fn build_session_link(
     // A v1/v2 web link only makes sense for an opencode session; leave other
     // harnesses (codex, copilot, claude) without one rather than open a dead URL.
     let is_opencode = harness.is_none_or(|h| h.trim().eq_ignore_ascii_case("opencode"));
-    if !is_opencode && matches!(mode, SessionLink::OpencodeV1 | SessionLink::OpencodeV2) {
+    if !is_opencode
+        && matches!(
+            mode,
+            SessionLink::OpencodeV1 | SessionLink::OpencodeV2 | SessionLink::Openchamber
+        )
+    {
         return None;
     }
     let base = base.map(str::trim).filter(|value| !value.is_empty());
@@ -189,6 +194,13 @@ pub fn build_session_link(
                 .unwrap_or("http://localhost:4096")
                 .trim_end_matches('/');
             Some(format!("{base}/session/{session_id}"))
+        }
+        SessionLink::Openchamber => {
+            // OpenChamber deep-links a session with a query parameter.
+            let base = base
+                .unwrap_or("http://localhost:3000")
+                .trim_end_matches('/');
+            Some(format!("{base}/?session={session_id}"))
         }
         SessionLink::OpencodeV2 => {
             // The v2 web UI keys a server by its origin, URL-safe base64 with
@@ -392,6 +404,12 @@ mod tests {
             build_session_link(SessionLink::Producer, None, "s1", None, None),
             None
         );
+    }
+
+    #[test]
+    fn session_link_openchamber_uses_the_query_route() {
+        let link = build_session_link(SessionLink::Openchamber, None, "ses_1", None, None).unwrap();
+        assert_eq!(link, "http://localhost:3000/?session=ses_1");
     }
 
     #[test]

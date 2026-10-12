@@ -298,10 +298,14 @@ function renderNotificationRows() {
 // Show the server base URL field only for the modes that use it.
 function renderSessionLinkFields() {
   const mode = $("set-session-link").value;
-  const usesBase = mode === "opencode_v1" || mode === "opencode_v2";
+  const usesBase = mode === "opencode_v1" || mode === "opencode_v2" || mode === "openchamber";
   $("set-session-link-base-field").classList.toggle("hidden", !usesBase);
-  $("set-session-link-base").placeholder =
-    mode === "opencode_v1" ? "http://localhost:4096" : "http://127.0.0.1:49374";
+  const placeholders = {
+    opencode_v1: "http://localhost:4096",
+    opencode_v2: "http://localhost:4096",
+    openchamber: "http://localhost:3000",
+  };
+  $("set-session-link-base").placeholder = placeholders[mode] || "";
 }
 
 // Show and enable the alarm trigger/sound rows only while alarms are on.

@@ -166,8 +166,8 @@ plugin sent.
 The desktop's detail row shows the **Open** action for the URL it builds from the
 **Session link** setting: OpenCode v2 by default
 (`<base>/server/<base64url(base)>/session/<id>`, matching `opencode pair`),
-OpenCode v1, `producer` (the URL the hub or plugin attached), or off. So the
-plugin's `url` matters only in `producer` mode.
+OpenCode v1, OpenChamber (`<base>/?session=<id>`), `producer` (the URL the hub or
+plugin attached), or off. So the plugin's `url` matters only in `producer` mode.
 
 The plugin logs one line at startup (`agentlight plugin <version> started`,
 with the producer, hub, heartbeat, and URL template) to opencode's logs. The
