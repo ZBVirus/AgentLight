@@ -69,6 +69,7 @@
 //   form.created                          -> needs_help  (opencode asks a question)
 //   form.replied                          -> active
 //   form.cancelled                        -> idle path
+//   question.asked / question.v2.asked     -> needs_help  (newer builds)
 //   session.deleted                       -> done
 //
 // A finished subagent does not emit `session.deleted`; it only goes idle, so
@@ -261,7 +262,11 @@ export const createAgentLightV2 = async ({
     const entry = pending.get(sessionID);
     if (!entry) return;
     pending.delete(sessionID);
-    const body = JSON.stringify({ events: [entry.event] });
+    // Resolve the parent before building the event so a child session is tagged
+    // `subagent` even when its first event arrived before `session.created`.
+    await ensureParentKnown(sessionID);
+    const event = buildEvent(sessionID, entry.status);
+    const body = JSON.stringify({ events: [event] });
 
     const headers = { "Content-Type": "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -292,7 +297,6 @@ export const createAgentLightV2 = async ({
   const report = (sessionID, status) => {
     if (!sessionID) return;
     touch(sessionID, status);
-    const event = buildEvent(sessionID, status);
     const existing = pending.get(sessionID);
     if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(() => {
@@ -300,7 +304,7 @@ export const createAgentLightV2 = async ({
     }, COALESCE_MS);
     // Allow opencode to exit without waiting on the timer.
     if (timer && typeof timer.unref === "function") timer.unref();
-    pending.set(sessionID, { event, timer });
+    pending.set(sessionID, { status, timer });
   };
 
   // V2 `session.created` carries the fields under `data`; `session.get` returns
@@ -323,6 +327,17 @@ export const createAgentLightV2 = async ({
     });
   };
 
+  // A session id, whether it sits at the top level or under a nested object
+  // (`question`, `form`, `info`).
+  const nestedSessionID = (payload, ...keys) => {
+    if (payload.sessionID) return payload.sessionID;
+    for (const key of keys) {
+      const nested = payload[key];
+      if (nested && nested.sessionID) return nested.sessionID;
+    }
+    return undefined;
+  };
+
   const snapshotEvents = () => {
     const live = [];
     const done = [];
@@ -338,6 +353,11 @@ export const createAgentLightV2 = async ({
   };
 
   const sendSnapshot = async () => {
+    // Resolve any still-unknown parents first so a child is never reported as a
+    // main session in a heartbeat.
+    for (const [sessionID, info] of sessions) {
+      if (info.parentID === undefined) await ensureParentKnown(sessionID);
+    }
     const events = snapshotEvents();
     // Never POST an empty snapshot: a starting or idle instance must not wipe
     // the hub's live set.
@@ -363,25 +383,31 @@ export const createAgentLightV2 = async ({
     }
   };
 
-  // A session created by a tool (a subagent) carries a `parentID`. It runs to
-  // completion without waiting on the user, so idle means finished. Fall back
-  // to asking opencode when an event arrives before `session.created`.
-  const isSubagent = async (sessionID) => {
+  // Resolve and cache whether a session is a child (subagent). opencode may
+  // deliver a status before `session.created`, so fall back to `session.get`
+  // once and remember the answer (even a negative) so we do not re-query.
+  const ensureParentKnown = async (sessionID) => {
     const known = sessions.get(sessionID);
-    if (known) return Boolean(known.parentID);
+    if (known && known.parentID !== undefined) return;
     try {
       const result = await getSession(sessionID);
       const info = result && result.data ? result.data : result;
-      if (info) {
-        remember({ ...info, sessionID: info.id || sessionID });
-        return Boolean(info.parentID);
-      }
+      if (info) remember({ ...info, sessionID: info.id || sessionID });
     } catch (error) {
       log("warn", `could not read session ${sessionID}`, {
         error: String(error && error.message ? error.message : error),
       });
     }
-    return false;
+    const after = sessions.get(sessionID) || {};
+    if (after.parentID === undefined) {
+      sessions.set(sessionID, { ...after, parentID: null });
+    }
+  };
+
+  const isSubagent = async (sessionID) => {
+    await ensureParentKnown(sessionID);
+    const known = sessions.get(sessionID);
+    return Boolean(known && known.parentID);
   };
 
   const reportIdle = async (sessionID) => {
@@ -476,6 +502,29 @@ export const createAgentLightV2 = async ({
         if (props.sessionID) awaitingPermission.delete(props.sessionID);
         await reportIdle(props.sessionID);
         break;
+      // Newer V2 builds expose a dedicated question surface. Accept the common
+      // names and nesting so a prompt still turns the light red.
+      case "question.asked":
+      case "question.v2.asked": {
+        const sid = nestedSessionID(props, "question", "form", "info");
+        if (sid) awaitingPermission.add(sid);
+        report(sid, "needs_help");
+        break;
+      }
+      case "question.replied":
+      case "question.v2.replied": {
+        const sid = nestedSessionID(props, "question", "form", "info");
+        if (sid) awaitingPermission.delete(sid);
+        report(sid, "active");
+        break;
+      }
+      case "question.rejected":
+      case "question.v2.rejected": {
+        const sid = nestedSessionID(props, "question", "form", "info");
+        if (sid) awaitingPermission.delete(sid);
+        await reportIdle(sid);
+        break;
+      }
       default:
         break;
     }

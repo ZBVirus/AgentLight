@@ -84,6 +84,9 @@ function wire() {
       populateSettings();
       setView("settings");
     });
+    // The shell collapses the expanded view when it loses focus, if "Always on
+    // top" is on.
+    listen("collapse", () => setView("mini"));
   }
 }
 

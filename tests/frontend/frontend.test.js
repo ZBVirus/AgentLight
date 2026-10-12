@@ -285,7 +285,7 @@ test("changing Always on top applies immediately", async () => {
   assert.equal(call.args.enabled, false);
 });
 
-test("collapsed right-click menu offers layouts and persists the choice", async () => {
+test("collapsed right-click opens the native layout menu", async () => {
   const dom = await boot({ config: baseConfig({ collapse_style: "single" }) });
   store.setView("mini");
   drag.wireMini();
@@ -293,15 +293,9 @@ test("collapsed right-click menu offers layouts and persists the choice", async 
   mini.dispatchEvent(
     new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
   );
-  const items = [...dom.window.document.querySelectorAll("#mini-context-menu .context-item")];
-  const labels = items.map((item) => item.textContent.replace(/[\u2713\u2003]/g, "").trim());
-  assert.deepEqual(labels, ["Single light", "Horizontal lights", "Vertical lights", "Hide"]);
-  assert.match(items[0].textContent, /\u2713/, "current layout is marked");
-
-  items[1].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
   await tick();
-  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
-  assert.ok(saved, "expected set_config");
-  assert.equal(saved.args.config.collapse_style, "triple");
-  assert.equal(saved.args.config.always_on_top, true, "other config fields are preserved");
+  assert.ok(
+    state.calls.some((call) => call.cmd === "show_mini_menu"),
+    "expected show_mini_menu to be invoked",
+  );
 });

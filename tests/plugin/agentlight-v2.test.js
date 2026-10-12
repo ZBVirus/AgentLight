@@ -560,6 +560,21 @@ test("a subagent session is tagged on the wire", async (t) => {
   assert.equal(main.event.subagent, false);
 });
 
+test("a status before session.created still tags the subagent", async (t) => {
+  const h = await harness({ sub: { id: "sub", parentID: "main", title: "Sub" } });
+  t.after(h.restore);
+
+  h.event("session.status", { sessionID: "sub", status: { type: "busy" } });
+  await sleep(COALESCE_WAIT_MS + 100);
+
+  const reported = [...h.calls]
+    .reverse()
+    .find((call) => call.event && call.event.session_id === "sub" && call.mode !== "snapshot");
+  assert.ok(reported, "expected a reported event");
+  assert.equal(reported.event.subagent, true);
+  assert.equal(reported.event.status, "active");
+});
+
 test("debug mode logs event types and payload keys", async (t) => {
   const logs = [];
   const instance = await createAgentLightV2({

@@ -187,6 +187,10 @@ decide and prioritize later.
   expands/collapses within that monitor, preserving the left edge. A window
   exactly on the seam is therefore stable. Verified by unit tests on the
   pure geometry helpers in `src-tauri`.
+- **More harnesses for the "Open" link. Planned.** The session link is built for
+  opencode only; other leading harnesses (Claude Code, Codex CLI, GitHub Copilot
+  CLI, Antigravity, …) get no link and no Open button until their web-UI URL
+  shapes are known.
 - **Subagent visibility. Done (v0.5 line).** Producers tag tool-spawned child
   sessions `subagent: true`. The desktop hides them by default and only fires "A
   session finishes" for main sessions, with an opt-in "Show subagent sessions"

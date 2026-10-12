@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agentlight_core::{
-    ClawlightFileSource, Config, Engine, SessionKey, Snapshot, SourceCommand, SourceId, SourceKind,
-    StateSource, Update, CLAWLIGHT_SOURCE_ID,
+    ClawlightFileSource, CollapseStyle, Config, Engine, SessionKey, Snapshot, SourceCommand,
+    SourceId, SourceKind, StateSource, Update, CLAWLIGHT_SOURCE_ID,
 };
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{ContextMenu, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, RunEvent, State,
@@ -954,6 +954,56 @@ fn play_alarm(sound: Option<String>, volume: u8) {
     });
 }
 
+/// Play the alarm once, at the given sound and volume, for the Settings "Test"
+/// button. Uses the same path as a real alarm so the user hears exactly it.
+#[tauri::command]
+fn test_alarm(sound: Option<String>, volume: u8) {
+    play_alarm(sound, volume);
+}
+
+/// Persist a collapsed-view layout chosen from the native context menu.
+fn set_collapse_style(app: &AppHandle, style: CollapseStyle) {
+    let state = app.state::<AppState>();
+    let mut config = current_config(&state);
+    if config.collapse_style == style {
+        return;
+    }
+    config.collapse_style = style;
+    let _ = agentlight_core::save_config(&state.config_path, &config);
+    *state.config.lock().unwrap() = config.clone();
+    state.engine.set_config(config.clone());
+    let _ = app.emit("config-changed", &config);
+}
+
+/// Right-click menu for the collapsed window. Built as a native OS menu so it
+/// can extend past the small window instead of being clipped by it.
+#[tauri::command]
+fn show_mini_menu(app: AppHandle) -> Result<(), String> {
+    let current = current_config(&app.state::<AppState>()).collapse_style;
+    let mark = |style: CollapseStyle| if style == current { "\u{2713} " } else { "   " };
+    let item = |id: &str, label: String| {
+        MenuItem::with_id(&app, id, label, true, None::<&str>).map_err(|e| e.to_string())
+    };
+    let single = item(
+        "mini-single",
+        format!("{}Single light", mark(CollapseStyle::Single)),
+    )?;
+    let horizontal = item(
+        "mini-triple",
+        format!("{}Horizontal lights", mark(CollapseStyle::Triple)),
+    )?;
+    let vertical = item(
+        "mini-triple-vertical",
+        format!("{}Vertical lights", mark(CollapseStyle::TripleVertical)),
+    )?;
+    let separator = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let hide = item("mini-hide", "Hide".to_string())?;
+    let menu = Menu::with_items(&app, &[&single, &horizontal, &vertical, &separator, &hide])
+        .map_err(|e| e.to_string())?;
+    let window = app.get_window("main").ok_or("no window")?;
+    menu.popup(window).map_err(|e| e.to_string())
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -1102,6 +1152,8 @@ pub fn run() {
             pick_sound_file,
             open_url,
             set_always_on_top,
+            test_alarm,
+            show_mini_menu,
             resize_window,
             window_minimize,
             window_hide,
@@ -1143,6 +1195,20 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "mini-single" => set_collapse_style(app, CollapseStyle::Single),
+            "mini-triple" => set_collapse_style(app, CollapseStyle::Triple),
+            "mini-triple-vertical" => set_collapse_style(app, CollapseStyle::TripleVertical),
+            "mini-hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                app.state::<AppState>()
+                    .visible
+                    .store(false, Ordering::SeqCst);
+            }
+            _ => {}
+        })
         .on_window_event(|window, event| match event {
             // The widget lives in the tray: closing the window hides it.
             WindowEvent::CloseRequested { api, .. } => {
@@ -1152,6 +1218,17 @@ pub fn run() {
                     .state::<AppState>()
                     .visible
                     .store(false, Ordering::SeqCst);
+            }
+            // With "Always on top" on, clicking away from the expanded view tucks
+            // it back to the collapsed light. Settings is left alone so an
+            // in-progress edit is not lost to an outside click.
+            WindowEvent::Focused(false) => {
+                let state = window.state::<AppState>();
+                let always_on_top = state.config.lock().unwrap().always_on_top;
+                let mode = state.window_mode.lock().unwrap().clone();
+                if always_on_top && mode == "detail" {
+                    let _ = window.emit("collapse", ());
+                }
             }
             _ => {}
         })

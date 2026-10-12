@@ -33,6 +33,16 @@ pub struct HubSource {
     revision: AtomicU64,
     sinks: Arc<Mutex<Vec<SourceSink>>>,
     poller: Mutex<Option<PollHandle>>,
+    /// The most recent snapshot the background thread fetched. Reads serve this
+    /// so a render never blocks on the network; the thread refreshes it.
+    cache: Arc<Mutex<Option<CacheEntry>>>,
+}
+
+/// The display-ready slice of a hub snapshot, cached for non-blocking reads.
+#[derive(Clone)]
+struct CacheEntry {
+    health: SourceHealth,
+    sessions: Vec<Session>,
 }
 
 struct PollHandle {
@@ -50,6 +60,7 @@ impl HubSource {
             revision: AtomicU64::new(0),
             sinks: Arc::new(Mutex::new(Vec::new())),
             poller: Mutex::new(None),
+            cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -67,10 +78,12 @@ impl HubSource {
         let thread_stop = stop.clone();
         let client = self.client.clone();
         let sinks = self.sinks.clone();
+        let cache = self.cache.clone();
+        let id = self.id.clone();
         let poll_ms = self.poll_ms;
         std::thread::Builder::new()
             .name("agentlight-hub-stream".to_string())
-            .spawn(move || stream_loop(client, poll_ms, thread_stop, sinks))
+            .spawn(move || stream_loop(client, id, poll_ms, thread_stop, sinks, cache))
             .ok();
         *poller = Some(PollHandle { stop });
     }
@@ -102,17 +115,19 @@ impl StateSource for HubSource {
     fn snapshot(&self, now: DateTime<Utc>) -> SourceSnapshot {
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         let capabilities = self.capabilities();
-        let (health, sessions) = match self.client.snapshot() {
-            Ok(hub) => {
-                let health = health_of(&hub);
-                let sessions = hub
-                    .sessions
-                    .iter()
-                    .map(|row| normalize(&self.id, row))
-                    .collect();
-                (health, sessions)
-            }
-            Err(error) => (SourceHealth::Unreadable(error.to_string()), Vec::new()),
+        // Serve the background thread's latest fetch so a render never blocks on
+        // the network. With no background thread (a direct caller or a test),
+        // fetch synchronously as before.
+        let running = self.poller.lock().unwrap().is_some();
+        let entry = if running {
+            self.cache.lock().unwrap().clone()
+        } else {
+            Some(fetch_entry(&self.client, &self.id))
+        };
+        let (health, sessions) = match entry {
+            Some(entry) => (entry.health, entry.sessions),
+            // Subscribed, but the first fetch has not landed yet.
+            None => (SourceHealth::Missing, Vec::new()),
         };
         SourceSnapshot {
             source: self.id.clone(),
@@ -201,24 +216,33 @@ fn remote_error(error: crate::client::HubError) -> Error {
 /// `std::thread`, no async runtime.
 fn stream_loop(
     client: HubClient,
+    id: SourceId,
     poll_ms: u64,
     stop: Arc<AtomicBool>,
     sinks: Arc<Mutex<Vec<SourceSink>>>,
+    cache: Arc<Mutex<Option<CacheEntry>>>,
 ) {
     let reconnect_delay = poll_ms.max(MIN_POLL_MS);
     let mut last: Option<String> = None;
+    // Prime the cache once before the first connect so an unreachable hub
+    // reports its error promptly without the UI ever blocking on it.
+    poll_once(&client, &id, &mut last, &sinks, &cache);
     while !stop.load(Ordering::SeqCst) {
         match client.events_stream() {
             Ok(response) => {
+                // Refresh and signal on every connect so a subscriber renders
+                // (and a reconnect is visible) before the first frame.
+                refresh_cache(&client, &id, &cache);
                 emit(&sinks);
                 let reader = std::io::BufReader::new(response);
                 crate::sse::read_frames(reader, &stop, &mut |event| {
                     if matches!(event, "update" | "lagged") {
+                        refresh_cache(&client, &id, &cache);
                         emit(&sinks);
                     }
                 });
             }
-            Err(_) => poll_once(&client, &mut last, &sinks),
+            Err(_) => poll_once(&client, &id, &mut last, &sinks, &cache),
         }
         if !stop.load(Ordering::SeqCst) {
             sleep_interruptible(&stop, reconnect_delay);
@@ -226,18 +250,48 @@ fn stream_loop(
     }
 }
 
-/// One fallback poll: fetch the authoritative snapshot and emit only when its
+/// Fetch the authoritative snapshot into the cache without signaling.
+fn refresh_cache(client: &HubClient, id: &SourceId, cache: &Mutex<Option<CacheEntry>>) {
+    *cache.lock().unwrap() = Some(fetch_entry(client, id));
+}
+
+/// Fetch the authoritative snapshot, refresh the cache, and emit only when its
 /// signature changes (matching the pre-SSE behavior).
-fn poll_once(client: &HubClient, last: &mut Option<String>, sinks: &Mutex<Vec<SourceSink>>) {
-    let signature = client.snapshot().ok().map(|snapshot| signature(&snapshot));
-    if signature != *last {
-        *last = signature;
+fn poll_once(
+    client: &HubClient,
+    id: &SourceId,
+    last: &mut Option<String>,
+    sinks: &Mutex<Vec<SourceSink>>,
+    cache: &Mutex<Option<CacheEntry>>,
+) {
+    let entry = fetch_entry(client, id);
+    let current = cache_signature(&entry);
+    *cache.lock().unwrap() = Some(entry);
+    if Some(&current) != last.as_ref() {
+        *last = Some(current);
         emit(sinks);
     }
 }
 
-fn signature(snapshot: &Snapshot) -> String {
-    serde_json::to_string(snapshot).unwrap_or_default()
+/// Fetch one snapshot from the hub into a cache entry, mapping an error to an
+/// unreadable health rather than losing it.
+fn fetch_entry(client: &HubClient, id: &SourceId) -> CacheEntry {
+    match client.snapshot() {
+        Ok(hub) => CacheEntry {
+            health: health_of(&hub),
+            sessions: hub.sessions.iter().map(|row| normalize(id, row)).collect(),
+        },
+        Err(error) => CacheEntry {
+            health: SourceHealth::Unreadable(error.to_string()),
+            sessions: Vec::new(),
+        },
+    }
+}
+
+fn cache_signature(entry: &CacheEntry) -> String {
+    let health = format!("{:?}", entry.health);
+    let sessions = serde_json::to_string(&entry.sessions).unwrap_or_default();
+    format!("{health}|{sessions}")
 }
 
 fn emit(sinks: &Mutex<Vec<SourceSink>>) {

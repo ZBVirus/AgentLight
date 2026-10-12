@@ -120,6 +120,12 @@ export function populateSettings() {
   // "Any status change" acts as a select-all within its trigger row.
   $("set-notification-any").onchange = () => syncAnyTrigger("notification");
   $("set-alarm-any").onchange = () => syncAnyTrigger("alarm");
+  for (const kind of ["notification", "alarm"]) {
+    const ids = TRIGGER_IDS[kind];
+    for (const key of ["needsHelp", "done", "subagent"]) {
+      $(ids[key]).onchange = () => syncSpecificTriggers(kind);
+    }
+  }
   // Apply "Always on top" immediately so the toolbar pin and this checkbox
   // stay in sync without a Save.
   $("set-top").onchange = applyAlwaysOnTop;
@@ -128,6 +134,7 @@ export function populateSettings() {
   $("btn-server-token-clear").onclick = clearAdminToken;
   $("btn-alarm-sound-pick").onclick = chooseAlarmSound;
   $("btn-alarm-sound-clear").onclick = clearAlarmSound;
+  $("btn-alarm-test").onclick = testAlarm;
   $("btn-reset-colors").onclick = resetColors;
   renderSourceFields();
   renderNotificationRows();
@@ -342,6 +349,20 @@ function renderAlarmVolume() {
   $("set-alarm-volume-value").textContent = `${$("set-alarm-volume").value}%`;
 }
 
+// Play the alarm at the current (unsaved) sound and volume so the user can
+// judge the setting before saving.
+async function testAlarm() {
+  if (!invoke) return;
+  try {
+    await invoke("test_alarm", {
+      sound: $("set-alarm-sound").value.trim() || null,
+      volume: Number($("set-alarm-volume").value),
+    });
+  } catch (error) {
+    toast(`Alarm test failed: ${error}`);
+  }
+}
+
 // Trigger fields (`notification_trigger` / `alarm_trigger`) are lists of
 // `needs_help` / `done` / `any_status`. A single string is accepted too.
 const TRIGGER_IDS = {
@@ -389,6 +410,13 @@ function syncAnyTrigger(kind) {
   $(ids.needsHelp).checked = on;
   $(ids.done).checked = on;
   $(ids.subagent).checked = on;
+}
+
+// Clearing a specific trigger clears "Any status change" too: it is no longer
+// true that any change fires.
+function syncSpecificTriggers(kind) {
+  const ids = TRIGGER_IDS[kind];
+  $(ids.any).checked = $(ids.needsHelp).checked && $(ids.done).checked && $(ids.subagent).checked;
 }
 
 function readTriggers(kind) {
