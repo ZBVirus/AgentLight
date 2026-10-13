@@ -71,6 +71,17 @@ fn get_config(state: State<'_, AppState>) -> Config {
     current_config(&state)
 }
 
+/// The app version and build id, for the Settings "Version" line so the running
+/// build is identifiable (the package version alone does not change per build).
+#[tauri::command]
+fn app_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    match option_env!("AGENTLIGHT_BUILD_ID") {
+        Some(build) if !build.is_empty() && build != "dev" => format!("{version} · {build}"),
+        _ => version.to_string(),
+    }
+}
+
 #[tauri::command]
 fn set_config(
     app: AppHandle,
@@ -1146,6 +1157,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_config,
+            app_version,
             set_config,
             clear_session,
             clear_done,

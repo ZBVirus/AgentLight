@@ -135,6 +135,7 @@ export function populateSettings() {
   $("btn-alarm-sound-pick").onclick = chooseAlarmSound;
   $("btn-alarm-sound-clear").onclick = clearAlarmSound;
   $("btn-alarm-test").onclick = testAlarm;
+  refreshAppVersion();
   $("btn-reset-colors").onclick = resetColors;
   renderSourceFields();
   renderNotificationRows();
@@ -346,6 +347,17 @@ async function chooseAlarmSound() {
 
 function clearAlarmSound() {
   $("set-alarm-sound").value = "";
+}
+
+// Show the running app version and build id; the package version alone does not
+// change between builds.
+async function refreshAppVersion() {
+  if (!invoke) return;
+  try {
+    $("app-version").value = await invoke("app_version");
+  } catch {
+    $("app-version").value = "";
+  }
 }
 
 // Show the current alarm volume beside the slider.

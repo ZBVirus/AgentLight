@@ -68,6 +68,8 @@ function check(name, ok, detail = "") {
   await page.locator("#btn-settings").click();
   await sleep(1000);
   check("settings view opens", await page.locator("#view-settings").isVisible());
+  const version = await page.locator("#app-version").inputValue();
+  check("settings shows a version", /^\d+\.\d+\.\d+/.test(version), version);
   const notifEnabled = await page.locator("#set-notifications").isChecked();
   const rowsHidden = await page.locator("#set-notification-rows").evaluate((el) => el.classList.contains("hidden"));
   check("notification rows gated by the flag", rowsHidden === !notifEnabled, `enabled=${notifEnabled} hidden=${rowsHidden}`);

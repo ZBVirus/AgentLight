@@ -87,6 +87,7 @@ first.window.__TAURI__ = {
       state.calls.push({ cmd, args });
       if (cmd === "get_config") return state.config;
       if (cmd === "get_snapshot") return state.snapshot;
+      if (cmd === "app_version") return "0.4.0 · test";
       if (cmd === "set_config") return state.config;
       if (cmd === "get_server_status")
         return { enabled: false, url: null, admin_token_set: false, pairing_code: null, pairing_expires_at: null, devices: [] };
@@ -231,6 +232,13 @@ test("loading any_status selects every trigger in the row", async () => {
   assert.equal(byId("set-notification-needs-help").checked, true);
   assert.equal(byId("set-notification-done").checked, true);
   assert.equal(byId("set-notification-any").checked, true);
+});
+
+test("settings shows the app version and build id", async () => {
+  await boot();
+  await tick();
+  assert.match(byId("app-version").value, /^0\.4\.0/);
+  assert.match(byId("app-version").value, /test/);
 });
 
 test("subagent visibility and the subagent-finished trigger save", async () => {
