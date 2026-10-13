@@ -1,8 +1,11 @@
 # Full Windows verification for AgentLight:
-#   - Playwright: frontend (dist/) with a mocked __TAURI__, plus the real hub web UI
 #   - server HTTP smoke: ingest / snapshot / removed-session tombstone / URL template
 #   - optional UI Automation harness for native window behavior (interactive desktop)
-#   - optional WebView2 CDP end-to-end against the real app window
+#   - optional WebView2 CDP end-to-end against the real app window (the desktop GUI)
+#   - opt-in Playwright browser suite (frontend + hub web UI): pass -IncludeWebUi
+#
+# The browser/web-UI suite is not part of the default run; it is slower and less
+# important than the desktop-GUI coverage, so run it only when asked.
 #
 # Usage (host):
 #   powershell -ExecutionPolicy Bypass -File tests\run-windows.ps1
@@ -19,7 +22,8 @@ param(
     [string]$ServerExe = "",
     [string]$AppExe = "",
     [switch]$SkipUia,
-    [switch]$SkipCdp
+    [switch]$SkipCdp,
+    [switch]$IncludeWebUi
 )
 
 $ErrorActionPreference = "Continue"
@@ -73,37 +77,42 @@ $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) { Say "FATAL: node not on PATH"; $script:Lines | Set-Content $Report; exit 1 }
 $npmCli = Join-Path (Split-Path $node -Parent) "node_modules\npm\bin\npm-cli.js"
 
-Step "playwright install" {
-    $cli = Join-Path $UiTestsDir "node_modules\playwright\cli.js"
-    # Prefer a system browser (no download) when present; else bundled Chromium.
-    $edge = @(
-        (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe")
-    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-    if ($edge) {
-        $env:PLAYWRIGHT_CHANNEL = "msedge"
-        # Keep the package install from downloading a browser we will not use.
-        $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
-        Say "using system Edge: $edge"
+if ($IncludeWebUi) {
+    Step "playwright install" {
+        $cli = Join-Path $UiTestsDir "node_modules\playwright\cli.js"
+        # Prefer a system browser (no download) when present; else bundled Chromium.
+        $edge = @(
+            (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe")
+        ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if ($edge) {
+            $env:PLAYWRIGHT_CHANNEL = "msedge"
+            # Keep the package install from downloading a browser we will not use.
+            $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+            Say "using system Edge: $edge"
+        }
+        if (-not (Test-Path $cli)) {
+            Push-Location $UiTestsDir
+            & $node $npmCli install --include=dev --no-audit --no-fund | Out-Null
+            Pop-Location
+        }
+        if (-not $edge) { & $node $cli install chromium | Out-Null }
+        Check (Test-Path $cli) "playwright present" "playwright cli still missing"
     }
-    if (-not (Test-Path $cli)) {
-        Push-Location $UiTestsDir
-        & $node $npmCli install --include=dev --no-audit --no-fund | Out-Null
-        Pop-Location
-    }
-    if (-not $edge) { & $node $cli install chromium | Out-Null }
-    Check (Test-Path $cli) "playwright present" "playwright cli still missing"
-}
 
-if ($ServerExe) { $env:AGENTLIGHT_SERVER = $ServerExe }
-Step "playwright suite (frontend + web UI)" {
-    $cli = Join-Path $UiTestsDir "node_modules\playwright\cli.js"
-    Push-Location $UiTestsDir
-    & $node $cli test 2>&1 | Tee-Object -Variable pw | Out-Null
-    Pop-Location
-    $pw | ForEach-Object { Say $_ }
-    $text = ($pw | Out-String)
-    Check ($text -match "(\d+) passed") "playwright suite passed" "playwright suite failed"
+    if ($ServerExe) { $env:AGENTLIGHT_SERVER = $ServerExe }
+    Step "playwright suite (frontend + web UI)" {
+        $cli = Join-Path $UiTestsDir "node_modules\playwright\cli.js"
+        Push-Location $UiTestsDir
+        & $node $cli test 2>&1 | Tee-Object -Variable pw | Out-Null
+        Pop-Location
+        $pw | ForEach-Object { Say $_ }
+        $text = ($pw | Out-String)
+        Check ($text -match "(\d+) passed") "playwright suite passed" "playwright suite failed"
+    }
+} else {
+    Say ""
+    Say "== playwright / web UI == skipped (opt-in; pass -IncludeWebUi to run the browser suite)."
 }
 
 Step "server HTTP smoke" {

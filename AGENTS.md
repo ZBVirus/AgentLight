@@ -80,16 +80,18 @@ Every app-level suite lives under `tests/` (see `tests/README.md`):
 
 ```bash
 bash tests/run-linux.sh                 # Rust + plugin + jsdom + server e2e
-powershell -File tests\run-windows.ps1  # Playwright + server smoke + native harness + WebView2 CDP
+powershell -File tests\run-windows.ps1  # server smoke + native harness + WebView2 CDP (desktop GUI)
 ```
 
 Before handing over a build, run **both**: `run-linux.sh` for the non-GUI
-layers, and `run-windows.ps1` on a Windows host/sandbox for the GUI layers
-(Playwright frontend + hub web client, server smoke, the UI Automation native
-window harness, and the WebView2 CDP end-to-end). The CDP suite needs the
-CDP-enabled test build from `tests/windows/build-local.ps1`, not the release
-build. Launching the app and seeing it stay alive is a smoke test, **not** a GUI
-test — report the GUI suite's own pass/fail.
+layers, and `run-windows.ps1` on a Windows host/sandbox for the desktop-GUI
+layers (server smoke, the UI Automation native window harness, and the WebView2
+CDP end-to-end). The CDP suite needs the CDP-enabled test build from
+`tests/windows/build-local.ps1`, not the release build. The **Playwright browser
+suite (frontend + hub web UI) is opt-in** (`tests\run-windows.ps1 -IncludeWebUi`)
+— it is slower and lower priority than the desktop GUI, so it does not run by
+default; run it only when asked. Launching the app and seeing it stay alive is a
+smoke test, **not** a GUI test — report the GUI suite's own pass/fail.
 
 In-container `npm install` needs `--include=dev` (`NODE_ENV=production` is set),
 and Playwright's Chromium cannot launch (missing system libs): run the jsdom
