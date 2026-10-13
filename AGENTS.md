@@ -169,10 +169,15 @@ not locally.
 - Reuse clawlight's crate choices for shared concerns: `fs4` for the lock,
   `notify` for watching, `chrono` for timestamps.
 - Tauri command args are camelCase on the JS side (`sessionId` ↔ `session_id`).
-- Add tests for any behavior change. `snapshot::build_snapshot_at` takes an
-  injected clock for deterministic tests; `src-tauri` geometry helpers are
-  pure and unit-tested. New app-level suites go under `tests/` (see
-  `tests/README.md`); keep plugin tests in `tests/plugin/`.
+- Add tests for any behavior change — every feature or behavior change ships
+  with tests at the right layer, as part of the change, not later: core logic in
+  `crates/*`, the producer mapping in `tests/plugin/`, the frontend in
+  `tests/frontend` (jsdom), and anything that touches the real window or app
+  shell in the Windows GUI suites (`tests/windows/e2e-cdp.js` and
+  `ui-harness.ps1`). Extend the GUI suite whenever a feature changes what the
+  desktop app does. `snapshot::build_snapshot_at` takes an injected clock for
+  deterministic tests; `src-tauri` geometry helpers are pure and unit-tested.
+  New app-level suites go under `tests/` (see `tests/README.md`).
 - If clawlight's state contract changes, update `docs/state-format.md` and the
   parser together. Do not guess semantics from the JSON alone.
 - If you add or change a config field, update the README table and

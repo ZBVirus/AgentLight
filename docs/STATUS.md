@@ -129,8 +129,9 @@ history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
       action, the web-client pairing flow, and static `style.css` size checks.
     - **`tests/playwright`**: Chromium suites for the frontend (mocked
       `__TAURI__`) and the real hub web client (spawns `agentlight-server`).
-    - **CI**: `agentlight-source-events` added to the core job, plus `frontend`
-      (jsdom) and `playwright` jobs.
+    - **CI**: `agentlight-source-events` added to the core job, plus a `frontend`
+      (jsdom) job. (The `playwright` job was removed here; the web-UI suite is
+      opt-in via `run-windows.ps1 -IncludeWebUi`.)
     - **Test suites + runners**: `tests/run-linux.sh`, `tests/run-windows.ps1`,
       `tests/windows/ui-harness.ps1` (Win32 + UI Automation for native window
       behavior), and `tests/windows/e2e-cdp.js` (Playwright over WebView2 CDP),
@@ -148,10 +149,10 @@ history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
 | `node --check` on `dist/**/*.js` | Linux | green |
 | `cargo check -p agentlight` (shell, staged sysroot) | Linux | green |
 | Server end-to-end (healthz, ingest, tombstone, URL template) | Linux | green |
-| Playwright (frontend + hub web client) | CI `ubuntu-latest` | green |
+| Playwright (frontend + hub web client) | opt-in (`run-windows.ps1 -IncludeWebUi`); not in CI | not run here (browser download unavailable in the sandbox) |
 | Windows build (app + server) | GitHub Actions `windows-latest`; also built locally in the Windows Sandbox | green |
 | Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `tests/windows/ui-harness.ps1` | green (2026-10-09) |
-| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating, not resizable) | CI `windows-latest` (`windows-gui`) and Windows Sandbox (`tests/windows/e2e-cdp.js`) | green 18/18 (2026-10-09) |
+| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating + new-feature settings, not resizable, native right-click) | CI `windows-latest` (`windows-gui`) and Windows Sandbox (`tests/windows/e2e-cdp.js`) | green 25/25 (2026-10-13) |
 | Toast actually rendered (header "AgentLight") | Windows desktop | AUMID registry entry verified; rendering still needs a human |
 
 ## Building a test exe

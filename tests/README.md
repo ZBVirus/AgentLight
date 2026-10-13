@@ -23,5 +23,6 @@ Runners:
 PsExec into Session 1, local-disk build).
 
 CI (`.github/workflows/ci.yml`) mirrors these: `core` (Rust), `plugin`,
-`frontend` (jsdom), `playwright` (Chromium), `windows-gui` (CDP end-to-end),
-plus `windows-app` / `windows-server` for the release artifacts.
+`frontend` (jsdom), `windows-gui` (CDP end-to-end), plus `windows-app` /
+`windows-server` for the release artifacts. The Playwright web-UI suite is
+opt-in and not in CI for now.

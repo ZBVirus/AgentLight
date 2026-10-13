@@ -72,6 +72,36 @@ function check(name, ok, detail = "") {
   const rowsHidden = await page.locator("#set-notification-rows").evaluate((el) => el.classList.contains("hidden"));
   check("notification rows gated by the flag", rowsHidden === !notifEnabled, `enabled=${notifEnabled} hidden=${rowsHidden}`);
 
+  // New features' settings surface.
+  check(
+    "session link offers OpenChamber",
+    (await page.locator('#set-session-link option[value="openchamber"]').count()) === 1,
+  );
+  check("show-subagents toggle exists", (await page.locator("#set-show-subagents").count()) === 1);
+
+  // "Any status change" is a select-all. Notifications must be on so the row is
+  // interactive.
+  await page.locator("#set-notifications").setChecked(true);
+  await sleep(300);
+  await page.locator("#set-notification-any").setChecked(true);
+  const allTriggers = await page.evaluate(() =>
+    ["set-notification-needs-help", "set-notification-done", "set-notification-subagent"].every(
+      (id) => document.getElementById(id).checked,
+    ),
+  );
+  check("any-status selects the specific triggers", allTriggers);
+  await page.locator("#set-notification-done").setChecked(false);
+  check(
+    "unchecking a specific clears any-status",
+    (await page.locator("#set-notification-any").isChecked()) === false,
+  );
+
+  // Alarm volume + Test control.
+  await page.locator("#set-alarms-enabled").setChecked(true);
+  await sleep(300);
+  check("alarm volume slider present", (await page.locator("#set-alarm-volume").count()) === 1);
+  check("alarm Test button present", (await page.locator("#btn-alarm-test").count()) === 1);
+
   // Back to the detail view, then collapse.
   await page.locator("#btn-settings-back").click();
   await sleep(1000);
@@ -80,6 +110,13 @@ function check(name, ok, detail = "") {
   check("collapse returns to mini", (await view()) === "mini");
   const mini = await innerSize();
   check("native window back to 88x88", mini.w === 88 && mini.h === 88, JSON.stringify(mini));
+
+  // Right-click the collapsed view opens the native layout menu. The menu is an
+  // OS popup, not part of the DOM, so assert the handler runs cleanly and the
+  // app stays in the mini view.
+  await page.locator("#view-mini").click({ button: "right", position: { x: 20, y: 20 } });
+  await sleep(500);
+  check("right-click on the collapsed view is handled", (await view()) === "mini");
 
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);

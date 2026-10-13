@@ -269,6 +269,31 @@ test("openchamber link mode keeps the server field and its default", async () =>
   assert.equal(byId("set-session-link-base").placeholder, "http://localhost:3000");
 });
 
+test("unchecking a specific trigger clears any-status", async () => {
+  await boot({
+    config: baseConfig({ notifications: true, notification_trigger: ["any_status"] }),
+  });
+  assert.equal(byId("set-notification-any").checked, true);
+  const done = byId("set-notification-done");
+  done.checked = false;
+  done.dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-notification-any").checked, false);
+  assert.equal(byId("set-notification-needs-help").checked, true, "the others stay");
+});
+
+test("the alarm Test button plays the current sound and volume", async () => {
+  await boot({ config: baseConfig({ alarms_enabled: true, alarm_volume: 55 }) });
+  byId("set-alarm-volume").value = "35";
+  byId("btn-alarm-test").dispatchEvent(
+    new global.window.MouseEvent("click", { bubbles: true }),
+  );
+  await tick();
+  const call = [...state.calls].reverse().find((c) => c.cmd === "test_alarm");
+  assert.ok(call, "expected test_alarm");
+  assert.equal(call.args.volume, 35);
+  assert.equal(call.args.sound, null);
+});
+
 test("alarm volume populates and saves", async () => {
   await boot({ config: baseConfig({ alarms_enabled: true, alarm_volume: 40 }) });
   assert.equal(byId("set-alarm-volume").value, "40");
