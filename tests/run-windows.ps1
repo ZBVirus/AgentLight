@@ -75,12 +75,23 @@ $npmCli = Join-Path (Split-Path $node -Parent) "node_modules\npm\bin\npm-cli.js"
 
 Step "playwright install" {
     $cli = Join-Path $UiTestsDir "node_modules\playwright\cli.js"
+    # Prefer a system browser (no download) when present; else bundled Chromium.
+    $edge = @(
+        (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe")
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if ($edge) {
+        $env:PLAYWRIGHT_CHANNEL = "msedge"
+        # Keep the package install from downloading a browser we will not use.
+        $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+        Say "using system Edge: $edge"
+    }
     if (-not (Test-Path $cli)) {
         Push-Location $UiTestsDir
         & $node $npmCli install --include=dev --no-audit --no-fund | Out-Null
         Pop-Location
     }
-    & $node $cli install chromium | Out-Null
+    if (-not $edge) { & $node $cli install chromium | Out-Null }
     Check (Test-Path $cli) "playwright present" "playwright cli still missing"
 }
 
