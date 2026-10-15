@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use agentlight_core::{
     ClawlightFileSource, CollapseStyle, Config, Engine, SessionKey, Snapshot, SourceCommand,
@@ -20,6 +21,9 @@ use tauri::{
     WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_clipboard_manager::ClipboardExt;
+
+mod diagnostics;
 
 /// The embedded server's state, as shown in the settings view.
 #[derive(serde::Serialize)]
@@ -43,6 +47,18 @@ struct AppState {
     visible: AtomicBool,
     /// Which view owns the window right now (`mini`, `detail`, or `settings`).
     window_mode: Mutex<String>,
+    /// When the window last moved. A drag also blurs the window, so the
+    /// collapse-on-outside-click check uses this to tell a drag from a real
+    /// click somewhere else.
+    last_moved: Mutex<Option<Instant>>,
+    /// When the webview reported a drag start (mousedown on a drag region).
+    /// Focus loss while dragging must not collapse the view; the flag is only
+    /// trusted briefly, so a missed mouseup cannot suppress a real click away.
+    dragging_since: Mutex<Option<Instant>>,
+    /// Last `/healthz` probe of the configured hub, for Settings and
+    /// diagnostics. Filled at startup, when the hub source changes, and by the
+    /// Settings Refresh button; never probed implicitly on open or save.
+    hub_status: Mutex<Option<(HubStatus, Instant)>>,
     /// Top-left of the collapsed window, restored when expanding did not move
     /// it. `None` until the first collapse.
     mini_anchor: Mutex<Option<PhysicalPosition<i32>>>,
@@ -61,7 +77,20 @@ struct AppState {
 // Commands
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+/// How long a webview-reported drag start suppresses the outside-click
+/// collapse. Focus loss while starting a drag fires right after mousedown, so a
+/// sub-second window is enough; a missed mouseup must not suppress real
+/// click-away for longer than this.
+const DRAG_GRACE: Duration = Duration::from_millis(750);
+/// Fallback for a missed drag report: a window that moved in the last few
+/// hundred milliseconds is being dragged, not clicked away from.
+const MOVE_GRACE: Duration = Duration::from_millis(250);
+
+// `async` runs the body on a worker thread instead of the main thread. The
+// snapshot may read a file (or a hub-backed cache) and a mutation may do a
+// blocking HTTP round trip to the hub, so neither may block the event loop and
+// freeze the widget.
+#[tauri::command(async)]
 fn get_snapshot(state: State<'_, AppState>) -> Snapshot {
     state.engine.snapshot_now()
 }
@@ -75,11 +104,151 @@ fn get_config(state: State<'_, AppState>) -> Config {
 /// build is identifiable (the package version alone does not change per build).
 #[tauri::command]
 fn app_version() -> String {
+    version_string()
+}
+
+fn version_string() -> String {
     let version = env!("CARGO_PKG_VERSION");
     match option_env!("AGENTLIGHT_BUILD_ID") {
         Some(build) if !build.is_empty() && build != "dev" => format!("{version} · {build}"),
         _ => version.to_string(),
     }
+}
+
+/// The last `/healthz` result for a hub: reachability plus the hub's own
+/// version. Cached in [`AppState`] so opening Settings or copying diagnostics
+/// never waits on the network; only startup, a hub-source change, and the
+/// Settings Refresh button probe.
+#[derive(Clone, serde::Serialize)]
+struct HubStatus {
+    url: String,
+    reachable: bool,
+    version: Option<String>,
+    schema_version: Option<u32>,
+    error: Option<String>,
+    /// When this result was checked, local time.
+    checked_at: String,
+}
+
+/// One `/healthz` request. `url` is the address to probe (the caller decides
+/// whether that is the saved config or the Settings field). The duration is
+/// logged: one slow request is the usual reason a hub command feels slow.
+fn probe_hub(url: &str, token: Option<String>) -> HubStatus {
+    let started = Instant::now();
+    let client = agentlight_hub_client::HubClient::new(agentlight_hub_client::HubConfig {
+        id: agentlight_hub_client::DEFAULT_HUB_ID.to_string(),
+        base_url: url.to_string(),
+        token,
+        poll_ms: agentlight_hub_client::DEFAULT_POLL_MS,
+    });
+    let checked_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let status = match client.health() {
+        Ok(health) => HubStatus {
+            url: url.to_string(),
+            reachable: true,
+            version: health.version,
+            schema_version: Some(health.schema_version),
+            error: None,
+            checked_at,
+        },
+        Err(error) => HubStatus {
+            url: url.to_string(),
+            reachable: false,
+            version: None,
+            schema_version: None,
+            error: Some(error.to_string()),
+            checked_at,
+        },
+    };
+    diagnostics::line(
+        "info",
+        &format!(
+            "hub probe {url}: {} ({} ms, checked {})",
+            hub_status_line(&status),
+            started.elapsed().as_millis(),
+            status.checked_at
+        ),
+    );
+    status
+}
+
+/// Probe the configured hub and remember the result. No-op for a file source.
+fn refresh_hub_status(state: &AppState) {
+    let config = state.config.lock().unwrap().clone();
+    if config.source_kind != SourceKind::Hub {
+        return;
+    }
+    let status = probe_hub(&config.hub_url, config.hub_token.clone());
+    *state.hub_status.lock().unwrap() = Some((status, Instant::now()));
+}
+
+/// Probe off the caller's thread: startup and hub-source changes must not block
+/// the window or a Save.
+fn refresh_hub_status_in_background(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        refresh_hub_status(&state);
+    });
+}
+
+/// A one-line rendering of a hub status, shared by the log and diagnostics.
+fn hub_status_line(status: &HubStatus) -> String {
+    if status.reachable {
+        format!(
+            "reachable · version {} · schema {}",
+            status.version.as_deref().unwrap_or("unknown"),
+            status
+                .schema_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string())
+        )
+    } else {
+        format!(
+            "unreachable: {}",
+            status.error.as_deref().unwrap_or("no answer")
+        )
+    }
+}
+
+/// Probe a hub address on demand (the Settings Refresh button) and cache it. A
+/// blank `url` falls back to the configured hub address. `async` because it is
+/// a network call; `/healthz` needs no token, so this works before pairing.
+#[tauri::command(async)]
+fn get_hub_status(state: State<'_, AppState>, url: String, token: Option<String>) -> HubStatus {
+    let config = current_config(&state);
+    let url = url.trim();
+    let base_url = if url.is_empty() {
+        config.hub_url.clone()
+    } else {
+        url.to_string()
+    };
+    let token = token.or_else(|| config.hub_token.clone());
+    let status = probe_hub(&base_url, token);
+    *state.hub_status.lock().unwrap() = Some((status.clone(), Instant::now()));
+    status
+}
+
+/// The cached probe result, without touching the network. Settings renders this
+/// on open; diagnostics use it too.
+#[tauri::command]
+fn get_hub_status_cached(state: State<'_, AppState>) -> Option<HubStatus> {
+    state
+        .hub_status
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(status, _)| status.clone())
+}
+
+/// Put a redacted diagnostics report (versions, source state, hub health, log
+/// tail) on the clipboard. Tokens are reported as set/not set, never copied.
+#[tauri::command(async)]
+fn copy_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let report = build_diagnostics(&state).render();
+    app.clipboard()
+        .write_text(report)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -101,6 +270,15 @@ fn set_config(
     let config = config.sanitized();
     let previous = current_config(&state);
 
+    // A no-op save writes nothing and applies nothing: the settings form can be
+    // saved repeatedly (Ctrl+S) without a disk write or an autostart/topmost
+    // toggle. An enabled-but-not-running server is the exception, so a failed
+    // startup can be retried by saving.
+    let server_running = state.server.lock().unwrap().is_some();
+    if config == previous && config.server_enabled == server_running {
+        return Ok(config);
+    }
+
     // Reject a bad bind before doing anything else.
     if config.server_enabled {
         parse_server_bind(&config.server_bind)?;
@@ -112,30 +290,44 @@ fn set_config(
 
     agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
 
-    if let Some(window) = app.get_webview_window("main") {
-        // The pin / "Always on top" setting is the single authority on topmost.
-        let _ = window.set_always_on_top(config.always_on_top);
+    if config.always_on_top != previous.always_on_top {
+        if let Some(window) = app.get_webview_window("main") {
+            // The pin / "Always on top" setting is the single authority on topmost.
+            let _ = window.set_always_on_top(config.always_on_top);
+        }
     }
-    apply_autostart(&app, config.start_at_login);
+    if config.start_at_login != previous.start_at_login {
+        apply_autostart(&app, config.start_at_login);
+    }
 
     *state.config.lock().unwrap() = config.clone();
     state.engine.set_config(config.clone());
     if source_fields_changed(&previous, &config) {
         restart_source(&state.engine, &config);
+        // A hub address/token change is a new connection: probe it in the
+        // background so Settings and diagnostics have a fresh cached result.
+        refresh_hub_status_in_background(&app);
     }
+    diagnostics::line(
+        "info",
+        &format!("config saved to {}", state.config_path.display()),
+    );
     let _ = app.emit("config-changed", &config);
     Ok(config)
 }
 
-#[tauri::command]
+/// Remove one session. `async` keeps the blocking hub round trip off the main
+/// thread, so the window keeps painting while the command is in flight.
+#[tauri::command(async)]
 fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    let started = Instant::now();
     // Use whatever source the engine is currently reading so Remove works in
     // both file and hub mode.
     let source = state
         .engine
         .source_id()
         .unwrap_or_else(|| SourceId::new(CLAWLIGHT_SOURCE_ID));
-    let key = SessionKey::new(source, session_id);
+    let key = SessionKey::new(source, session_id.clone());
     let existed = state.engine.has_session(&key);
     state
         .engine
@@ -144,15 +336,32 @@ fn clear_session(state: State<'_, AppState>, session_id: String) -> Result<bool,
     if existed {
         state.engine.refresh();
     }
+    // The duration covers the hub round trip(s); the log is the place to see
+    // where a slow Remove spent its time.
+    diagnostics::line(
+        "info",
+        &format!(
+            "remove {session_id} (existed={existed}): {} ms",
+            started.elapsed().as_millis()
+        ),
+    );
     Ok(existed)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_done(state: State<'_, AppState>) -> Result<usize, String> {
+    let started = Instant::now();
     let removed = state.engine.clear_done().map_err(|e| e.to_string())?;
     if removed > 0 {
         state.engine.refresh();
     }
+    diagnostics::line(
+        "info",
+        &format!(
+            "clear done ({removed}): {} ms",
+            started.elapsed().as_millis()
+        ),
+    );
     Ok(removed)
 }
 
@@ -326,25 +535,37 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_always_on_top(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<(), String> {
+fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_always_on_top(&app, enabled)
+}
+
+/// Apply and persist the pin / "Always on top" flag. Shared by the command, the
+/// Settings checkbox (via the command), and the collapsed view's context menu.
+fn apply_always_on_top(app: &AppHandle, enabled: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window
             .set_always_on_top(enabled)
             .map_err(|e| e.to_string())?;
     }
+    let state = app.state::<AppState>();
     let mut config = current_config(&state);
     if config.always_on_top != enabled {
         config.always_on_top = enabled;
         agentlight_core::save_config(&state.config_path, &config).map_err(|e| e.to_string())?;
         *state.config.lock().unwrap() = config.clone();
         state.engine.set_config(config.clone());
+        diagnostics::line("info", &format!("always on top -> {enabled}"));
         let _ = app.emit("config-changed", &config);
     }
     Ok(())
+}
+
+/// The webview reports a drag start (mousedown on a drag region) and end
+/// (mouseup) so the outside-click collapse can tell a drag from a real click
+/// away without deferring real clicks.
+#[tauri::command]
+fn set_dragging(state: State<'_, AppState>, dragging: bool) {
+    *state.dragging_since.lock().unwrap() = dragging.then(Instant::now);
 }
 
 /// Resize the window for a view and keep it inside the right monitor work area.
@@ -591,6 +812,115 @@ fn current_config(state: &State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
 
+/// A one-line source description for logs and diagnostics.
+fn source_summary(config: &Config) -> String {
+    match config.source_kind {
+        SourceKind::Hub => format!("hub {}", config.hub_url),
+        SourceKind::File | SourceKind::Push => {
+            format!("file {}", config.state_file().display())
+        }
+    }
+}
+
+/// The log file beside the config, so a portable exe keeps it with its state.
+fn log_file_path(state: &AppState) -> PathBuf {
+    state
+        .config_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join("agentlight.log"))
+        .unwrap_or_else(|| PathBuf::from("agentlight.log"))
+}
+
+/// Build the redacted "Copy diagnostics" report. Never includes a token or a
+/// token hash; only whether one is set.
+fn build_diagnostics(state: &AppState) -> diagnostics::Diagnostics {
+    let config = state.config.lock().unwrap().clone();
+    let snapshot = state.engine.snapshot_now();
+    // Cached only: Copy diagnostics must be instant and must never hold the
+    // clipboard back on a network probe.
+    let hub = if config.source_kind == SourceKind::Hub {
+        match state.hub_status.lock().unwrap().as_ref() {
+            Some((status, _)) => format!(
+                "{} (checked {})",
+                hub_status_line(status),
+                status.checked_at
+            ),
+            None => "not probed yet".to_string(),
+        }
+    } else {
+        "not a hub source".to_string()
+    };
+    let server = match state.server.lock().unwrap().as_ref() {
+        Some(handle) => format!(
+            "running at http://{}/ (devices: {})",
+            handle.addr(),
+            handle.devices().len()
+        ),
+        None => "stopped".to_string(),
+    };
+    let source = match config.source_kind {
+        SourceKind::Hub => format!(
+            "hub {} (token set: {})",
+            config.hub_url,
+            if config.hub_token.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        SourceKind::File | SourceKind::Push => format!(
+            "file {} (poll {} ms)",
+            config.state_file().display(),
+            config.poll_ms
+        ),
+    };
+    let settings = format!(
+        "always_on_top={} notifications={} alarms={} show_done={} show_subagents={} session_link={}",
+        config.always_on_top,
+        config.notifications,
+        config.alarms_enabled,
+        config.show_done,
+        config.show_subagents,
+        config.session_link.key()
+    );
+    let log_path = log_file_path(state);
+    diagnostics::Diagnostics {
+        app: version_string(),
+        os: format!(
+            "{} {} · webview {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            tauri::webview_version().unwrap_or_else(|_| "unknown".to_string())
+        ),
+        config_path: state.config_path.display().to_string(),
+        source,
+        settings,
+        snapshot: format!(
+            "ok={} aggregate={} counts={{needs_help:{} active:{} inactive:{} done:{} total:{}}} error={}",
+            snapshot.ok,
+            snapshot.aggregate,
+            snapshot.counts.needs_help,
+            snapshot.counts.active,
+            snapshot.counts.inactive,
+            snapshot.counts.done,
+            snapshot.counts.total,
+            snapshot.error.as_deref().unwrap_or("none")
+        ),
+        server: format!(
+            "{server} (admin token set: {})",
+            if config.server_token_hash.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        hub,
+        log_tail: diagnostics::tail(&log_path),
+        log_path: log_path.display().to_string(),
+    }
+}
+
 /// Register the app's `AppUserModelID` so Windows can resolve its toast
 /// notifications. An installed build gets one from the NSIS shortcut;
 /// an unpackaged build (the portable exe) must register it itself or Windows
@@ -700,6 +1030,16 @@ fn register_app_user_model_id(identifier: &str) {
 #[cfg(not(target_os = "windows"))]
 fn register_app_user_model_id(_identifier: &str) {}
 
+/// A blocking hub client for the configured hub (and diagnostics probes).
+fn hub_client(config: &Config) -> agentlight_hub_client::HubClient {
+    agentlight_hub_client::HubClient::new(agentlight_hub_client::HubConfig {
+        id: agentlight_hub_client::DEFAULT_HUB_ID.to_string(),
+        base_url: config.hub_url.clone(),
+        token: config.hub_token.clone(),
+        poll_ms: config.poll_ms,
+    })
+}
+
 /// Build the configured source adapter: a local clawlight file or a remote hub.
 fn build_source(config: &Config) -> Arc<dyn StateSource> {
     match config.source_kind {
@@ -721,6 +1061,7 @@ fn build_source(config: &Config) -> Arc<dyn StateSource> {
 /// adapter (stopping its watcher/poll thread) even when the new one has a
 /// different id, as when switching between the file and hub sources.
 fn restart_source(engine: &Engine, config: &Config) {
+    diagnostics::line("info", &format!("source: {}", source_summary(config)));
     engine.set_source(build_source(config));
 }
 
@@ -761,9 +1102,9 @@ fn start_server_handle(
         .map(|dir| dir.join("devices.json"));
     let handle = agentlight_server::start((*state.engine).clone(), server_config)
         .map_err(|error| format!("could not start server: {error}"))?;
-    eprintln!(
-        "agentlight: embedded server listening on http://{}/",
-        handle.addr()
+    diagnostics::line(
+        "info",
+        &format!("embedded server listening on http://{}/", handle.addr()),
     );
     Ok(handle)
 }
@@ -771,6 +1112,10 @@ fn start_server_handle(
 /// Stop the embedded hub if one is running.
 fn stop_server(state: &AppState) {
     if let Some(mut handle) = state.server.lock().unwrap().take() {
+        diagnostics::line(
+            "info",
+            &format!("embedded server stopping (http://{}/)", handle.addr()),
+        );
         handle.shutdown();
     }
 }
@@ -823,8 +1168,11 @@ fn apply_server_change(
             Err(error) => {
                 match start_server_handle(state, previous) {
                     Ok(server) => *state.server.lock().unwrap() = Some(server),
-                    Err(restore_error) => eprintln!(
-                        "agentlight: could not restore server after a failed restart: {restore_error}"
+                    Err(restore_error) => diagnostics::line(
+                        "error",
+                        &format!(
+                            "could not restore server after a failed restart: {restore_error}"
+                        ),
                     ),
                 }
                 emit_server_changed(app);
@@ -855,6 +1203,10 @@ fn emit_update(app: &AppHandle, update: &Update) {
         use tauri_plugin_notification::NotificationExt;
 
         for notification in &update.notifications {
+            diagnostics::line(
+                "notify",
+                &format!("{} — {}", notification.title, notification.body),
+            );
             let _ = app
                 .notification()
                 .builder()
@@ -869,6 +1221,9 @@ fn emit_update(app: &AppHandle, update: &Update) {
     if !update.alarms.is_empty() {
         let config = current_config(&app.state::<AppState>());
         if config.alarms_enabled {
+            for alarm in &update.alarms {
+                diagnostics::line("alarm", &alarm.body);
+            }
             play_alarm(config.alarm_sound, config.alarm_volume);
         }
     }
@@ -990,8 +1345,14 @@ fn set_collapse_style(app: &AppHandle, style: CollapseStyle) {
 /// can extend past the small window instead of being clipped by it.
 #[tauri::command]
 fn show_mini_menu(app: AppHandle) -> Result<(), String> {
-    let current = current_config(&app.state::<AppState>()).collapse_style;
-    let mark = |style: CollapseStyle| if style == current { "\u{2713} " } else { "   " };
+    let config = current_config(&app.state::<AppState>());
+    let mark = |style: CollapseStyle| {
+        if style == config.collapse_style {
+            "\u{2713} "
+        } else {
+            "   "
+        }
+    };
     let item = |id: &str, label: String| {
         MenuItem::with_id(&app, id, label, true, None::<&str>).map_err(|e| e.to_string())
     };
@@ -1008,15 +1369,55 @@ fn show_mini_menu(app: AppHandle) -> Result<(), String> {
         format!("{}Vertical lights", mark(CollapseStyle::TripleVertical)),
     )?;
     let separator = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let top = item(
+        "mini-top",
+        format!(
+            "{}Always on top",
+            if config.always_on_top {
+                "\u{2713} "
+            } else {
+                "   "
+            }
+        ),
+    )?;
+    let separator_two = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
     let hide = item("mini-hide", "Hide".to_string())?;
-    let menu = Menu::with_items(&app, &[&single, &horizontal, &vertical, &separator, &hide])
-        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(
+        &app,
+        &[
+            &single,
+            &horizontal,
+            &vertical,
+            &separator,
+            &top,
+            &separator_two,
+            &hide,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     let webview = app
         .get_webview_window("main")
         .ok_or("no window")?
         .as_ref()
         .window();
     menu.popup(webview).map_err(|e| e.to_string())
+}
+
+/// Whether a focus loss should tuck the expanded view back to the light.
+///
+/// Immediate on purpose: an outside click must feel instant. The cases that are
+/// *not* an outside click are excluded up front instead of being deferred — a
+/// click on our own title bar (the OS move loop deactivates the window with the
+/// cursor still over it), a webview-reported drag start, and a recent move.
+/// Pure so the rules are unit-testable without a window.
+fn should_collapse(
+    always_on_top: bool,
+    mode: &str,
+    dragging: bool,
+    moved_recently: bool,
+    own_window: bool,
+) -> bool {
+    always_on_top && mode == "detail" && !dragging && !moved_recently && !own_window
 }
 
 fn show_window(app: &AppHandle) {
@@ -1030,6 +1431,91 @@ fn show_window(app: &AppHandle) {
         .store(true, Ordering::SeqCst);
 }
 
+/// Whether `window` is the foreground (active) window.
+///
+/// The tray click can blur the window before the click is handled, so
+/// `is_focused()` is not reliable there; on Windows the foreground window is
+/// asked directly. Elsewhere the focused flag is the best available signal.
+fn window_is_foreground(window: &WebviewWindow) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetForegroundWindow() -> isize;
+        }
+
+        if let Ok(hwnd) = window.hwnd() {
+            // Safety: `GetForegroundWindow` takes no arguments and the returned
+            // handle is only compared, never dereferenced.
+            return unsafe { GetForegroundWindow() } == hwnd.0 as isize;
+        }
+    }
+    window.is_focused().unwrap_or(false)
+}
+
+/// Whether the tray menu's "Show / Hide" item should hide. The item is chosen
+/// while the window is visible but not the foreground window (the open menu
+/// owns the foreground), so unlike the tray *icon* it cannot use focus as the
+/// signal; plain visibility is the right one and makes the item deterministic.
+fn menu_toggle_hides(visible: bool, minimized: bool) -> bool {
+    visible && !minimized
+}
+
+/// Whether the cursor was over our own window when it lost focus.
+///
+/// A click on our title bar starts the OS move loop, which can deactivate the
+/// window; an outside click deactivates it with the cursor over the *other*
+/// window. Comparing the root window under the cursor at the moment of the
+/// focus loss is what tells the two apart, and it works for a plain click as
+/// well as a drag — no timing, no webview event needed.
+#[cfg(target_os = "windows")]
+fn focus_loss_from_own_window(window: &tauri::Window) -> bool {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(point: *mut Point) -> i32;
+        fn WindowFromPoint(point: Point) -> *mut c_void;
+        fn GetAncestor(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+    }
+
+    const GA_ROOT: u32 = 2;
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let ours = hwnd.0 as *mut c_void;
+    let mut point = Point { x: 0, y: 0 };
+    // Safety: both calls take an out pointer / value by copy, and the returned
+    // window handles are only compared, never dereferenced.
+    unsafe {
+        if GetCursorPos(&mut point) == 0 {
+            return false;
+        }
+        let under_cursor = WindowFromPoint(point);
+        if under_cursor.is_null() {
+            return false;
+        }
+        GetAncestor(under_cursor, GA_ROOT) == ours
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn focus_loss_from_own_window(_window: &tauri::Window) -> bool {
+    false
+}
+
+/// One tray click brings the window back: hidden or minimized windows are
+/// shown and focused, and a visible-but-buried window is raised. Only a window
+/// that is already the active window is hidden, so the click can never be a
+/// no-op (the old toggle could hide a window the user just clicked away from,
+/// which made a single click look like it did nothing).
 fn toggle_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -1039,7 +1525,25 @@ fn toggle_window(app: &AppHandle) {
     // click would hide an already-hidden window and look unresponsive.
     let visible = app.state::<AppState>().visible.load(Ordering::SeqCst);
     let minimized = window.is_minimized().unwrap_or(false);
-    if visible && !minimized {
+    if menu_toggle_hides(visible, minimized) {
+        let _ = window.hide();
+        app.state::<AppState>()
+            .visible
+            .store(false, Ordering::SeqCst);
+    } else {
+        show_window(app);
+    }
+}
+
+/// A left click on the tray *icon*: bring the window back when it is hidden,
+/// minimized, or buried; hide it only when it is already the active window.
+fn toggle_window_from_icon(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let visible = app.state::<AppState>().visible.load(Ordering::SeqCst);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if visible && !minimized && window_is_foreground(&window) {
         let _ = window.hide();
         app.state::<AppState>()
             .visible
@@ -1053,13 +1557,18 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     use tauri_plugin_autostart::ManagerExt;
 
     let manager = app.autolaunch();
+    // Disabling something that was never enabled fails on Windows (os error 2);
+    // skip the no-op write entirely so the log is not noisy on every start.
+    if manager.is_enabled().unwrap_or(false) == enabled {
+        return;
+    }
     let result = if enabled {
         manager.enable()
     } else {
         manager.disable()
     };
     if let Err(error) = result {
-        eprintln!("agentlight: could not update autostart: {error}");
+        diagnostics::line("warn", &format!("could not update autostart: {error}"));
     }
 }
 
@@ -1089,7 +1598,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                toggle_window(tray.app_handle());
+                toggle_window_from_icon(tray.app_handle());
             }
         });
 
@@ -1117,6 +1626,23 @@ fn legacy_plaintext_token_present(path: &Path) -> bool {
 pub fn run() {
     let config_path = agentlight_core::config_path();
     let config = agentlight_core::load_config(&config_path);
+
+    // Diagnostics first, so a panic and the startup lines land in the log.
+    let log_path = config_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join("agentlight.log"))
+        .unwrap_or_else(|| PathBuf::from("agentlight.log"));
+    diagnostics::init(log_path);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        diagnostics::line("panic", &info.to_string());
+        default_hook(info);
+    }));
+    diagnostics::line("info", &format!("AgentLight {} starting", version_string()));
+    diagnostics::line("info", &format!("config {}", config_path.display()));
+    diagnostics::line("info", &format!("source {}", source_summary(&config)));
+
     if legacy_plaintext_token_present(&config_path) {
         // `load_config` already hashed the plaintext into `server_token_hash`;
         // write the sanitized config back so the file no longer holds the
@@ -1134,6 +1660,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         // Persist only the position: the frontend owns the window size per
         // view, and restoring an old size would clip the light/detail layout.
@@ -1149,6 +1676,9 @@ pub fn run() {
             config_path,
             visible: AtomicBool::new(true),
             window_mode: Mutex::new("mini".to_string()),
+            last_moved: Mutex::new(None),
+            dragging_since: Mutex::new(None),
+            hub_status: Mutex::new(None),
             mini_anchor: Mutex::new(None),
             mini_home: Mutex::new(None),
             applied_position: Mutex::new(None),
@@ -1162,12 +1692,16 @@ pub fn run() {
             clear_session,
             clear_done,
             get_server_status,
+            get_hub_status,
+            get_hub_status_cached,
+            copy_diagnostics,
             regenerate_pairing,
             revoke_device,
             pick_state_file,
             pick_sound_file,
             open_url,
             set_always_on_top,
+            set_dragging,
             test_alarm,
             show_mini_menu,
             resize_window,
@@ -1198,7 +1732,14 @@ pub fn run() {
             engine.subscribe(Arc::new(move |update: Update| {
                 emit_update(&sink_handle, &update);
             }));
+            diagnostics::line(
+                "info",
+                &format!("source starting: {}", source_summary(&config)),
+            );
             engine.add_source(build_source(&config));
+            if config.source_kind == SourceKind::Hub {
+                refresh_hub_status_in_background(handle);
+            }
 
             if config.server_enabled {
                 let state = handle.state::<AppState>();
@@ -1215,6 +1756,12 @@ pub fn run() {
             "mini-single" => set_collapse_style(app, CollapseStyle::Single),
             "mini-triple" => set_collapse_style(app, CollapseStyle::Triple),
             "mini-triple-vertical" => set_collapse_style(app, CollapseStyle::TripleVertical),
+            "mini-top" => {
+                let enabled = !current_config(&app.state::<AppState>()).always_on_top;
+                if let Err(error) = apply_always_on_top(app, enabled) {
+                    diagnostics::line("warn", &format!("could not toggle always on top: {error}"));
+                }
+            }
             "mini-hide" => {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
@@ -1235,15 +1782,44 @@ pub fn run() {
                     .visible
                     .store(false, Ordering::SeqCst);
             }
-            // With "Always on top" on, clicking away from the expanded view tucks
-            // it back to the collapsed light. Settings is left alone so an
-            // in-progress edit is not lost to an outside click.
+            // A drag also blurs the window; remember moves so the collapse
+            // below can tell a drag from a real click outside.
+            WindowEvent::Moved(_) => {
+                *window.state::<AppState>().last_moved.lock().unwrap() = Some(Instant::now());
+            }
+            // With "Always on top" on, clicking away from the expanded view
+            // tucks it back to the collapsed light — immediately, so the click
+            // feels instant. Settings is left alone so an in-progress edit is
+            // not lost to an outside click. A focus loss is only an outside
+            // click when the cursor is not over our own window (a title-bar
+            // click/drag starts the OS move loop, which also deactivates the
+            // window); the webview drag report and a recent move are backups.
             WindowEvent::Focused(false) => {
                 let state = window.state::<AppState>();
                 let always_on_top = state.config.lock().unwrap().always_on_top;
                 let mode = state.window_mode.lock().unwrap().clone();
-                if always_on_top && mode == "detail" {
+                let dragging = state
+                    .dragging_since
+                    .lock()
+                    .unwrap()
+                    .is_some_and(|at| at.elapsed() < DRAG_GRACE);
+                let moved_recently = state
+                    .last_moved
+                    .lock()
+                    .unwrap()
+                    .is_some_and(|at| at.elapsed() < MOVE_GRACE);
+                let own_window = focus_loss_from_own_window(&window);
+                if should_collapse(always_on_top, &mode, dragging, moved_recently, own_window) {
                     let _ = window.emit("collapse", ());
+                } else if always_on_top && mode == "detail" {
+                    // A title-bar click or drag also blurs the window; log why
+                    // it did not collapse so a misfire is diagnosable.
+                    diagnostics::line(
+                        "debug",
+                        &format!(
+                            "focus lost: collapse skipped (own_window={own_window} dragging={dragging} moved={moved_recently})"
+                        ),
+                    );
                 }
             }
             _ => {}
@@ -1264,6 +1840,130 @@ mod tests {
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
         Rect::new(x, y, width, height)
+    }
+
+    fn test_state(config: Config, config_path: PathBuf) -> AppState {
+        AppState {
+            engine: Arc::new(Engine::new(config.clone())),
+            config: Mutex::new(config),
+            config_path,
+            visible: AtomicBool::new(true),
+            window_mode: Mutex::new("mini".to_string()),
+            last_moved: Mutex::new(None),
+            dragging_since: Mutex::new(None),
+            hub_status: Mutex::new(None),
+            mini_anchor: Mutex::new(None),
+            mini_home: Mutex::new(None),
+            applied_position: Mutex::new(None),
+            server: Mutex::new(None),
+        }
+    }
+
+    fn cached_hub(reachable: bool, version: Option<&str>, error: Option<&str>) -> HubStatus {
+        HubStatus {
+            url: "http://127.0.0.1:1".to_string(),
+            reachable,
+            version: version.map(str::to_string),
+            schema_version: reachable.then_some(1),
+            error: error.map(str::to_string),
+            checked_at: "2026-10-15 12:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn diagnostics_report_is_complete_and_never_leaks_tokens() {
+        let config = Config {
+            source_kind: SourceKind::Hub,
+            // Port 1 refuses immediately, so a probe cannot hang.
+            hub_url: "http://127.0.0.1:1".to_string(),
+            hub_token: Some("client-secret".to_string()),
+            server_token_hash: Some("admin-hash".to_string()),
+            ..Config::default()
+        };
+        let state = test_state(config, PathBuf::from("/tmp/AgentLight/config.json"));
+        *state.hub_status.lock().unwrap() = Some((
+            cached_hub(false, None, Some("connection refused")),
+            Instant::now(),
+        ));
+
+        let report = build_diagnostics(&state).render();
+        assert!(report.contains("AgentLight diagnostics"), "{report}");
+        assert!(report.contains(&format!("app:       {}", version_string())));
+        assert!(report.contains("os:        "), "{report}");
+        assert!(report.contains("config:    /tmp/AgentLight/config.json"));
+        assert!(
+            report.contains("source:    hub http://127.0.0.1:1 (token set: yes)"),
+            "{report}"
+        );
+        assert!(report.contains("settings:  always_on_top=true"), "{report}");
+        assert!(report.contains("snapshot:  ok=false"), "{report}");
+        assert!(
+            report.contains("server:    stopped (admin token set: yes)"),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "hub:       unreachable: connection refused (checked 2026-10-15 12:00:00)"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("log:") && report.contains("agentlight.log"),
+            "{report}"
+        );
+        assert!(!report.contains("client-secret"), "the hub token leaked");
+        assert!(!report.contains("admin-hash"), "the admin hash leaked");
+
+        // Before any probe the report says so, and a file source has no hub.
+        let state = test_state(
+            Config {
+                source_kind: SourceKind::Hub,
+                ..Config::default()
+            },
+            PathBuf::from("/tmp/AgentLight/config.json"),
+        );
+        assert!(
+            build_diagnostics(&state)
+                .render()
+                .contains("hub:       not probed yet"),
+            "{report}"
+        );
+
+        let file_state = test_state(
+            Config::default(),
+            PathBuf::from("/tmp/AgentLight/config.json"),
+        );
+        let report = build_diagnostics(&file_state).render();
+        assert!(report.contains("hub:       not a hub source"), "{report}");
+        assert!(report.contains("source:    file"), "{report}");
+    }
+
+    #[test]
+    fn hub_status_line_renders_both_outcomes() {
+        assert_eq!(
+            hub_status_line(&cached_hub(true, Some("0.5.0"), None)),
+            "reachable · version 0.5.0 · schema 1"
+        );
+        assert_eq!(
+            hub_status_line(&cached_hub(true, None, None)),
+            "reachable · version unknown · schema 1"
+        );
+        assert_eq!(
+            hub_status_line(&cached_hub(false, None, Some("refused"))),
+            "unreachable: refused"
+        );
+        assert_eq!(
+            hub_status_line(&cached_hub(false, None, None)),
+            "unreachable: no answer"
+        );
+    }
+
+    #[test]
+    fn tray_menu_toggle_follows_visibility_not_focus() {
+        assert!(menu_toggle_hides(true, false));
+        assert!(!menu_toggle_hides(true, true));
+        assert!(!menu_toggle_hides(false, false));
+        assert!(!menu_toggle_hides(false, true));
     }
 
     fn side_by_side() -> (Rect, Rect) {
@@ -1329,5 +2029,25 @@ mod tests {
     fn collapse_restores_the_anchor_clamped_to_home() {
         let home = rect(0, 0, 1920, 1080);
         assert_eq!(clamp_rect((-50, -50), (88, 88), home), (0, 0));
+    }
+
+    #[test]
+    fn collapse_needs_detail_topmost_and_no_drag() {
+        // A plain click outside the expanded view: collapse immediately.
+        assert!(should_collapse(true, "detail", false, false, false));
+        // The cursor was over our own window: a title-bar click or drag, never
+        // an outside click.
+        assert!(!should_collapse(true, "detail", false, false, true));
+        // A webview-reported drag start: no collapse while it is fresh.
+        assert!(!should_collapse(true, "detail", true, false, false));
+        // The move fallback: a window that just moved is being dragged.
+        assert!(!should_collapse(true, "detail", false, true, false));
+        assert!(!should_collapse(true, "detail", true, true, true));
+        // Only the detail view collapses; Settings keeps its draft, and the
+        // collapsed light has nothing to collapse.
+        assert!(!should_collapse(true, "settings", false, false, false));
+        assert!(!should_collapse(true, "mini", false, false, false));
+        // Without the pin there is no click-away behavior.
+        assert!(!should_collapse(false, "detail", false, false, false));
     }
 }
