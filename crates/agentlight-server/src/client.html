@@ -264,11 +264,15 @@
         function render(snapshot) {
           if (!snapshot) return;
           light.className = "light " + (snapshot.aggregate || "gray");
-          var counts = snapshot.counts || {};
+          var sessions = (snapshot.sessions || []).filter(function (s) {
+            // Subagents are a per-client choice; the desktop defaults to hiding
+            // them, and this client keeps that default. The light still counts
+            // them, so a subagent that needs help is never missed.
+            return !s.is_subagent;
+          });
           status.textContent = snapshot.ok
-            ? snapshot.aggregate + " · " + (counts.total || 0) + " sessions"
+            ? snapshot.aggregate + " · " + sessions.length + (sessions.length === 1 ? " session" : " sessions")
             : snapshot.error || "waiting for clawlight…";
-          var sessions = snapshot.sessions || [];
           empty.hidden = sessions.length > 0;
           list.textContent = "";
           sessions.forEach(function (s) {

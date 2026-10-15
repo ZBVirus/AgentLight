@@ -239,6 +239,20 @@ impl Inner {
             return Ok(0);
         }
 
+        // A single source whose own `ClearDone` removes exactly this done set
+        // (a hub, or the push store) clears in one command instead of one
+        // mutation per session — over a hub each removal was a POST plus a
+        // snapshot refresh.
+        let sources = self.sources.lock().unwrap().clone();
+        if let [source] = sources.as_slice() {
+            if source.capabilities().bulk_clear_done {
+                return match source.command(SourceCommand::ClearDone) {
+                    Ok(()) => Ok(done.len()),
+                    Err(error) => Err(error),
+                };
+            }
+        }
+
         let mut removed = 0usize;
         let mut last_error: Option<Error> = None;
         for model in done {
@@ -365,7 +379,7 @@ impl Inner {
         for row in rows.iter_mut() {
             row.url = build_session_link(
                 config.session_link,
-                config.session_link_base.as_deref(),
+                config.session_link_base_for(config.session_link),
                 &row.session_id,
                 row.harness.as_deref(),
                 row.url.as_deref(),
@@ -483,15 +497,21 @@ fn triggers_fire(
 }
 
 /// The toast/sound payload for an attention edge.
+///
+/// The body reads as a sentence: the session name in quotes followed by the
+/// transition ("Fix auth" needs help / finished / is now paused / is now
+/// working). `status.label()` alone would produce "is needs help".
 fn attention_notification(model: &Session) -> Notification {
+    let phrase = match model.status {
+        Status::NeedsHelp => "needs help",
+        Status::Done => "finished",
+        Status::Inactive => "is now paused",
+        Status::Active => "is now working",
+    };
     Notification {
         key: model.key.clone(),
         title: "AgentLight".to_string(),
-        body: format!(
-            "\"{}\" is {}",
-            model.name,
-            model.status.label().to_lowercase()
-        ),
+        body: format!("\"{}\" {}", model.name, phrase),
         urgency: if model.status == Status::NeedsHelp {
             Urgency::Critical
         } else {
@@ -658,7 +678,7 @@ mod tests {
         {
             let notifications = notifications.lock().unwrap();
             assert_eq!(notifications.len(), 1);
-            assert_eq!(notifications[0].body, "\"Session 1\" is needs help");
+            assert_eq!(notifications[0].body, "\"Session 1\" needs help");
             assert_eq!(notifications[0].key.session_id, "1");
         }
 
@@ -822,6 +842,105 @@ mod tests {
             subagent_frame("a", "sub", Status::Active, 1),
         ])));
         assert_eq!(engine.snapshot(at(2)).counts.total, 2);
+    }
+
+    #[test]
+    fn session_rows_use_the_per_mode_base() {
+        let config = Config {
+            session_link: crate::config::SessionLink::OpencodeV1,
+            session_link_bases: [
+                (
+                    "opencode_v1".to_string(),
+                    "http://localhost:7777".to_string(),
+                ),
+                ("openchamber".to_string(), "http://chamber:3000".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![frame("a", "1", Status::Active, 1)]),
+        ));
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://localhost:7777/session/1")
+        );
+
+        // Switching the mode picks up that mode's own base, not the previous
+        // one, and falls back to the default when no entry exists.
+        engine.set_config(Config {
+            session_link: crate::config::SessionLink::Openchamber,
+            session_link_bases: [
+                (
+                    "opencode_v1".to_string(),
+                    "http://localhost:7777".to_string(),
+                ),
+                ("openchamber".to_string(), "http://chamber:3000".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        });
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://chamber:3000/?session=1")
+        );
+
+        engine.set_config(Config {
+            session_link: crate::config::SessionLink::OpencodeV2,
+            ..Config::default()
+        });
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://localhost:4096/server/aHR0cDovL2xvY2FsaG9zdDo0MDk2/session/1")
+        );
+    }
+
+    #[test]
+    fn notification_bodies_read_as_sentences() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![AlarmTrigger::AnyStatus],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let captured = notes.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured
+                .lock()
+                .unwrap()
+                .extend(update.notifications.into_iter().map(|n| n.body));
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+        assert!(
+            notes.lock().unwrap().is_empty(),
+            "a first sight is not a change"
+        );
+
+        for (status, expected) in [
+            (Status::NeedsHelp, "\"Session 1\" needs help"),
+            (Status::Done, "\"Session 1\" finished"),
+            (Status::Inactive, "\"Session 1\" is now paused"),
+            (Status::Active, "\"Session 1\" is now working"),
+        ] {
+            source.set_sessions(vec![frame("a", "1", status, 2)]);
+            let notes = notes.lock().unwrap();
+            assert_eq!(
+                notes.last().map(String::as_str),
+                Some(expected),
+                "for {status:?}"
+            );
+        }
     }
 
     #[test]
@@ -1027,6 +1146,61 @@ mod tests {
 
         assert_eq!(engine.clear_done().unwrap(), 1);
         assert_eq!(engine.clear_done().unwrap(), 0);
+    }
+
+    #[test]
+    fn clear_done_uses_one_bulk_command_when_the_source_supports_it() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(
+            FixtureSource::new("hub")
+                .with_kind(SourceKind::Hub)
+                .with_capabilities(crate::source::Capabilities {
+                    remove_session: true,
+                    clear_done: true,
+                    bulk_clear_done: true,
+                    push_events: false,
+                })
+                .with_sessions(vec![
+                    frame("hub", "done1", Status::Done, 1),
+                    frame("hub", "live", Status::Active, 1),
+                ]),
+        );
+        engine.add_source(source.clone());
+
+        assert_eq!(engine.clear_done().unwrap(), 1);
+        assert_eq!(
+            source.commands(),
+            vec![SourceCommand::ClearDone],
+            "one bulk command, not a removal per session"
+        );
+        assert_eq!(engine.snapshot(at(2)).sessions.len(), 1);
+    }
+
+    #[test]
+    fn clear_done_removes_per_session_when_the_source_cannot_bulk() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(
+            FixtureSource::new("local")
+                .with_capabilities(crate::source::Capabilities {
+                    remove_session: true,
+                    clear_done: true,
+                    bulk_clear_done: false,
+                    push_events: false,
+                })
+                .with_sessions(vec![
+                    frame("local", "done1", Status::Done, 1),
+                    frame("local", "done2", Status::Done, 1),
+                    frame("local", "live", Status::Active, 1),
+                ]),
+        );
+        engine.add_source(source.clone());
+
+        assert_eq!(engine.clear_done().unwrap(), 2);
+        let commands = source.commands();
+        assert_eq!(commands.len(), 2);
+        assert!(commands
+            .iter()
+            .all(|command| matches!(command, SourceCommand::RemoveSession(_))));
     }
 
     #[test]

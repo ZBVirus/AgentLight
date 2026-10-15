@@ -4,6 +4,7 @@
 //! clawlight owns. Stored as JSON next to the OS config dir:
 //! `%APPDATA%\AgentLight\config.json` on Windows.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -107,6 +108,20 @@ pub enum SessionLink {
     Off,
 }
 
+impl SessionLink {
+    /// Stable key for this mode, used as the per-mode entry in
+    /// [`Config::session_link_bases`]. Matches the serde name.
+    pub fn key(self) -> &'static str {
+        match self {
+            SessionLink::OpencodeV2 => "opencode_v2",
+            SessionLink::OpencodeV1 => "opencode_v1",
+            SessionLink::Openchamber => "openchamber",
+            SessionLink::Producer => "producer",
+            SessionLink::Off => "off",
+        }
+    }
+}
+
 /// Collapsed (mini) window layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -184,9 +199,16 @@ pub struct Config {
     pub alarm_volume: u8,
     /// How the detail view builds a session's "Open" link.
     pub session_link: SessionLink,
-    /// Base server URL used to build the link. `None` uses the default for the
-    /// selected mode (`http://localhost:4096` for V1/V2, `http://localhost:3000`
-    /// for OpenChamber). Ignored in the `producer` and `off` modes.
+    /// Base server URL per link mode, keyed by [`SessionLink::key`]. A missing
+    /// entry uses the mode's default (`http://localhost:4096` for V1/V2,
+    /// `http://localhost:3000` for OpenChamber). Ignored in the `producer` and
+    /// `off` modes, which have no base. Remembering one per mode means switching
+    /// modes does not carry a stale address (or lose a configured one).
+    pub session_link_bases: BTreeMap<String, String>,
+    /// Legacy single-value base URL. Read-only: [`Config::sanitized`] migrates
+    /// it into [`session_link_bases`](Self::session_link_bases) for the
+    /// configured mode and clears it, and it is never serialized back to disk.
+    #[serde(default, skip_serializing)]
     pub session_link_base: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
@@ -229,6 +251,7 @@ impl Default for Config {
             alarm_sound: None,
             alarm_volume: DEFAULT_ALARM_VOLUME,
             session_link: SessionLink::default(),
+            session_link_bases: BTreeMap::new(),
             session_link_base: None,
             start_at_login: false,
             server_enabled: false,
@@ -292,12 +315,22 @@ impl Config {
             .map(str::trim)
             .filter(|sound| !sound.is_empty())
             .map(str::to_string);
-        self.session_link_base = self
-            .session_link_base
-            .as_deref()
-            .map(str::trim)
-            .filter(|base| !base.is_empty())
-            .map(str::to_string);
+        // Per-mode session bases: trim, drop blanks. A legacy single value is
+        // migrated into the entry for the currently selected mode, so the
+        // setting the user had keeps applying to the mode it was set for.
+        self.session_link_bases = std::mem::take(&mut self.session_link_bases)
+            .into_iter()
+            .map(|(mode, base)| (mode.trim().to_string(), base.trim().to_string()))
+            .filter(|(mode, base)| !mode.is_empty() && !base.is_empty())
+            .collect();
+        if let Some(base) = self.session_link_base.take() {
+            let base = base.trim();
+            if !base.is_empty() {
+                self.session_link_bases
+                    .entry(self.session_link.key().to_string())
+                    .or_insert_with(|| base.to_string());
+            }
+        }
         self.server_bind = self.server_bind.trim().to_string();
         if self.server_bind.is_empty() {
             self.server_bind = DEFAULT_SERVER_BIND.to_string();
@@ -322,6 +355,12 @@ impl Config {
     pub fn state_file(&self) -> PathBuf {
         state::resolve_state_path(self)
     }
+
+    /// The configured base URL for a session-link mode, if any. A missing entry
+    /// means the mode's own default applies.
+    pub fn session_link_base_for(&self, mode: SessionLink) -> Option<&str> {
+        self.session_link_bases.get(mode.key()).map(String::as_str)
+    }
 }
 
 /// Default config file location: `<config_dir>/AgentLight/config.json`.
@@ -336,7 +375,11 @@ pub fn config_path() -> PathBuf {
 pub fn load(path: &Path) -> Config {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|c| serde_json::from_str::<Config>(&c).ok())
+        // Windows editors may save UTF-8 with a BOM, and serde_json does not
+        // skip it. A whole config silently falling back to defaults is worse
+        // than tolerating the BOM.
+        .map(|raw| raw.trim_start_matches('\u{feff}').to_string())
+        .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
         .unwrap_or_default()
         .sanitized()
 }
@@ -591,6 +634,52 @@ mod tests {
     }
 
     #[test]
+    fn session_link_bases_are_per_mode_and_migrate_the_legacy_value() {
+        // A legacy single value migrates to the mode it was configured for and
+        // is never serialized back.
+        let c = serde_json::from_str::<Config>(
+            r#"{"session_link":"opencode_v1","session_link_base":"  http://localhost:9999  "}"#,
+        )
+        .unwrap()
+        .sanitized();
+        assert_eq!(
+            c.session_link_base_for(SessionLink::OpencodeV1),
+            Some("http://localhost:9999")
+        );
+        assert_eq!(c.session_link_base_for(SessionLink::OpencodeV2), None);
+        assert!(
+            c.session_link_base.is_none(),
+            "the legacy value is consumed"
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("\"session_link_base\":"),
+            "the legacy field must not be written: {json}"
+        );
+        assert!(json.contains("\"session_link_bases\""), "{json}");
+
+        // Per-mode entries are trimmed, blanks dropped, and a legacy value
+        // never overrides an explicit entry.
+        let c = serde_json::from_str::<Config>(
+            r#"{"session_link":"openchamber","session_link_base":"http://legacy:1",
+                "session_link_bases":{"opencode_v1":"  http://v1:4096  ","openchamber":"http://chamber:3000","opencode_v2":"   "}}"#,
+        )
+        .unwrap()
+        .sanitized();
+        assert_eq!(
+            c.session_link_base_for(SessionLink::OpencodeV1),
+            Some("http://v1:4096")
+        );
+        assert_eq!(
+            c.session_link_base_for(SessionLink::Openchamber),
+            Some("http://chamber:3000")
+        );
+        assert_eq!(c.session_link_base_for(SessionLink::OpencodeV2), None);
+        assert_eq!(c.session_link_base_for(SessionLink::Producer), None);
+        assert_eq!(SessionLink::Openchamber.key(), "openchamber");
+    }
+
+    #[test]
     fn partial_config_uses_defaults() {
         let c: Config = serde_json::from_str(r#"{"show_done":true}"#).unwrap();
         assert!(c.show_done);
@@ -625,6 +714,20 @@ mod tests {
     fn missing_file_loads_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(&dir.path().join("nope.json")), Config::default());
+    }
+
+    #[test]
+    fn a_utf8_bom_does_not_discard_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"source_kind\":\"hub\",\"hub_url\":\"http://h:1\"}",
+        )
+        .unwrap();
+        let config = load(&path);
+        assert_eq!(config.source_kind, SourceKind::Hub);
+        assert_eq!(config.hub_url, "http://h:1");
     }
 
     #[test]

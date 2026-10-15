@@ -25,6 +25,7 @@ mod source;
 mod sse;
 
 pub use client::{
-    HubClient, HubConfig, HubError, DEFAULT_BASE_URL, DEFAULT_HUB_ID, DEFAULT_POLL_MS,
+    CommandReply, HubClient, HubConfig, HubError, HubHealth, DEFAULT_BASE_URL, DEFAULT_HUB_ID,
+    DEFAULT_POLL_MS,
 };
 pub use source::HubSource;

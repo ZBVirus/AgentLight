@@ -108,6 +108,7 @@ impl StateSource for HubSource {
         Capabilities {
             remove_session: true,
             clear_done: true,
+            bulk_clear_done: true,
             push_events: false,
         }
     }
@@ -147,7 +148,7 @@ impl StateSource for HubSource {
     }
 
     fn command(&self, command: SourceCommand) -> Result<()> {
-        match command {
+        let reply = match command {
             SourceCommand::RemoveSession(key) => {
                 // A key from another source is not ours to route.
                 if key.source != self.id {
@@ -155,11 +156,22 @@ impl StateSource for HubSource {
                 }
                 self.client
                     .remove_session(None, &key.session_id)
-                    .map(|_| ())
-                    .map_err(remote_error)
+                    .map_err(remote_error)?
             }
-            SourceCommand::ClearDone => self.client.clear_done().map(|_| ()).map_err(remote_error),
+            SourceCommand::ClearDone => self.client.clear_done().map_err(remote_error)?,
+        };
+        // A new-enough hub returns the refreshed snapshot with the reply, so
+        // one round trip replaces POST + GET — which is what makes Remove and
+        // Clear done feel immediate on a slow or remote link. An older hub
+        // omits it and the cache is fetched as before.
+        match reply.snapshot {
+            Some(snapshot) => {
+                *self.cache.lock().unwrap() = Some(entry_from_snapshot(&self.id, &snapshot))
+            }
+            None => refresh_cache(&self.client, &self.id, &self.cache),
         }
+        emit(&self.sinks);
+        Ok(())
     }
 }
 
@@ -235,11 +247,30 @@ fn stream_loop(
                 refresh_cache(&client, &id, &cache);
                 emit(&sinks);
                 let reader = std::io::BufReader::new(response);
-                crate::sse::read_frames(reader, &stop, &mut |event| {
-                    if matches!(event, "update" | "lagged") {
+                crate::sse::read_frames(reader, &stop, &mut |event, data| match event {
+                    "update" => {
+                        // The frame carries the full refreshed snapshot, so use
+                        // it directly instead of a follow-up GET; a payload we
+                        // cannot parse (an older hub) falls back to a fetch.
+                        match serde_json::from_str::<UpdateFrame>(data) {
+                            Ok(frame) => {
+                                *cache.lock().unwrap() =
+                                    Some(entry_from_snapshot(&id, &frame.snapshot));
+                                emit(&sinks);
+                            }
+                            Err(_) => {
+                                refresh_cache(&client, &id, &cache);
+                                emit(&sinks);
+                            }
+                        }
+                    }
+                    "lagged" => {
+                        // The stream fell behind and this frame has no state:
+                        // re-fetch so nothing is missed.
                         refresh_cache(&client, &id, &cache);
                         emit(&sinks);
                     }
+                    _ => {}
                 });
             }
             Err(_) => poll_once(&client, &id, &mut last, &sinks, &cache),
@@ -277,14 +308,26 @@ fn poll_once(
 /// unreadable health rather than losing it.
 fn fetch_entry(client: &HubClient, id: &SourceId) -> CacheEntry {
     match client.snapshot() {
-        Ok(hub) => CacheEntry {
-            health: health_of(&hub),
-            sessions: hub.sessions.iter().map(|row| normalize(id, row)).collect(),
-        },
+        Ok(hub) => entry_from_snapshot(id, &hub),
         Err(error) => CacheEntry {
             health: SourceHealth::Unreadable(error.to_string()),
             sessions: Vec::new(),
         },
+    }
+}
+
+/// The minimal slice of an SSE `update` frame the source needs: the full wire
+/// snapshot. Other `Update` fields (`notifications`, `alarms`) are ignored.
+#[derive(serde::Deserialize)]
+struct UpdateFrame {
+    snapshot: Snapshot,
+}
+
+/// A hub snapshot rendered into the cache: source health plus normalized rows.
+fn entry_from_snapshot(id: &SourceId, hub: &Snapshot) -> CacheEntry {
+    CacheEntry {
+        health: health_of(hub),
+        sessions: hub.sessions.iter().map(|row| normalize(id, row)).collect(),
     }
 }
 

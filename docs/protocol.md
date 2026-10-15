@@ -105,6 +105,7 @@ Liveness plus the negotiation data a client needs before authenticating. No auth
 {
   "status": "ok",
   "schema_version": 1,
+  "version": "0.4.0",
   "capabilities": {
     "events": ["sse"],
     "commands": ["remove_session", "clear_done"],
@@ -114,8 +115,10 @@ Liveness plus the negotiation data a client needs before authenticating. No auth
 }
 ```
 
-`capabilities.auth` is `"bearer"` or `"none"`. Clients negotiate by treating
-unknown capability strings as unsupported; unknown fields are ignored.
+`capabilities.auth` is `"bearer"` or `"none"`. `version` is the hub binary's
+crate version (additive: an older hub omits it; a client shows the schema
+then). Clients negotiate by treating unknown capability strings as
+unsupported; unknown fields are ignored.
 
 ## `POST /api/v1/pair`
 
@@ -195,6 +198,8 @@ Each session row:
 | `harness_badge` | string \| null | Two-char badge, already derived. |
 | `last_updated` | string | Raw clawlight timestamp, echoed verbatim. |
 | `is_done` | bool | Post-retention done marker. |
+| `url` | string \| null | Optional deep link back to the session in its harness UI. Additive. |
+| `is_subagent` | bool | True for a tool-spawned child session. Additive; the hub relays it verbatim and each client applies its own visibility setting. |
 
 `done` sessions are capped at the newest five unless the host config sets
 `show_done`.
@@ -245,6 +250,11 @@ transitions into `needs_help`. The standalone binary enables notifications for
 its engine, so remote clients receive these edges; an embedder that leaves
 `Config::notifications` off will always see an empty array.
 
+Each frame is a whole snapshot, so a client should use `snapshot` directly
+rather than fetching `/api/v1/snapshot` again; only `lagged` (which carries no
+state) needs a re-fetch. Older clients that ignore the payload fall back to a
+fetch, and both remain correct.
+
 **Revision semantics.** `revision` is a monotonic `u64`, incremented on every
 engine publish (a source change or a command's follow-up refresh). Whole
 snapshots are shipped each frame; there are no deltas. Revisions are global to
@@ -272,10 +282,16 @@ whose file `status` is `done`. Unknown fields are preserved:
 { "command": "clear_done" }
 ```
 
-Success returns the revision produced by the refresh that follows the command:
+Success returns the refreshed snapshot together with the revision the refresh
+produced, so a client can update its cache from this single round trip instead
+of fetching `/api/v1/snapshot` again. `snapshot` is additive: a client must
+tolerate its absence (an older hub) and fetch the snapshot itself.
 
 ```json
-{ "revision": 8 }
+{
+  "revision": 8,
+  "snapshot": { "...": "same shape as GET /api/v1/snapshot" }
+}
 ```
 
 The resulting state is also published on `/api/v1/events` for subscribers.
@@ -323,7 +339,7 @@ Each event:
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
 | `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means the batch only upserts and never prunes. |
-| `subagent` | bool | Optional, additive. `true` marks a tool-spawned child session. Hidden and silenced by default; the desktop's "A session finishes" trigger ignores it (use `subagent_done`). |
+| `subagent` | bool | Optional, additive. `true` marks a tool-spawned child session. The hub relays the flag on every snapshot and lets each client apply its own visibility setting (the desktop hides them unless "Show subagent sessions" is on, and its "A session finishes" trigger ignores them — use `subagent_done`). A subagent that needs help still colors the aggregate. |
 | `url` | string \| null | Optional deep link back to the session in its harness UI. |
 
 `mode` is optional and selects how the batch is applied: `"upsert"` (default)
@@ -333,6 +349,11 @@ unknown mode is `400 bad_request`. Unknown fields on the envelope and on each
 event are ignored.
 Re-pushing a `session_id` replaces its prior status in place. The batch is a
 single change: subscribers to `/api/v1/events` see one `update` afterward.
+
+A session whose `last_updated` is more than 24 hours old renders as `done`,
+matching the file source's staleness rule. This is in-memory only: the durable
+store keeps the event as sent, a fresh event restores the session, and nothing
+is written back to a producer.
 Response:
 
 ```json

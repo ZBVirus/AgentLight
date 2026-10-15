@@ -94,6 +94,7 @@ impl StateSource for ClawlightFileSource {
         Capabilities {
             remove_session: true,
             clear_done: true,
+            bulk_clear_done: false,
             push_events: false,
         }
     }

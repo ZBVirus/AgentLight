@@ -28,10 +28,12 @@ pub const EVENTS_SOURCE_ID: &str = "events";
 const MAX_REMOVED: usize = 512;
 
 /// The capabilities of a push source: it can be cleared and pruned locally, and
-/// it accepts pushed events.
+/// it accepts pushed events. Its done set is exact, so `clear_done` can run as
+/// one bulk command.
 const EVENT_CAPABILITIES: Capabilities = Capabilities {
     remove_session: true,
     clear_done: true,
+    bulk_clear_done: true,
     push_events: true,
 };
 
@@ -404,6 +406,18 @@ impl StateSource for EventPushSource {
     fn snapshot(&self, now: DateTime<Utc>) -> SourceSnapshot {
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         let mut sessions: Vec<Session> = self.sessions.lock().unwrap().values().cloned().collect();
+        // The same 24h backstop the file source applies. A producer that stops
+        // reporting (opencode closed, plugin stopped, restart with no events)
+        // must not leave a session `active` forever; downgrading to `done` is
+        // the identical, in-memory-only rule the clawlight adapter uses, so it
+        // cannot resurrect anything or write to any store.
+        let cutoff = now - chrono::Duration::hours(agentlight_core::STALE_AFTER_HOURS);
+        for session in &mut sessions {
+            if !session.is_done && session.updated_at.is_some_and(|at| at <= cutoff) {
+                session.status = Status::Done;
+                session.is_done = true;
+            }
+        }
         sessions.sort_by(|a, b| a.key.session_id.cmp(&b.key.session_id));
         SourceSnapshot {
             source: self.id.clone(),
@@ -617,6 +631,54 @@ mod tests {
 
         assert_eq!(source.clear_done(), 2);
         assert!(source.snapshot(at()).sessions.is_empty());
+    }
+
+    #[test]
+    fn stale_push_sessions_downgrade_to_done() {
+        let source = EventPushSource::new(EVENTS_SOURCE_ID);
+        let now = Utc::now();
+        let stale =
+            (now - chrono::Duration::hours(agentlight_core::STALE_AFTER_HOURS + 1)).to_rfc3339();
+        source.apply(&[
+            SessionEvent {
+                last_updated: Some(stale),
+                ..event("old", Status::Active)
+            },
+            SessionEvent {
+                last_updated: Some(now.to_rfc3339()),
+                ..event("fresh", Status::Active)
+            },
+        ]);
+
+        let snapshot = source.snapshot(now);
+        let old = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.key.session_id == "old")
+            .unwrap();
+        assert_eq!(old.status, Status::Done);
+        assert!(old.is_done);
+        let fresh = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.key.session_id == "fresh")
+            .unwrap();
+        assert_eq!(fresh.status, Status::Active);
+        assert!(!fresh.is_done);
+
+        // A fresh event for the same session brings it back to active.
+        source.apply(&[SessionEvent {
+            last_updated: Some(now.to_rfc3339()),
+            ..event("old", Status::Active)
+        }]);
+        let revived = source
+            .snapshot(now)
+            .sessions
+            .into_iter()
+            .find(|session| session.key.session_id == "old")
+            .unwrap();
+        assert_eq!(revived.status, Status::Active);
+        assert!(!revived.is_done);
     }
 
     #[test]

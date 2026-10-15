@@ -11,17 +11,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Read SSE frames from `reader` until EOF, a read error, or `stop` is set.
 ///
-/// `on_frame` is called with the `event:` name of each dispatched frame. A
-/// frame is dispatched on a blank line; `:`-prefixed lines are comments (the
-/// hub's keep-alive) and are ignored. Per the SSE spec, a frame with no
-/// `event:` field dispatches the empty name, and multi-line `data:` fields
-/// still produce a single dispatch. An incomplete frame at EOF is discarded.
+/// `on_frame` is called with the `event:` name and the frame's `data` payload
+/// (multi-line `data:` fields are joined with `\n`, per the SSE spec) of each
+/// dispatched frame. A frame is dispatched on a blank line; `:`-prefixed lines
+/// are comments (the hub's keep-alive) and are ignored. A frame with no `data:`
+/// field yields an empty payload, and an incomplete frame at EOF is discarded.
 pub(crate) fn read_frames<R: BufRead>(
     mut reader: R,
     stop: &AtomicBool,
-    on_frame: &mut dyn FnMut(&str),
+    on_frame: &mut dyn FnMut(&str, &str),
 ) {
     let mut event_name = String::new();
+    let mut data = String::new();
     let mut line = String::new();
     let mut in_frame = false;
 
@@ -40,9 +41,10 @@ pub(crate) fn read_frames<R: BufRead>(
         let trimmed = line.trim_end_matches(['\n', '\r']);
         if trimmed.is_empty() {
             if in_frame {
-                on_frame(&event_name);
+                on_frame(&event_name, &data);
             }
             event_name.clear();
+            data.clear();
             in_frame = false;
             continue;
         }
@@ -56,9 +58,18 @@ pub(crate) fn read_frames<R: BufRead>(
             Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
             None => (trimmed, ""),
         };
-        if field == "event" {
-            event_name.clear();
-            event_name.push_str(value);
+        match field {
+            "event" => {
+                event_name.clear();
+                event_name.push_str(value);
+            }
+            "data" => {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(value);
+            }
+            _ => {}
         }
     }
 }
@@ -70,46 +81,46 @@ mod tests {
 
     use super::read_frames;
 
-    fn frames(input: &str) -> Vec<String> {
+    fn frames(input: &str) -> Vec<(String, String)> {
         let stop = AtomicBool::new(false);
         let mut seen = Vec::new();
-        read_frames(Cursor::new(input.as_bytes()), &stop, &mut |name| {
-            seen.push(name.to_string());
+        read_frames(Cursor::new(input.as_bytes()), &stop, &mut |name, data| {
+            seen.push((name.to_string(), data.to_string()));
         });
         seen
     }
 
     #[test]
-    fn dispatches_a_single_update_frame() {
+    fn dispatches_a_single_update_frame_with_its_payload() {
         assert_eq!(
             frames("event: update\ndata: {\"revision\":1}\n\n"),
-            ["update"]
+            [("update".to_string(), "{\"revision\":1}".to_string())]
         );
     }
 
     #[test]
     fn ignores_keep_alive_comments() {
-        assert_eq!(
-            frames(": keep-alive\n\n: keep-alive\n\n"),
-            Vec::<String>::new()
-        );
+        assert!(frames(": keep-alive\n\n: keep-alive\n\n").is_empty());
     }
 
     #[test]
     fn coalesces_multi_line_data_into_one_frame() {
         assert_eq!(
             frames("event: update\ndata: line one\ndata: line two\n\n"),
-            ["update"]
+            [("update".to_string(), "line one\nline two".to_string())]
         );
     }
 
     #[test]
     fn dispatches_a_frame_with_no_data() {
-        assert_eq!(frames("event: lagged\n\n"), ["lagged"]);
+        assert_eq!(
+            frames("event: lagged\n\n"),
+            [("lagged".to_string(), String::new())]
+        );
     }
 
     #[test]
     fn returns_at_eof_without_dispatching_a_partial_frame() {
-        assert_eq!(frames("event: update\ndata: {}"), Vec::<String>::new());
+        assert!(frames("event: update\ndata: {}").is_empty());
     }
 }

@@ -6,6 +6,11 @@
 //! one frame, a second [`SourceEvent::Changed`] proves the source reconnected
 //! rather than silently dying. `/api/v1/snapshot` is served too, so the poll
 //! fallback remains exercised if the stream ever fails.
+//!
+//! With `payload = true` the frame's `data:` carries a full snapshot (the shape
+//! a current hub sends), which the source must use directly; with
+//! `payload = false` it carries only a revision (an older hub), and the source
+//! must fall back to fetching the snapshot.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -13,6 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+use chrono::Utc;
 
 use agentlight_core::{SourceEvent, StateSource};
 use agentlight_hub_client::{HubConfig, HubSource};
@@ -29,24 +36,37 @@ const SNAPSHOT: &str = r#"{
   "generated_at": "2026-09-12T10:00:01Z"
 }"#;
 
+/// One single-line snapshot with a session, for the SSE payload frame.
+const STREAMED_SNAPSHOT: &str = concat!(
+    r#"{"ok":true,"error":null,"state_path":"/state.json","exists":true,"aggregate":"green","#,
+    r#""counts":{"needs_help":0,"active":1,"inactive":0,"done":0,"total":1},"#,
+    r#""sessions":[{"session_id":"s1","name":"Streamed","status":"active","status_label":"working","#,
+    r#""project_name":"p","project_path":"/p","harness":null,"harness_badge":null,"#,
+    r#""last_updated":"2026-09-12T10:00:00Z","is_done":false}],"#,
+    r#""yellow_mode":"any_inactive","generated_at":"2026-09-12T10:00:01Z"}"#,
+);
+
 struct MockSseHub {
     addr: SocketAddr,
     connections: Arc<AtomicUsize>,
+    snapshot_requests: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl MockSseHub {
-    fn start() -> Self {
+    fn start(payload: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock sse hub");
         listener.set_nonblocking(true).expect("nonblocking");
         let addr = listener.local_addr().expect("addr");
         let stop = Arc::new(AtomicBool::new(false));
         let connections = Arc::new(AtomicUsize::new(0));
+        let snapshot_requests = Arc::new(AtomicUsize::new(0));
 
         let thread = {
             let stop = stop.clone();
             let connections = connections.clone();
+            let snapshot_requests = snapshot_requests.clone();
             thread::Builder::new()
                 .name("mock-sse-hub".to_string())
                 .spawn(move || {
@@ -54,7 +74,7 @@ impl MockSseHub {
                         match listener.accept() {
                             Ok((mut stream, _)) => {
                                 connections.fetch_add(1, Ordering::SeqCst);
-                                let _ = respond(&mut stream);
+                                let _ = respond(&mut stream, payload, &snapshot_requests);
                             }
                             Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                                 thread::sleep(Duration::from_millis(5));
@@ -69,6 +89,7 @@ impl MockSseHub {
         Self {
             addr,
             connections,
+            snapshot_requests,
             stop,
             thread: Some(thread),
         }
@@ -88,7 +109,11 @@ impl Drop for MockSseHub {
     }
 }
 
-fn respond(stream: &mut TcpStream) -> std::io::Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    payload: bool,
+    snapshot_requests: &AtomicUsize,
+) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let path = read_request_path(stream)?;
     match path.as_str() {
@@ -101,10 +126,18 @@ fn respond(stream: &mut TcpStream) -> std::io::Result<()> {
             // A keep-alive comment first exercises comment skipping, then one
             // real frame. Closing after the frame forces a reconnect.
             stream.write_all(b": keep-alive\n\n")?;
-            stream.write_all(b"event: update\ndata: {\"revision\":1}\n\n")?;
+            if payload {
+                let frame = format!(
+                    "event: update\ndata: {{\"revision\":1,\"snapshot\":{STREAMED_SNAPSHOT}}}\n\n"
+                );
+                stream.write_all(frame.as_bytes())?;
+            } else {
+                stream.write_all(b"event: update\ndata: {\"revision\":1}\n\n")?;
+            }
             stream.flush()
         }
         "/api/v1/snapshot" => {
+            snapshot_requests.fetch_add(1, Ordering::SeqCst);
             let response = format!(
                 "HTTP/1.1 200 OK\r\n\
                  Content-Type: application/json\r\n\
@@ -177,7 +210,7 @@ fn wait_for(mut predicate: impl FnMut() -> bool, timeout: Duration) -> bool {
 
 #[test]
 fn sse_stream_emits_changed_and_reconnects_after_close() {
-    let hub = MockSseHub::start();
+    let hub = MockSseHub::start(false);
     let source = HubSource::new(HubConfig::new(hub.base_url()).with_poll_ms(50));
 
     let hits = Arc::new(AtomicUsize::new(0));
@@ -202,5 +235,41 @@ fn sse_stream_emits_changed_and_reconnects_after_close() {
         "source did not reconnect (hits={}, connections={})",
         hits.load(Ordering::SeqCst),
         hub.connections.load(Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn sse_update_payload_is_used_without_a_follow_up_fetch() {
+    let hub = MockSseHub::start(true);
+    let source = HubSource::new(HubConfig::new(hub.base_url()).with_poll_ms(50));
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    source.subscribe(Arc::new(move |_event: SourceEvent| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Let a few connects/frames through, then check the fetch ratio. Each
+    // connect fetches once; each update frame must use its payload rather than
+    // fetching again, so requests stay at about one per connection (plus the
+    // one priming poll before the first connect). The fallback path would
+    // double that.
+    assert!(
+        wait_for(
+            || hub.connections.load(Ordering::SeqCst) >= 3,
+            Duration::from_secs(3)
+        ),
+        "the stream never reconnected"
+    );
+    thread::sleep(Duration::from_millis(200));
+    let connections = hub.connections.load(Ordering::SeqCst);
+    let fetches = hub.snapshot_requests.load(Ordering::SeqCst);
+    assert!(
+        fetches <= connections + 1,
+        "update frames should not trigger snapshot fetches: {fetches} fetches for {connections} connections"
+    );
+    assert!(
+        source.snapshot(Utc::now()).sessions.len() == 1,
+        "the streamed snapshot should be in the cache"
     );
 }

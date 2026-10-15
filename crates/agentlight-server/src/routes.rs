@@ -29,6 +29,9 @@ use crate::SCHEMA_VERSION;
 pub struct HealthResponse {
     pub status: &'static str,
     pub schema_version: u32,
+    /// The hub binary's crate version; lets a client show/check the hub version.
+    /// Additive; older hubs omit it.
+    pub version: &'static str,
     pub capabilities: CapabilityResponse,
 }
 
@@ -53,6 +56,7 @@ pub async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         schema_version: SCHEMA_VERSION,
+        version: env!("CARGO_PKG_VERSION"),
         capabilities: CapabilityResponse {
             events: vec!["sse"],
             commands: vec!["remove_session", "clear_done"],
@@ -178,6 +182,11 @@ pub enum CommandRequest {
 #[derive(Debug, Serialize)]
 pub struct CommandResponse {
     pub revision: u64,
+    /// The refreshed snapshot, so a client can update its cache from this reply
+    /// instead of fetching `/api/v1/snapshot` again. Additive; an older client
+    /// ignores it and fetches the snapshot itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
 }
 
 /// `POST /api/v1/commands` — route a mutation to its source and report the
@@ -191,7 +200,7 @@ pub async fn commands(
     let engine = state.engine().clone();
     let default_source = engine.source_id();
 
-    let revision = tokio::task::spawn_blocking(move || -> Result<u64, ApiError> {
+    let update = tokio::task::spawn_blocking(move || -> Result<Update, ApiError> {
         match request {
             CommandRequest::RemoveSession { source, session_id } => {
                 let source = source
@@ -212,12 +221,15 @@ pub async fn commands(
                 engine.clear_done().map_err(ApiError::from)?;
             }
         }
-        Ok(engine.refresh().revision)
+        Ok(engine.refresh())
     })
     .await
     .map_err(|e| ApiError::internal(format!("command task failed: {e}")))??;
 
-    Ok(Json(CommandResponse { revision }))
+    Ok(Json(CommandResponse {
+        revision: update.revision,
+        snapshot: Some(update.snapshot),
+    }))
 }
 
 /// Body for `POST /api/v1/ingest`. Unknown fields on the envelope and on each

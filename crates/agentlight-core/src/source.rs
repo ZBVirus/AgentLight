@@ -171,6 +171,12 @@ impl SourceHealth {
 pub struct Capabilities {
     pub remove_session: bool,
     pub clear_done: bool,
+    /// The source's own `ClearDone` command removes exactly the `done` set the
+    /// engine renders, so one command can replace a removal per session. False
+    /// for the file source: it must also remove sessions the engine reaped to
+    /// `done` while their file status is still live.
+    #[serde(default)]
+    pub bulk_clear_done: bool,
     pub push_events: bool,
 }
 
@@ -178,6 +184,7 @@ impl Capabilities {
     pub const NONE: Self = Self {
         remove_session: false,
         clear_done: false,
+        bulk_clear_done: false,
         push_events: false,
     };
 }
@@ -238,7 +245,8 @@ pub trait StateSource: Send + Sync {
 }
 
 /// In-memory source for deterministic tests and demos. Holds no capabilities
-/// by default.
+/// by default. Records every command it receives, so tests can assert how the
+/// engine routed a mutation.
 pub struct FixtureSource {
     id: SourceId,
     kind: SourceKind,
@@ -246,6 +254,7 @@ pub struct FixtureSource {
     health: Mutex<SourceHealth>,
     sessions: Mutex<Vec<Session>>,
     sinks: Mutex<Vec<SourceSink>>,
+    commands: Mutex<Vec<SourceCommand>>,
     revision: AtomicU64,
 }
 
@@ -258,8 +267,14 @@ impl FixtureSource {
             health: Mutex::new(SourceHealth::Ready),
             sessions: Mutex::new(Vec::new()),
             sinks: Mutex::new(Vec::new()),
+            commands: Mutex::new(Vec::new()),
             revision: AtomicU64::new(0),
         }
+    }
+
+    /// Commands received so far, oldest first.
+    pub fn commands(&self) -> Vec<SourceCommand> {
+        self.commands.lock().unwrap().clone()
     }
 
     pub fn with_sessions(mut self, sessions: Vec<Session>) -> Self {
@@ -327,6 +342,7 @@ impl StateSource for FixtureSource {
     }
 
     fn command(&self, command: SourceCommand) -> Result<()> {
+        self.commands.lock().unwrap().push(command.clone());
         match command {
             SourceCommand::RemoveSession(key) => {
                 self.sessions.lock().unwrap().retain(|s| s.key != key);
@@ -384,6 +400,7 @@ mod tests {
             .with_capabilities(Capabilities {
                 remove_session: true,
                 clear_done: true,
+                bulk_clear_done: true,
                 push_events: true,
             })
             .with_sessions(vec![

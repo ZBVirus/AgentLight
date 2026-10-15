@@ -70,6 +70,19 @@ const SNAPSHOT_ACTIVE: &str = r#"{
   "generated_at": "2026-09-12T10:00:01Z"
 }"#;
 
+/// A ready hub with no sessions, used after a mutation lands.
+const SNAPSHOT_EMPTY: &str = r#"{
+  "ok": true,
+  "error": null,
+  "state_path": "/state.json",
+  "exists": true,
+  "aggregate": "gray",
+  "counts": { "needs_help": 0, "active": 0, "inactive": 0, "done": 0, "total": 0 },
+  "sessions": [],
+  "yellow_mode": "any_inactive",
+  "generated_at": "2026-09-12T10:00:02Z"
+}"#;
+
 #[derive(Debug, Clone)]
 struct Recorded {
     method: String,
@@ -94,6 +107,8 @@ struct MockState {
     command_body: String,
     ingest_status: u16,
     ingest_body: String,
+    health_status: u16,
+    health_body: String,
 }
 
 struct MockHub {
@@ -116,6 +131,8 @@ impl MockHub {
             command_body: "{\"revision\":1}".to_string(),
             ingest_status: 200,
             ingest_body: "{\"accepted\":0}".to_string(),
+            health_status: 200,
+            health_body: "{\"status\":\"ok\",\"schema_version\":1}".to_string(),
         }));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -173,6 +190,12 @@ impl MockHub {
         state.ingest_body = body.into();
     }
 
+    fn set_health(&self, status: u16, body: impl Into<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.health_status = status;
+        state.health_body = body.into();
+    }
+
     fn recorded(&self) -> Vec<Recorded> {
         self.requests.lock().unwrap().clone()
     }
@@ -199,6 +222,7 @@ fn handle_connection(
             "/api/v1/snapshot" => (state.snapshot_status, state.snapshot_body.clone()),
             "/api/v1/commands" => (state.command_status, state.command_body.clone()),
             "/api/v1/ingest" => (state.ingest_status, state.ingest_body.clone()),
+            "/healthz" => (state.health_status, state.health_body.clone()),
             _ => (404, "{\"error\":{\"code\":\"not_found\"}}".to_string()),
         }
     };
@@ -428,6 +452,12 @@ fn commands_post_expected_tagged_bodies() {
     let hub = MockHub::start();
     hub.set_command(200, "{\"revision\":8}");
     let source = HubSource::new(HubConfig::new(hub.base_url()).with_id("hub"));
+    let commands = |hub: &MockHub| -> Vec<Recorded> {
+        hub.recorded()
+            .into_iter()
+            .filter(|request| request.path == "/api/v1/commands")
+            .collect()
+    };
 
     source
         .command(SourceCommand::RemoveSession(SessionKey::new(
@@ -436,24 +466,27 @@ fn commands_post_expected_tagged_bodies() {
         )))
         .expect("remove_session");
 
-    let requests = hub.recorded();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/api/v1/commands");
-    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    let sent = commands(&hub);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].method, "POST");
+    assert_eq!(sent[0].header("content-type"), Some("application/json"));
     assert_eq!(
-        requests[0].body,
+        sent[0].body,
         "{\"command\":\"remove_session\",\"session_id\":\"abc\"}"
     );
+    // The command also re-fetches the snapshot so the row disappears at once.
+    assert!(hub
+        .recorded()
+        .iter()
+        .any(|request| request.path == "/api/v1/snapshot"));
 
     source
         .command(SourceCommand::ClearDone)
         .expect("clear_done");
-    let requests = hub.recorded();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/api/v1/commands");
-    assert_eq!(requests[1].body, "{\"command\":\"clear_done\"}");
+    let sent = commands(&hub);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].method, "POST");
+    assert_eq!(sent[1].body, "{\"command\":\"clear_done\"}");
 
     source
         .command(SourceCommand::RemoveSession(SessionKey::new(
@@ -461,7 +494,7 @@ fn commands_post_expected_tagged_bodies() {
             "abc",
         )))
         .expect("ignored other-source key");
-    assert_eq!(hub.recorded().len(), 2);
+    assert_eq!(commands(&hub).len(), 2, "no command for another source");
 }
 
 #[test]
@@ -497,6 +530,128 @@ fn unreachable_hub_reports_hub_wording_through_the_engine() {
     assert!(!error.contains("state file"), "{error}");
     assert_eq!(snapshot.source_kind, "hub");
     assert_eq!(snapshot.source_label, "http://127.0.0.1:1");
+}
+
+#[test]
+fn command_refreshes_the_cache_without_waiting_for_the_stream() {
+    let hub = MockHub::start();
+    hub.set_snapshot(200, SNAPSHOT_ACTIVE);
+
+    // A long poll interval so the fallback loop cannot mask a stale cache.
+    let source = HubSource::new(HubConfig::new(hub.base_url()).with_poll_ms(60_000));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    source.subscribe(Arc::new(move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    assert!(
+        wait_for(
+            || source.snapshot(Utc::now()).sessions.len() == 1,
+            Duration::from_secs(3)
+        ),
+        "the first fetch never landed"
+    );
+    // Let the stream thread exhaust its connect attempt and enter the long
+    // reconnect sleep, so only the command's own refresh can change the cache.
+    thread::sleep(Duration::from_millis(400));
+    hub.set_snapshot(200, SNAPSHOT_EMPTY);
+    let before = hits.load(Ordering::SeqCst);
+
+    source
+        .command(SourceCommand::ClearDone)
+        .expect("clear_done");
+
+    assert_eq!(
+        source.snapshot(Utc::now()).sessions.len(),
+        0,
+        "the command must refresh the cached snapshot itself"
+    );
+    assert!(
+        hits.load(Ordering::SeqCst) > before,
+        "the command must emit a change so subscribers repaint"
+    );
+    assert!(hub
+        .recorded()
+        .iter()
+        .any(|request| request.method == "POST" && request.path == "/api/v1/commands"));
+}
+
+#[test]
+fn health_parses_the_hub_version_and_tolerates_an_older_hub() {
+    let hub = MockHub::start();
+    hub.set_health(
+        200,
+        "{\"status\":\"ok\",\"schema_version\":1,\"version\":\"0.4.0\",\"capabilities\":{\"auth\":\"none\"}}",
+    );
+    let client = HubClient::new(HubConfig::new(hub.base_url()));
+
+    let health = client.health().expect("health");
+    assert_eq!(health.status, "ok");
+    assert_eq!(health.schema_version, 1);
+    assert_eq!(health.version.as_deref(), Some("0.4.0"));
+    // healthz is unauthenticated on the hub; the call must not need a token.
+    assert!(hub
+        .recorded()
+        .iter()
+        .any(|request| request.path == "/healthz"));
+
+    // A hub that predates the version field still parses.
+    hub.set_health(200, "{\"status\":\"ok\",\"schema_version\":1}");
+    let health = client.health().expect("health");
+    assert_eq!(health.version, None);
+}
+
+#[test]
+fn command_uses_the_snapshot_in_the_reply_without_a_follow_up_fetch() {
+    let hub = MockHub::start();
+    hub.set_snapshot(200, SNAPSHOT_ACTIVE);
+    // The reply carries the post-command state, so no GET is needed.
+    hub.set_command(
+        200,
+        format!("{{\"revision\":2,\"snapshot\":{SNAPSHOT_EMPTY}}}"),
+    );
+
+    let source = HubSource::new(HubConfig::new(hub.base_url()).with_poll_ms(60_000));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    source.subscribe(Arc::new(move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert!(
+        wait_for(
+            || source.snapshot(Utc::now()).sessions.len() == 1,
+            Duration::from_secs(3)
+        ),
+        "the first fetch never landed"
+    );
+    // Let the stream thread settle into its long reconnect sleep.
+    thread::sleep(Duration::from_millis(400));
+
+    let requests_before = hub.recorded().len();
+    let hits_before = hits.load(Ordering::SeqCst);
+    source
+        .command(SourceCommand::ClearDone)
+        .expect("clear_done");
+
+    let after = hub.recorded();
+    let snapshot_fetches = after[requests_before..]
+        .iter()
+        .filter(|request| request.path == "/api/v1/snapshot")
+        .count();
+    assert_eq!(
+        snapshot_fetches, 0,
+        "the reply snapshot must replace the follow-up GET"
+    );
+    assert_eq!(
+        source.snapshot(Utc::now()).sessions.len(),
+        0,
+        "the cache must take the reply snapshot"
+    );
+    assert!(
+        hits.load(Ordering::SeqCst) > hits_before,
+        "the command must still emit a change"
+    );
 }
 
 #[test]

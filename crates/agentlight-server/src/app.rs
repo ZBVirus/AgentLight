@@ -165,9 +165,14 @@ pub fn build_engine(config: &ServerConfig) -> Engine {
 /// selected so the caller can keep it for the ingest route.
 pub fn build_engine_with_source(config: &ServerConfig) -> (Engine, Option<Arc<EventPushSource>>) {
     // The hub relays session state and must not impose the desktop's link shape;
-    // it passes the producer/template URL through untouched.
+    // it passes the producer/template URL through untouched. It also relays
+    // subagent rows: visibility ("Show subagent sessions") is a per-client
+    // display choice, so the hub keeps the flag on the wire and every desktop
+    // applies its own setting. Filtering them here made the desktop's toggle a
+    // no-op for hub sources because the rows never arrived.
     let mut core = config.core.clone();
     core.session_link = agentlight_core::SessionLink::Producer;
+    core.show_subagents = true;
     let engine = Engine::new(core);
     if config.source_kind == SourceKind::Push {
         let mut events = EventPushSource::with_store(EVENTS_SOURCE_ID, config.events_path.clone());
@@ -224,4 +229,47 @@ pub fn router(state: AppState) -> Router {
 /// Build the default router for a config, constructing the engine and source.
 pub fn app(config: &ServerConfig) -> Router {
     router(AppState::from_config(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentlight_core::Status;
+    use agentlight_source_events::SessionEvent;
+
+    fn event(id: &str, subagent: bool) -> SessionEvent {
+        SessionEvent {
+            session_id: id.to_string(),
+            status: Status::Active,
+            name: Some(format!("Session {id}")),
+            project_path: None,
+            harness: Some("opencode".to_string()),
+            last_updated: None,
+            url: None,
+            producer: Some("p1".to_string()),
+            subagent,
+        }
+    }
+
+    #[test]
+    fn hub_relays_subagent_rows_so_clients_can_filter() {
+        let config = ServerConfig {
+            source_kind: SourceKind::Push,
+            ..ServerConfig::default()
+        };
+        let (engine, events) = build_engine_with_source(&config);
+        let events = events.expect("events mode has a push source");
+        events.apply(&[event("main", false), event("sub", true)]);
+
+        // The hub relays both rows with their flag intact; a desktop client
+        // then applies its own `show_subagents` filter locally.
+        let snapshot = engine.snapshot_now();
+        assert_eq!(snapshot.counts.total, 2, "the hub relays both rows");
+        let sub = snapshot
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sub")
+            .expect("subagent row relayed");
+        assert!(sub.is_subagent, "the wire row keeps its subagent flag");
+    }
 }

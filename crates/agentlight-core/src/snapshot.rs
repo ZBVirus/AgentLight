@@ -92,7 +92,7 @@ pub fn build_snapshot_at(
             for row in rows.iter_mut() {
                 row.url = build_session_link(
                     config.session_link,
-                    config.session_link_base.as_deref(),
+                    config.session_link_base_for(config.session_link),
                     &row.session_id,
                     row.harness.as_deref(),
                     row.url.as_deref(),

@@ -203,7 +203,8 @@ pub fn load_state(state_path: &Path) -> Load {
         return Load::Missing;
     }
     match std::fs::read_to_string(state_path) {
-        Ok(contents) => match HookState::from_json_str(&contents) {
+        // Tolerate a UTF-8 BOM (a Windows editor re-save can add one).
+        Ok(contents) => match HookState::from_json_str(contents.trim_start_matches('\u{feff}')) {
             Ok(state) => Load::Loaded(state),
             Err(e) => Load::Unreadable(e),
         },
@@ -581,6 +582,23 @@ mod tests {
             load_state(&dir.path().join("nope.json")),
             Load::Missing
         ));
+    }
+
+    #[test]
+    fn a_utf8_bom_does_not_make_the_state_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"sessions\":{\"a\":{\"status\":\"active\"}}}",
+        )
+        .unwrap();
+        match load_state(&path) {
+            Load::Loaded(state) => {
+                assert_eq!(state.sessions["a"].status, Status::Active);
+            }
+            other => panic!("expected loaded, got {other:?}"),
+        }
     }
 
     #[test]
