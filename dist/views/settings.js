@@ -10,6 +10,7 @@ import {
   setConfig,
   setView,
   snapshot,
+  view,
 } from "../lib/store.js";
 
 const $ = (id) => document.getElementById(id);
@@ -32,6 +33,12 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 // Whether the persisted config carries an admin token hash. Lets the token
 // hint explain that a secret is set without ever putting the hash in the input.
 let adminTokenSet = false;
+
+// Per-link-mode server addresses while Settings is open, seeded from
+// `config.session_link_bases` and saved back as a whole. Each mode keeps its
+// own address, so switching modes never carries a stale one over.
+let linkBases = {};
+let linkMode = "opencode_v2";
 
 // The backend emits this whenever the live server starts or stops, including
 // from a path other than the Settings buttons. Keep the button label and
@@ -105,13 +112,20 @@ export function populateSettings() {
   $("set-mini-show-labels").checked = config.mini_show_labels !== false;
   $("set-poll").value = config.poll_ms || 1500;
   $("set-session-link").value = config.session_link || "opencode_v2";
-  $("set-session-link-base").value = config.session_link_base || "";
+  linkBases = { ...(config.session_link_bases || {}) };
+  linkMode = $("set-session-link").value;
+  $("set-session-link-base").value = linkBases[linkMode] || "";
   $("set-server-bind").value = config.server_bind || DEFAULT_SERVER_BIND;
   // The admin token is write-only: never render the stored hash back here.
   $("set-server-token").value = "";
   // Assigning `oninput` (instead of addEventListener) keeps re-population from
   // stacking listeners.
-  $("set-source-kind").onchange = renderSourceFields;
+  $("set-source-kind").onchange = () => {
+    renderSourceFields();
+    renderHubStatus();
+  };
+  $("set-hub-url").oninput = markHubStatusStale;
+  $("btn-hub-refresh").onclick = refreshHubStatus;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
   $("set-notifications").onchange = renderNotificationRows;
@@ -137,12 +151,79 @@ export function populateSettings() {
   $("btn-alarm-test").onclick = testAlarm;
   refreshAppVersion();
   $("btn-reset-colors").onclick = resetColors;
+  $("btn-copy-diagnostics").onclick = copyDiagnostics;
   renderSourceFields();
   renderNotificationRows();
   renderAlarmRows();
   renderSessionLinkFields();
   renderServerUrl();
   refreshServerStatus();
+  renderHubStatus();
+}
+
+// Render the cached /healthz result (no network). Settings opening must never
+// wait on a probe; the shell refreshes the cache at startup and when the hub
+// source changes, and the Refresh button probes on demand.
+export async function renderHubStatus() {
+  if (!invoke || $("set-source-kind").value !== "hub") return;
+  let status = null;
+  try {
+    status = await invoke("get_hub_status_cached");
+  } catch (error) {
+    status = null;
+  }
+  renderHubStatusValue(status);
+}
+
+function renderHubStatusValue(status) {
+  if (!status) {
+    $("set-hub-status").value = "Not checked yet — Refresh";
+    return;
+  }
+  const typed = $("set-hub-url").value.trim().replace(/\/+$/, "");
+  const checkedUrl = (status.url || "").replace(/\/+$/, "");
+  if (typed && checkedUrl && typed !== checkedUrl) {
+    $("set-hub-status").value = "Not checked for this address — Refresh";
+    return;
+  }
+  const checked = status.checked_at ? ` · checked ${status.checked_at.slice(11)}` : "";
+  $("set-hub-status").value = status.reachable
+    ? `Connected · hub ${status.version || "unknown"} · schema ${status.schema_version ?? "?"}${checked}`
+    : `Unreachable: ${status.error || "no answer"}${checked}`;
+}
+
+// Probe the hub address currently in the form (the Refresh button, or a first
+// open with an empty cache).
+export async function refreshHubStatus() {
+  if (!invoke || $("set-source-kind").value !== "hub") return;
+  $("set-hub-status").value = "Checking…";
+  try {
+    const status = await invoke("get_hub_status", {
+      url: $("set-hub-url").value.trim(),
+      token: $("set-hub-token").value.trim() || (config && config.hub_token) || null,
+    });
+    renderHubStatusValue(status);
+  } catch (error) {
+    $("set-hub-status").value = `Unreachable: ${error}`;
+  }
+}
+
+// The typed address no longer matches the cached result.
+function markHubStatusStale() {
+  if ($("set-source-kind").value !== "hub") return;
+  $("set-hub-status").value = "Not checked for this address — Refresh";
+}
+
+// Put the shell's redacted diagnostics report on the clipboard. The report
+// includes versions, source/hub state, and the log tail; never a token.
+async function copyDiagnostics() {
+  if (!invoke) return;
+  try {
+    await invoke("copy_diagnostics");
+    toast("Diagnostics copied");
+  } catch (error) {
+    toast(`Copy failed: ${error}`);
+  }
 }
 
 export async function refreshServerStatus() {
@@ -296,17 +377,33 @@ function renderNotificationRows() {
   }
 }
 
-// Show the server base URL field only for the modes that use it.
+// Show the server base URL only for the modes that use it; `producer` gets its
+// URL from the hub/plugin, and `off` has no link at all. Switching modes swaps
+// in that mode's own remembered address.
 function renderSessionLinkFields() {
   const mode = $("set-session-link").value;
   const usesBase = mode === "opencode_v1" || mode === "opencode_v2" || mode === "openchamber";
   $("set-session-link-base-field").classList.toggle("hidden", !usesBase);
+  $("set-session-link-producer-hint").classList.toggle("hidden", mode !== "producer");
+  if (mode !== linkMode) {
+    rememberLinkBase(linkMode);
+    linkMode = mode;
+    $("set-session-link-base").value = linkBases[mode] || "";
+  }
   const placeholders = {
     opencode_v1: "http://localhost:4096",
     opencode_v2: "http://localhost:4096",
     openchamber: "http://localhost:3000",
   };
   $("set-session-link-base").placeholder = placeholders[mode] || "";
+}
+
+// Remember the visible address under the mode it was typed for; a blank input
+// clears that mode's entry so the default applies again.
+function rememberLinkBase(mode) {
+  const value = $("set-session-link-base").value.trim();
+  if (value) linkBases[mode] = value;
+  else delete linkBases[mode];
 }
 
 // Show and enable the alarm trigger/sound rows only while alarms are on.
@@ -435,6 +532,22 @@ function syncSpecificTriggers(kind) {
   $(ids.any).checked = $(ids.needsHelp).checked && $(ids.done).checked && $(ids.subagent).checked;
 }
 
+// Keyboard while Settings is open: Ctrl/Cmd+S saves the form, Esc leaves
+// without saving (the same discard as the Back button).
+export function handleSettingsKey(event) {
+  if (!event || view !== "settings") return;
+  const key = event.key;
+  if (key === "Escape") {
+    event.preventDefault();
+    setView("detail");
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && (key === "s" || key === "S")) {
+    event.preventDefault();
+    saveSettings();
+  }
+}
+
 function readTriggers(kind) {
   const ids = TRIGGER_IDS[kind];
   const selected = [];
@@ -449,6 +562,8 @@ export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
   const sourceKind = $("set-source-kind").value;
+  const linkModeNow = $("set-session-link").value;
+  rememberLinkBase(linkModeNow);
   const next = applyServerFields({
     ...config,
     source_kind: sourceKind,
@@ -476,8 +591,8 @@ export async function saveSettings(event) {
     mini_green: miniColorValue("green"),
     mini_show_labels: $("set-mini-show-labels").checked,
     poll_ms: Number($("set-poll").value) || 1500,
-    session_link: $("set-session-link").value,
-    session_link_base: $("set-session-link-base").value.trim() || null,
+    session_link: linkModeNow,
+    session_link_bases: { ...linkBases },
   });
   try {
     setConfig(await invoke("set_config", { config: next }));

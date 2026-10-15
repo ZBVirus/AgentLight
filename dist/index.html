@@ -100,6 +100,14 @@
                 <input type="password" id="set-hub-token" placeholder="Bearer token required by the hub" />
                 <small class="hint">Stored in plaintext in config.json because it must be sent to the hub; unlike the server admin token it cannot be hashed.</small>
               </label>
+              <label class="field">
+                <span>Hub status</span>
+                <div class="row">
+                  <input type="text" id="set-hub-status" readonly placeholder="Not checked yet" />
+                  <button type="button" class="ghost" id="btn-hub-refresh">Refresh</button>
+                </div>
+                <small class="hint">Probes the address above over /healthz: reachability, the hub's version, and its protocol schema. The shell refreshes it at startup and when the hub changes, never while opening or saving Settings.</small>
+              </label>
             </div>
 
             <label class="field">
@@ -116,8 +124,9 @@
             <label class="field" id="set-session-link-base-field">
               <span>Session link server</span>
               <input type="text" id="set-session-link-base" placeholder="http://localhost:4096" />
-              <small class="hint">Base URL of the opencode or OpenChamber server, used by the v1, v2, and OpenChamber modes.</small>
+              <small class="hint">Base URL of the opencode or OpenChamber server, used by the v1, v2, and OpenChamber modes. Each mode remembers its own address.</small>
             </label>
+            <small class="hint hidden" id="set-session-link-producer-hint">No address here: the Open button follows the URL the hub or plugin attached (the hub can rewrite it with <code>AGENTLIGHT_SESSION_URL_TEMPLATE</code>).</small>
             <label class="field inline">
               <input type="checkbox" id="set-top" />
               <span>Always on top</span>
@@ -304,7 +313,11 @@
 
             <div class="field">
               <span>Version</span>
-              <input type="text" id="app-version" readonly />
+              <div class="row">
+                <input type="text" id="app-version" readonly />
+                <button type="button" class="ghost" id="btn-copy-diagnostics">Copy diagnostics</button>
+              </div>
+              <small class="hint">The log is written to <code>%APPDATA%\AgentLight\agentlight.log</code>. Copy diagnostics includes versions, source and hub state, and the log tail; tokens are never included.</small>
             </div>
 
             <div class="settings-foot">

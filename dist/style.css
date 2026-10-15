@@ -17,6 +17,21 @@
   user-select: none;
 }
 
+/* Text a user may want to copy stays selectable despite the global rule above
+   (which keeps window drags from selecting chrome): session rows, labels,
+   hints, the pairing code, and form fields. */
+.session .name,
+.session .sub,
+.detail-title,
+.light-label,
+.chips,
+.hint,
+.pair-code,
+input,
+textarea {
+  user-select: text;
+}
+
 html,
 body {
   margin: 0;
@@ -501,6 +516,12 @@ body[data-collapse="triple"] .mini-triple {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+/* Tool-spawned child session marker; only drawn when subagents are shown. */
+.badge.sub {
+  background: #243039;
+  color: #7fb4d6;
 }
 
 .status-text {

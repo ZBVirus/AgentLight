@@ -60,6 +60,13 @@ export function renderDetail(snapshot) {
       badge.textContent = session.harness_badge;
       sub.appendChild(badge);
     }
+    if (session.is_subagent) {
+      const subagent = document.createElement("span");
+      subagent.className = "badge sub";
+      subagent.textContent = "sub";
+      subagent.title = "Subagent session";
+      sub.appendChild(subagent);
+    }
     const statusText = document.createElement("span");
     statusText.className = "status-text";
     statusText.textContent = session.status_label;

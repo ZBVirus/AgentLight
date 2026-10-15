@@ -15,7 +15,7 @@ import {
   view,
 } from "./lib/store.js";
 import { clearDone, renderDetail } from "./views/detail.js";
-import { populateSettings, saveSettings } from "./views/settings.js";
+import { handleSettingsKey, populateSettings, saveSettings } from "./views/settings.js";
 import { wireMini } from "./lib/drag.js";
 import { toast } from "./lib/toast.js";
 
@@ -65,6 +65,9 @@ function wire() {
   $("btn-browse").addEventListener("click", browse);
 
   $("settings-form").addEventListener("submit", saveSettings);
+  // Ctrl/Cmd+S saves and Esc discards while Settings is open, like the
+  // Save/Back buttons.
+  window.addEventListener("keydown", handleSettingsKey);
 
   if (listen) {
     listen("state-changed", (event) => {
