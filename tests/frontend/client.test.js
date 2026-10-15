@@ -13,7 +13,7 @@ const html = readFileSync(
   "utf8",
 );
 
-function load({ auth = "bearer", url = "http://hub.local/", snapshotStatus = 200 } = {}) {
+function load({ auth = "bearer", url = "http://hub.local/", snapshotStatus = 200, sessions = [] } = {}) {
   const calls = [];
   const dom = new JSDOM(html, {
     runScripts: "dangerously",
@@ -35,8 +35,8 @@ function load({ auth = "bearer", url = "http://hub.local/", snapshotStatus = 200
             json: async () => ({
               ok: true,
               aggregate: "gray",
-              counts: { total: 0 },
-              sessions: [],
+              counts: { total: sessions.length },
+              sessions,
             }),
           };
         }
@@ -82,4 +82,20 @@ test("a rejected saved token returns to pairing with a message", async () => {
   const doc = dom.window.document;
   assert.equal(doc.getElementById("pair-panel").hidden, false);
   assert.match(doc.getElementById("pair-error").textContent, /no longer valid/);
+});
+
+test("the web client hides subagent rows and counts what it shows", async () => {
+  const { dom } = load({
+    auth: "none",
+    sessions: [
+      { session_id: "s1", name: "Main", status: "active", status_label: "working", is_subagent: false },
+      { session_id: "s2", name: "Child", status: "active", status_label: "working", is_subagent: true },
+    ],
+  });
+  await tick();
+  const doc = dom.window.document;
+  const rows = doc.querySelectorAll("#sessions li");
+  assert.equal(rows.length, 1, "the subagent row is hidden");
+  assert.match(rows[0].textContent, /Main/);
+  assert.match(doc.getElementById("status").textContent, /1 session/);
 });

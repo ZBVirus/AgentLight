@@ -13,7 +13,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(here, "..", "..", "dist");
 const html = readFileSync(path.join(dist, "index.html"), "utf8");
 
-const state = { config: null, snapshot: null, calls: [] };
+const state = { config: null, snapshot: null, calls: [], hubStatus: null };
 
 function baseConfig(overrides = {}) {
   return {
@@ -42,7 +42,7 @@ function baseConfig(overrides = {}) {
     server_bind: "127.0.0.1:8787",
     server_token_hash: null,
     session_link: "opencode_v2",
-    session_link_base: null,
+    session_link_bases: {},
     ...overrides,
   };
 }
@@ -87,10 +87,14 @@ first.window.__TAURI__ = {
       state.calls.push({ cmd, args });
       if (cmd === "get_config") return state.config;
       if (cmd === "get_snapshot") return state.snapshot;
-      if (cmd === "app_version") return "0.4.0 · test";
+      if (cmd === "app_version") return "0.5.0 · test";
       if (cmd === "set_config") return state.config;
       if (cmd === "get_server_status")
         return { enabled: false, url: null, admin_token_set: false, pairing_code: null, pairing_expires_at: null, devices: [] };
+      if (cmd === "get_hub_status")
+        return { source: "hub", url: "http://127.0.0.1:8787", error: null, ...state.hubStatus };
+      if (cmd === "get_hub_status_cached") return state.hubStatus;
+      if (cmd === "copy_diagnostics") return null;
       if (cmd === "clear_session") return true;
       if (cmd === "clear_done") return 0;
       return null;
@@ -106,12 +110,13 @@ const store = await import(pathToFileURL(path.join(dist, "lib", "store.js")).hre
 const settings = await import(pathToFileURL(path.join(dist, "views", "settings.js")).href);
 const drag = await import(pathToFileURL(path.join(dist, "lib", "drag.js")).href);
 
-async function boot({ config = baseConfig(), snapshot = baseSnapshot() } = {}) {
+async function boot({ config = baseConfig(), snapshot = baseSnapshot(), hubStatus = { url: "http://127.0.0.1:8787", reachable: true, version: "0.4.0", schema_version: 1, error: null, checked_at: "2026-10-15 12:00:00" } } = {}) {
   const dom = new JSDOM(html, { url: "http://localhost/" });
   global.window = dom.window;
   global.document = dom.window.document;
   state.config = config;
   state.snapshot = snapshot;
+  state.hubStatus = hubStatus;
   state.calls = [];
   store.setConfig(null);
   store.setSnapshot(null);
@@ -237,7 +242,7 @@ test("loading any_status selects every trigger in the row", async () => {
 test("settings shows the app version and build id", async () => {
   await boot();
   await tick();
-  assert.match(byId("app-version").value, /^0\.4\.0/);
+  assert.match(byId("app-version").value, /^0\.5\.0/);
   assert.match(byId("app-version").value, /test/);
 });
 
@@ -256,19 +261,69 @@ test("subagent visibility and the subagent-finished trigger save", async () => {
 
 test("session link setting populates, hides its base for producer mode, and saves", async () => {
   await boot({
-    config: baseConfig({ session_link: "opencode_v1", session_link_base: "http://localhost:4096" }),
+    config: baseConfig({
+      session_link: "opencode_v1",
+      session_link_bases: { opencode_v1: "http://localhost:4096" },
+    }),
   });
   assert.equal(byId("set-session-link").value, "opencode_v1");
   assert.equal(byId("set-session-link-base").value, "http://localhost:4096");
   assert.equal(byId("set-session-link-base-field").classList.contains("hidden"), false);
+  assert.equal(byId("set-session-link-producer-hint").classList.contains("hidden"), true);
 
   byId("set-session-link").value = "producer";
   byId("set-session-link").dispatchEvent(new global.window.Event("change"));
   assert.equal(byId("set-session-link-base-field").classList.contains("hidden"), true);
+  assert.equal(byId("set-session-link-producer-hint").classList.contains("hidden"), false);
 
   await settings.saveSettings();
   const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
   assert.equal(saved.args.config.session_link, "producer");
+  assert.deepEqual(saved.args.config.session_link_bases, {
+    opencode_v1: "http://localhost:4096",
+  });
+});
+
+test("each session link mode remembers its own server address", async () => {
+  await boot({
+    config: baseConfig({
+      session_link: "opencode_v2",
+      session_link_bases: { opencode_v2: "http://v2.example:4096" },
+    }),
+  });
+  assert.equal(byId("set-session-link-base").value, "http://v2.example:4096");
+
+  // v1 has no saved address: the input starts empty, not carrying v2's over.
+  byId("set-session-link").value = "opencode_v1";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base").value, "");
+  byId("set-session-link-base").value = "http://v1.example:4096";
+
+  // Switching back restores v2's address; switching away again restores v1's.
+  byId("set-session-link").value = "opencode_v2";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base").value, "http://v2.example:4096");
+  byId("set-session-link").value = "opencode_v1";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base").value, "http://v1.example:4096");
+
+  // Clearing an address forgets it for that mode only.
+  byId("set-session-link-base").value = "";
+  byId("set-session-link").value = "opencode_v2";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base").value, "http://v2.example:4096");
+  byId("set-session-link").value = "opencode_v1";
+  byId("set-session-link").dispatchEvent(new global.window.Event("change"));
+  assert.equal(byId("set-session-link-base").value, "");
+
+  // A fresh v1 address saves only what is set.
+  byId("set-session-link-base").value = "http://v1b.example:4096";
+  await settings.saveSettings();
+  const saved = [...state.calls].reverse().find((c) => c.cmd === "set_config");
+  assert.deepEqual(saved.args.config.session_link_bases, {
+    opencode_v2: "http://v2.example:4096",
+    opencode_v1: "http://v1b.example:4096",
+  });
 });
 
 test("openchamber link mode keeps the server field and its default", async () => {
@@ -337,4 +392,190 @@ test("collapsed right-click opens the native layout menu", async () => {
     state.calls.some((call) => call.cmd === "show_mini_menu"),
     "expected show_mini_menu to be invoked",
   );
+});
+
+test("drag regions report drag start and end to the shell", async () => {
+  const dom = await boot();
+  store.setView("detail");
+  drag.wireMini();
+  const bar = dom.window.document.querySelector("header.bar");
+  bar.dispatchEvent(
+    new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }),
+  );
+  await tick();
+  assert.ok(
+    state.calls.some((call) => call.cmd === "set_dragging" && call.args.dragging === true),
+    "expected set_dragging(true) on a title-bar mousedown",
+  );
+  dom.window.dispatchEvent(
+    new dom.window.MouseEvent("mouseup", { bubbles: true, button: 0 }),
+  );
+  await tick();
+  assert.ok(
+    state.calls.some((call) => call.cmd === "set_dragging" && call.args.dragging === false),
+    "expected set_dragging(false) on mouseup",
+  );
+});
+
+test("Ctrl+S saves and Esc discards while Settings is open", async () => {
+  await boot();
+  store.setView("settings");
+  const save = new global.window.KeyboardEvent("keydown", {
+    key: "s",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  settings.handleSettingsKey(save);
+  await tick();
+  assert.ok(
+    [...state.calls].some((call) => call.cmd === "set_config"),
+    "Ctrl+S saves the form",
+  );
+  assert.equal(save.defaultPrevented, true);
+
+  // Cmd+S (macOS) is the same shortcut.
+  store.setView("settings");
+  const meta = new global.window.KeyboardEvent("keydown", {
+    key: "s",
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  settings.handleSettingsKey(meta);
+  await tick();
+  assert.equal(meta.defaultPrevented, true, "Cmd+S saves too");
+
+  store.setView("settings");
+  const esc = new global.window.KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  settings.handleSettingsKey(esc);
+  assert.equal(store.view, "detail", "Esc leaves without saving");
+  assert.equal(esc.defaultPrevented, true);
+
+  store.setView("mini");
+  const ignored = new global.window.KeyboardEvent("keydown", {
+    key: "s",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  settings.handleSettingsKey(ignored);
+  assert.equal(ignored.defaultPrevented, false, "outside Settings the shortcut is inert");
+});
+
+test("subagent rows carry a marker badge", async () => {
+  const snapshot = baseSnapshot();
+  snapshot.sessions.push({
+    ...snapshot.sessions[0],
+    session_id: "s2",
+    name: "Child session",
+    is_subagent: true,
+  });
+  await boot({ config: baseConfig({ show_subagents: true }), snapshot });
+  store.setView("detail");
+  assert.equal(doc().querySelectorAll("#sessions li.session").length, 2);
+  const badges = doc().querySelectorAll("#sessions .badge.sub");
+  assert.equal(badges.length, 1);
+  assert.equal(badges[0].textContent, "sub");
+});
+
+test("hub status renders the cached result for a hub source", async () => {
+  await boot({ config: baseConfig({ source_kind: "hub" }) });
+  await tick();
+  assert.equal(
+    state.calls.some((call) => call.cmd === "get_hub_status_cached"),
+    true,
+    "opening Settings reads the cached result",
+  );
+  assert.equal(
+    state.calls.some((call) => call.cmd === "get_hub_status"),
+    false,
+    "opening Settings must not probe the network",
+  );
+  assert.match(byId("set-hub-status").value, /hub 0\.4\.0/);
+  assert.match(byId("set-hub-status").value, /schema 1/);
+  assert.match(byId("set-hub-status").value, /checked 12:00:00/);
+  assert.equal(byId("set-hub-fields").classList.contains("hidden"), false);
+});
+
+test("hub status renders an unreachable hub without throwing", async () => {
+  await boot({
+    config: baseConfig({ source_kind: "hub" }),
+    hubStatus: {
+      url: "http://127.0.0.1:8787",
+      reachable: false,
+      version: null,
+      schema_version: null,
+      error: "connection refused",
+      checked_at: "2026-10-15 12:00:00",
+    },
+  });
+  await tick();
+  assert.match(byId("set-hub-status").value, /Unreachable: connection refused/);
+});
+
+test("hub status says so when nothing has been probed yet", async () => {
+  await boot({ config: baseConfig({ source_kind: "hub" }), hubStatus: null });
+  await tick();
+  assert.match(byId("set-hub-status").value, /Not checked yet/);
+});
+
+test("the hub Refresh button probes on demand", async () => {
+  await boot({ config: baseConfig({ source_kind: "hub" }) });
+  await tick();
+  byId("btn-hub-refresh").dispatchEvent(
+    new global.window.MouseEvent("click", { bubbles: true }),
+  );
+  await tick();
+  const call = [...state.calls].reverse().find((c) => c.cmd === "get_hub_status");
+  assert.ok(call, "expected a live probe");
+  assert.equal(call.args.url, "http://127.0.0.1:8787");
+});
+
+test("editing the hub address marks the cached status stale", async () => {
+  await boot({ config: baseConfig({ source_kind: "hub" }) });
+  await tick();
+  const url = byId("set-hub-url");
+  url.value = "http://other:8787";
+  url.dispatchEvent(new global.window.Event("input"));
+  assert.match(byId("set-hub-status").value, /Not checked for this address/);
+});
+
+test("saving settings never probes the hub", async () => {
+  await boot({ config: baseConfig({ source_kind: "hub" }) });
+  await settings.saveSettings();
+  await tick();
+  assert.equal(
+    state.calls.some((call) => call.cmd === "get_hub_status"),
+    false,
+    "a save must not wait on a health probe",
+  );
+});
+
+test("hub status is not probed or read for a file source", async () => {
+  await boot({ config: baseConfig({ source_kind: "file" }) });
+  await tick();
+  assert.equal(
+    state.calls.some((call) => call.cmd === "get_hub_status" || call.cmd === "get_hub_status_cached"),
+    false,
+    "a file source has no hub",
+  );
+  assert.equal(byId("set-hub-fields").classList.contains("hidden"), true);
+});
+
+test("copy diagnostics invokes the shell and toasts", async () => {
+  await boot();
+  byId("btn-copy-diagnostics").dispatchEvent(
+    new global.window.MouseEvent("click", { bubbles: true }),
+  );
+  await tick();
+  assert.ok(
+    state.calls.some((call) => call.cmd === "copy_diagnostics"),
+    "expected copy_diagnostics",
+  );
+  assert.equal(byId("toast").textContent, "Diagnostics copied");
 });

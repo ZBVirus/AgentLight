@@ -281,6 +281,10 @@ pub trait StateSource: Send + Sync {
 pub struct Capabilities {
     pub remove_session: bool,
     pub clear_done: bool,
+    /// The source's own ClearDone removes exactly the rendered `done` set, so
+    /// one command can replace a removal per session (false for the file
+    /// source, which must also clear stale-reaped rows).
+    pub bulk_clear_done: bool,
     pub push_events: bool,
 }
 

@@ -166,6 +166,12 @@ not locally.
 - Rust 2021 workspace (members: the four `crates/*` plus `src-tauri`). `serde`
   snake_case for the state model; mirror clawlight type names (`Status`,
   `SessionStatus`, `HookState`, `Aggregate`) so the port stays reviewable.
+- **Release version**: `main` is the released line (last tag `v0.4.0`). The
+  workspace `version` in `Cargo.toml` and `src-tauri/tauri.conf.json` (and the
+  plugin's `PLUGIN_VERSION`) must be bumped together when a user-visible feature
+  or fix lands beyond the last release, so a running build is identifiable; the
+  next line is `0.5.0`. Update `docs/STATUS.md` and this file's version notes in
+  the same change.
 - Reuse clawlight's crate choices for shared concerns: `fs4` for the lock,
   `notify` for watching, `chrono` for timestamps.
 - Tauri command args are camelCase on the JS side (`sessionId` ↔ `session_id`).

@@ -187,6 +187,15 @@ decide and prioritize later.
   expands/collapses within that monitor, preserving the left edge. A window
   exactly on the seam is therefore stable. Verified by unit tests on the
   pure geometry helpers in `src-tauri`.
+- **Click-outside collapses Settings without losing the draft. Planned.** Today
+  an outside click tucks the expanded detail view back to the light when
+  "Always on top" is on, but Settings is deliberately left alone so an
+  in-progress edit is not lost. Planned: an outside click while Settings is
+  open should collapse the window too, and clicking the light again should
+  reopen Settings exactly as it was — same scroll offset, same unsaved edits —
+  without saving, as if the page had never been closed. Discard stays explicit
+  (Back or Esc). Needs the frontend to preserve the Settings draft across the
+  view switch and clicking the light to reopen Settings rather than Details.
 - **More harnesses for the "Open" link. Planned.** The session link is built for
   opencode only; other leading harnesses (Claude Code, Codex CLI, GitHub Copilot
   CLI, Antigravity, …) get no link and no Open button until their web-UI URL
@@ -195,15 +204,20 @@ decide and prioritize later.
   sessions `subagent: true`. The desktop hides them by default and only fires "A
   session finishes" for main sessions, with an opt-in "Show subagent sessions"
   and a separate "A subagent finishes" trigger. A subagent that needs help still
-  turns the light red so a prompt is never missed.
+  turns the light red so a prompt is never missed. The standalone hub relays
+  subagent rows with their `is_subagent` flag so every client applies its own
+  toggle; the hub no longer filters them, which used to make the desktop's
+  toggle a no-op for hub sources. The built-in web client hides them by default.
 - **Jump to a session in the opencode web UI. Done (v0.5 line, best-effort).**
   The detail view shows an "Open" action built from the app's **Session link**
   setting: OpenCode v2 by default (`<base>/server/<base64url(base)>/session/<id>`,
   matching `opencode pair`), with `opencode_v1`, `producer` (the hub/plugin URL
-  from `AGENTLIGHT_SESSION_URL_TEMPLATE`), and `off` options. Exact browser
-  window/tab focus is still not possible from a native app; the browser decides
-  whether to reuse or open a tab. Full focus would need a browser extension or
-  remote debugging.
+  from `AGENTLIGHT_SESSION_URL_TEMPLATE`), and `off` options. The server address
+  is remembered per mode (`session_link_bases`; the legacy single
+  `session_link_base` migrates on load), so switching modes never carries a
+  stale address. Exact browser window/tab focus is still not possible from a
+  native app; the browser decides whether to reuse or open a tab. Full focus
+  would need a browser extension or remote debugging.
 - **Attention alarms and custom sounds. Done (v0.5 line).** `alarms_enabled`
   plays a sound on an alarm edge; `alarm_trigger` (and `notification_trigger`)
   accept **any combination** of `needs_help`, `done`, and `any_status`, and the
@@ -212,13 +226,27 @@ decide and prioritize later.
   computed in the engine, separate from the notification toast. The alarm rows
   hide unless alarms are enabled. Per-source rules, snooze, and quiet hours
   remain open.
-- **Producer startup reconcile. Planned.** The plugin's live set only contains
-  sessions it has seen since opencode started. After an opencode restart, a
-  still-open session that has not emitted an event yet is absent from the first
-  heartbeat, so the snapshot prunes it until its next event. A safe reconcile
-  needs either opencode's session list with a usable status, or a `producer`
-  field on the wire snapshot so the plugin can re-seed only its own sessions;
-  guessing statuses would show every historical session as paused.
+- **Producer startup reconcile. Planned.** Known symptom: a session last
+  reported `active` can stay `active` indefinitely once the producer goes
+  quiet. The hub is a durable store of the last reported state, and nothing
+  corrects it: the plugin never posts an empty snapshot (deliberate, so a
+  starting instance cannot wipe the hub), a session that was active when
+  opencode/plugin stopped is never re-seen, and an event that arrived while the
+  hub was down is dropped. The 24h staleness backstop (push sessions render as
+  `done` when `last_updated` is older than a day, in-memory only) bounds the
+  "forever" case but does not fix a recent one.
+  - **Safe fix (preferred): producer reconcile at plugin startup.** List
+    opencode's sessions, seed ones the plugin has not seen as `paused`, then
+    the heartbeat/snapshot can prune truthfully — including an empty set when
+    opencode really has no sessions. Needs the session-list API shape for the
+    supported opencode versions; guessing statuses without a recency bound
+    would surface every historical session as paused.
+  - **Alternative: surface producer silence.** Running the hub with
+    `AGENTLIGHT_HEARTBEAT_MS` set makes a silent producer report as a source
+    error ("producer has not reported since …") after 4× that window, hiding
+    stale rows. Config-only, but it also hides legitimate last-known state.
+  - A shorter staleness window (e.g. 6h) is a constant/config decision if the
+    24h backstop proves too slow in practice.
 - **Removed sessions stay removed in events mode. Fixed (v0.5 line).**
   `EventPushSource` persists tombstone ids: a producer heartbeat (`snapshot`)
   cannot resurrect a session removed with the X button or "Clear done", while a
@@ -246,3 +274,54 @@ decide and prioritize later.
     change on connect and on each `update`/`lagged` frame and reconnecting on
     disconnect. If the stream cannot be established it falls back to a one-shot
     `GET /api/v1/snapshot` poll, emitting only on change.
+
+## Round-6 backlog (recorded 2026-10-14)
+
+Captured from the round-6 testing feedback. Statuses updated as the follow-up
+work landed.
+
+- **Settings dirty-state feedback. Planned.** Back/Esc discard silently today.
+  Mark the form when it differs from the saved config (dot on the Save button
+  or a short "unsaved changes" hint) and/or dim/disable Save when nothing
+  changed, so a discard is never a surprise.
+- **Hub health in Settings. Done (round-6 follow-up).** The hub fields show a
+  `/healthz` probe: reachability plus the hub binary's version and protocol
+  schema (`GET /healthz` gained an additive `version` field). The result is
+  cached and probed at startup, when the hub source changes, and by the
+  Refresh button beside the field — opening or saving Settings never waits on
+  it. A file source skips the probe.
+- **Diagnostics log. Done (round-6 follow-up).** The shell appends to
+  `%APPDATA%\AgentLight\agentlight.log` (rotated to `agentlight.log.1` when
+  oversized at startup): startup, source switches, embedded-server
+  transitions, notifications/alarms, config saves, and errors, plus a panic
+  hook. Settings has a "Copy diagnostics" action that puts a redacted report
+  (versions, source/hub state, log tail) on the clipboard; tokens never leave
+  the config.
+- **`show_done` through a hub. Planned.** A hub renders only its newest five
+  `done` rows (its own `show_done`, default off), so a client's "Show every
+  done session" cannot bring older ones back. Decide between a hub-side
+  setting/env (`AGENTLIGHT_SHOW_DONE`) and relaying all rows with client-side
+  capping.
+- **Bulk Clear done over a hub. Done (round-6 follow-up).** A source can now
+  advertise `bulk_clear_done` (the hub and the push store do; the file source
+  does not, because it must also remove stale-reaped rows). The engine then
+  issues one `clear_done` command instead of a removal per session, so a hub
+  clear is one POST plus one refresh instead of N of each.
+- **Optimistic Remove (pending-removal overlay). Planned.** Today Remove waits
+  for the hub to acknowledge before the row disappears. The alternative is to
+  hide the row immediately and keep a local pending-removal set, so the next
+  snapshot — which still contains the session until the hub processes it —
+  cannot flash it back; reconcile on the hub's update, and roll back with an
+  error if the hub rejects or is unreachable. Not worth it on a LAN, where the
+  wait is one short POST round trip. It becomes worthwhile once the hub is the
+  hosted service over the internet (see "North star"), with tens-to-hundreds of
+  milliseconds of RTT and flaky links. The overlay must survive concurrent
+  snapshots, coexist with the hub's tombstones and other clients, and always
+  have a rollback path, so it is a small design, not a one-line change.
+- **Copy session details. Done (round-6 follow-up).** The global
+  `user-select: none` now has overrides for commit-worthy text — session names
+  and sub-lines, labels, hints, the pairing code, and form fields — so names
+  and paths can be selected and copied. A dedicated copy action is still open.
+- **Tray tooltip with status. Planned.** `TrayIcon::set_tooltip` updated on
+  each engine update ("2 working · 1 needs help") makes the hidden widget
+  glanceable without showing the window.

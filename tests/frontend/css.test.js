@@ -16,6 +16,19 @@ function rule(selector) {
   return match ? match[2] : "";
 }
 
+function blocksFor(selector) {
+  // Every block whose selector list contains `selector` exactly.
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blocks = [];
+  const re = /([^{}]+)\{([^}]*)\}/g;
+  let match;
+  while ((match = re.exec(clean)) !== null) {
+    const selectors = match[1].split(",").map((s) => s.trim());
+    if (selectors.includes(selector)) blocks.push(match[2]);
+  }
+  return blocks;
+}
+
 test("collapsed single light keeps its fixed size", () => {
   const base = rule(".light");
   assert.match(base, /width:\s*62px/);
@@ -45,4 +58,13 @@ test("horizontal triple lights run green to red", () => {
 test("the vmin scaling and the mini light override are gone", () => {
   assert.doesNotMatch(css, /vmin/);
   assert.doesNotMatch(css, /\.view\.mini \.light\s*\{/);
+});
+
+test("useful text stays selectable despite the global user-select none", () => {
+  for (const selector of [".session .name", ".session .sub", ".hint", "input", ".pair-code"]) {
+    assert.ok(
+      blocksFor(selector).some((body) => /user-select:\s*text/.test(body)),
+      `${selector} should be selectable`,
+    );
+  }
 });

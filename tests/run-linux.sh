@@ -96,6 +96,7 @@ else
 
   health=$(curl -sf "$BASE/healthz")
   if [ "$(echo "$health" | je "['schema_version']")" = "1" ]; then report "PASS  healthz schema_version=1"; else report "FAIL  healthz"; fail=1; fi
+  if [ -n "$(echo "$health" | je "['version']")" ]; then report "PASS  healthz reports the hub version"; else report "FAIL  healthz version"; fail=1; fi
 
   curl -sf -X POST -H 'Content-Type: application/json' \
     -d '{"events":[{"session_id":"a","status":"active","producer":"p1"}]}' "$BASE/api/v1/ingest" >/dev/null
@@ -110,6 +111,12 @@ else
   curl -sf -X POST -H 'Content-Type: application/json' \
     -d '{"events":[{"session_id":"a","status":"needs_help","producer":"p1"}]}' "$BASE/api/v1/ingest" >/dev/null
   if [ "$(curl -sf "$BASE/api/v1/snapshot" | je "['counts']['needs_help']")" = "1" ]; then report "PASS  real event resurrects"; else report "FAIL  resurrect"; fail=1; fi
+
+  # The hub relays subagent rows (with their flag) and lets clients filter.
+  curl -sf -X POST -H 'Content-Type: application/json' \
+    -d '{"events":[{"session_id":"sub","status":"active","producer":"p1","subagent":true}]}' "$BASE/api/v1/ingest" >/dev/null
+  subagent=$(curl -sf "$BASE/api/v1/snapshot" | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['is_subagent'] for s in d['sessions'] if s['session_id']=='sub'][0])" 2>/dev/null)
+  if [ "$subagent" = "True" ]; then report "PASS  subagent rows relayed"; else report "FAIL  subagent relay ($subagent)"; fail=1; fi
 
   kill "$SRV_PID" 2>/dev/null
   wait "$SRV_PID" 2>/dev/null

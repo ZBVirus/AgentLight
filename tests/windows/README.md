@@ -4,11 +4,15 @@ Tests that need the real Tauri/WebView2 window. Two layers:
 
 - `ui-harness.ps1` — native window behavior via Win32 + UI Automation: title,
   collapsed size (88x88 / 172x68 / 68x172), fixed size (`WS_THICKFRAME=false`),
-  topmost (`WS_EX_TOPMOST`), z-order, no console child, AUMID. Needs an
-  interactive desktop; it cannot click the WebView2 DOM (UIA does not surface it).
+  topmost (`WS_EX_TOPMOST`), z-order, no console child, AUMID, a title-bar drag
+  that must keep the expanded view and size, and the collapsed context menu's
+  "Always on top" toggle. Needs an interactive desktop; it cannot click the
+  WebView2 DOM (UIA does not surface it).
 - `e2e-cdp.js` (run via `run-cdp.ps1`) — Playwright over WebView2 remote
   debugging: real DOM interactions plus the real Rust window resizes
-  (88 <-> 420x548), the pin/always-on-top toggle, settings gating, and
+  (88 <-> 420x548), the pin/always-on-top toggle, settings gating, Esc/Ctrl+S
+  handling (with a save-latency bound), the per-mode session-link address,
+  hub status + Refresh, the Copy diagnostics round trip (latency-bounded), and
   non-resizability.
 
 `run-cdp.ps1` starts the app and connects Playwright over CDP; the build must

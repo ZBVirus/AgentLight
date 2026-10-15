@@ -52,6 +52,7 @@ public static class ALWin {
     [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool p);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     const uint MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004;
+    const uint MOUSEEVENTF_RIGHTDOWN = 0x0008, MOUSEEVENTF_RIGHTUP = 0x0010;
 
     public static IntPtr FindMainWindow(uint pid) {
         IntPtr best = IntPtr.Zero; long bestArea = 0;
@@ -81,6 +82,11 @@ public static class ALWin {
         SetCursorPos(x, y); Thread.Sleep(150);
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(90);
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(150);
+    }
+    public static void RightClick(int x, int y) {
+        SetCursorPos(x, y); Thread.Sleep(150);
+        mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(90);
+        mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(400);
     }
     public static void Drag(int x1, int y1, int x2, int y2) {
         SetCursorPos(x1, y1); Thread.Sleep(200);
@@ -140,6 +146,32 @@ function Invoke-UiaByName([string]$Name) {
             $pattern.Invoke(); return $true
         }
     } catch { Log ("UIA '$Name' failed: " + $_.Exception.Message) }
+    return $false
+}
+
+# Native menu items may carry a check mark prefix; match by substring. Only
+# MenuItem controls are considered: the window's own pin button is named
+# "Toggle always on top", so a blanket name match could invoke the wrong thing.
+function Invoke-UiaBySubstring([string]$Text) {
+    if (-not $script:HasUia) { return $false }
+    try {
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $menuItem = [System.Windows.Automation.ControlType]::MenuItem
+        $all = $root.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+        foreach ($el in $all) {
+            if ($el.Current.ControlType -ne $menuItem) { continue }
+            $label = $el.Current.Name
+            if ($label -and $label.Contains($Text)) {
+                $pattern = $null
+                if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                    $pattern.Invoke(); return $true
+                }
+            }
+        }
+    } catch { Log ("UIA '$Text' failed: " + $_.Exception.Message) }
     return $false
 }
 
@@ -235,6 +267,21 @@ try {
         Save-Screenshot (Join-Path $OutDir "02-detail.png") $hwnd
 
         Log ""
+        Log "== drag the expanded top bar =="
+        # Dragging the title bar must move the window and never collapse the
+        # view or leave the light in an expanded frame (the move loop used to
+        # restore the pre-drag size around a mid-drag collapse).
+        [ALWin]::Foreground($hwnd) | Out-Null
+        Start-Sleep -Milliseconds 400
+        [ALWin]::Drag(($r2[0] + 40), ($r2[1] + 16), ($r2[0] + 160), ($r2[1] + 96))
+        Start-Sleep -Milliseconds 600
+        $afterDrag = [ALWin]::Rect($hwnd)
+        Log ("after drag rect=" + ($afterDrag -join ","))
+        Log ("drag moved the window: " + ($afterDrag[0] -ne $r2[0] -or $afterDrag[1] -ne $r2[1]))
+        Log ("drag kept the expanded size: " + ($afterDrag[2] -eq 420 -and $afterDrag[3] -eq 548))
+        Save-Screenshot (Join-Path $OutDir "02b-after-drag.png") $hwnd
+
+        Log ""
         Log "== pin / topmost =="
         $found = Invoke-UiaByName "Toggle always on top"
         Log ("found pin button: " + $found)
@@ -281,6 +328,30 @@ try {
         $r3 = [ALWin]::Rect($hwnd)
         Log ("re-collapsed rect=" + ($r3 -join ",") + " (expected " + $expected[0] + "x" + $expected[1] + ")")
         Save-Screenshot (Join-Path $OutDir "04-recollapsed.png") $hwnd
+
+        Log ""
+        Log "== collapsed context menu =="
+        # The native menu gains an "Always on top" item; toggling it must flip
+        # WS_EX_TOPMOST and leave the window in place.
+        [ALWin]::Foreground($hwnd) | Out-Null
+        Start-Sleep -Milliseconds 300
+        $topBefore = [ALWin]::IsTopmost($hwnd)
+        [ALWin]::RightClick(($r3[0] + [int]($r3[2]/2)), ($r3[1] + [int]($r3[3]/2)))
+        Start-Sleep -Milliseconds 700
+        $found = Invoke-UiaBySubstring "Always on top"
+        Log ("found 'Always on top' menu item: " + $found)
+        if ($found) {
+            Start-Sleep -Milliseconds 800
+            Log ("menu toggle topmost: " + $topBefore + " -> " + [ALWin]::IsTopmost($hwnd) + " (expected flip)")
+            # Put the setting back the way it was.
+            [ALWin]::RightClick(($r3[0] + [int]($r3[2]/2)), ($r3[1] + [int]($r3[3]/2)))
+            Start-Sleep -Milliseconds 700
+            Invoke-UiaBySubstring "Always on top" | Out-Null
+            Start-Sleep -Milliseconds 600
+            Log ("restored topmost=" + [ALWin]::IsTopmost($hwnd))
+        } else {
+            Log "SKIP: native context menu item not reachable via UIA on this host"
+        }
 
         Log ""
         Log "== same-monitor =="

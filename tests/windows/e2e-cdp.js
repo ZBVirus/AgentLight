@@ -74,6 +74,31 @@ function check(name, ok, detail = "") {
   const rowsHidden = await page.locator("#set-notification-rows").evaluate((el) => el.classList.contains("hidden"));
   check("notification rows gated by the flag", rowsHidden === !notifEnabled, `enabled=${notifEnabled} hidden=${rowsHidden}`);
 
+  // Esc discards an edit; Ctrl+S saves and leaves. Run before changing other
+  // settings so Ctrl+S persists nothing new on the test host.
+  const doneBefore = await page.locator("#set-show-done").isChecked();
+  await page.locator("#set-show-done").setChecked(!doneBefore);
+  await page.keyboard.press("Escape");
+  await sleep(600);
+  check("Esc leaves Settings", (await view()) === "detail");
+  await page.locator("#btn-settings").click();
+  await sleep(600);
+  check(
+    "Esc did not save the edit",
+    (await page.locator("#set-show-done").isChecked()) === doneBefore,
+  );
+  const saveStart = Date.now();
+  await page.keyboard.press("Control+s");
+  await page.waitForFunction(() => document.body.dataset.view === "detail", null, {
+    timeout: 3000,
+  });
+  const saveMs = Date.now() - saveStart;
+  check("Ctrl+S saves and leaves Settings promptly", saveMs < 1000, `${saveMs}ms`);
+
+  // Reopen Settings for the remaining checks.
+  await page.locator("#btn-settings").click();
+  await sleep(600);
+
   // New features' settings surface.
   check(
     "session link offers OpenChamber",
@@ -104,9 +129,68 @@ function check(name, ok, detail = "") {
   check("alarm volume slider present", (await page.locator("#set-alarm-volume").count()) === 1);
   check("alarm Test button present", (await page.locator("#btn-alarm-test").count()) === 1);
 
-  // Back to the detail view, then collapse.
+  // Each session-link mode remembers its own server address.
+  await page.locator("#set-session-link").selectOption("opencode_v1");
+  await page.locator("#set-session-link-base").fill("http://v1.local:4096");
+  await page.locator("#set-session-link").selectOption("opencode_v2");
+  const v2Value = await page.locator("#set-session-link-base").inputValue();
+  check("switching link mode swaps the server address", v2Value === "", v2Value);
+  await page.locator("#set-session-link").selectOption("opencode_v1");
+  const v1Back = await page.locator("#set-session-link-base").inputValue();
+  check("the v1 address is remembered", v1Back === "http://v1.local:4096", v1Back);
+  await page.locator("#set-session-link").selectOption("producer");
+  check(
+    "producer mode explains where the URL comes from",
+    await page.locator("#set-session-link-producer-hint").isVisible(),
+  );
+  check(
+    "producer mode hides the base field",
+    await page.locator("#set-session-link-base-field").isHidden(),
+  );
+
+  // Hub status row: probes the configured hub and reports reachability.
+  // Switch to hub mode first so the (otherwise hidden) hub fields are usable.
+  await page.locator("#set-source-kind").selectOption("hub");
+  const hubUrlBefore = await page.locator("#set-hub-url").inputValue();
+  await page.locator("#set-hub-url").fill("http://127.0.0.1:1");
+  await page.locator("#btn-hub-refresh").click();
+  await page.waitForFunction(
+    () => /Unreachable/.test(document.getElementById("set-hub-status").value),
+    null,
+    { timeout: 10000 },
+  );
+  const hubStatus = await page.locator("#set-hub-status").inputValue();
+  check("hub status reports an unreachable hub", /Unreachable/.test(hubStatus), hubStatus);
+  await page.locator("#set-hub-url").fill(hubUrlBefore);
+  await page.locator("#set-source-kind").selectOption("file");
+
+  // Copy diagnostics runs through the shell (the Rust side builds the report
+  // and writes the clipboard; a failure still toasts).
+  check(
+    "copy diagnostics button exists",
+    (await page.locator("#btn-copy-diagnostics").count()) === 1,
+  );
+  await page.locator("#btn-copy-diagnostics").click();
+  const copyStart = Date.now();
+  await page.waitForFunction(
+    () => /Diagnostics copied|Copy failed/.test(document.getElementById("toast").textContent || ""),
+    null,
+    { timeout: 3000 },
+  );
+  const copyMs = Date.now() - copyStart;
+  const copyToast = (await page.locator("#toast").textContent()) || "";
+  check(
+    "copy diagnostics round-trips through the shell promptly",
+    /Diagnostics copied|Copy failed/.test(copyToast) && copyMs < 1000,
+    `${copyToast} in ${copyMs}ms`,
+  );
+
+  // Back leaves Settings without saving.
   await page.locator("#btn-settings-back").click();
-  await sleep(1000);
+  await sleep(800);
+  check("Back returns to the detail view", (await view()) === "detail");
+
+  // Collapse.
   await page.locator("#btn-collapse").click();
   await sleep(1500);
   check("collapse returns to mini", (await view()) === "mini");

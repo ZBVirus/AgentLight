@@ -32,20 +32,40 @@ mode (see [`docs/state-format.md`](docs/state-format.md)). Switch to
   move. Chosen in Settings.
 - **Details** — aggregate light plus live counts, then every session: status
   dot, name, harness badge (`oc` / `cx` / `co`), project, relative time, and a
-  remove button. A "Clear done" action drops all `done` rows.
+  remove button. A "Clear done" action drops all `done` rows. Names and
+  sub-lines are selectable so they can be copied.
 - **Settings** — source (local file or remote hub), state path (with a file
-  picker) or hub URL and token, collapsed view (style, color pickers with Reset,
-  labels), always-on-top plus "keep above full-screen apps", start at login,
-  notifications with a trigger choice, alarm sound with a trigger choice,
-  show-every-done, idle behavior, the embedded server, and the poll interval.
+  picker) or hub URL and token, the session link mode and its per-mode server
+  address, collapsed view (style, color pickers with Reset, labels),
+  always-on-top, start at login, notifications with a trigger choice, alarm
+  sound with a trigger choice, show-every-done, subagent visibility, idle
+  behavior, the embedded server, and the poll interval. Ctrl+S saves, Esc
+  leaves without saving. With a hub source the hub fields show a **status row**
+  (reachability, hub version, protocol schema; probed at startup, when the hub
+  changes, or with its Refresh button — never while opening or saving), and the
+  Version row has **Copy diagnostics**.
 
 For the current branch/PR/release state and how to build a test exe, see
 [`docs/STATUS.md`](docs/STATUS.md).
 
-The window is frameless and draggable by its top bar, and it lives in the system
-tray: closing or hiding it keeps it running, and the tray icon toggles it back.
-Left-clicking the tray icon shows/hides the window; the tray menu has Settings
-and Quit.
+## Diagnostics
+
+The app appends a small log to `%APPDATA%\AgentLight\agentlight.log` (rotated
+to `agentlight.log.1` when it passes 512 KB at startup): startup and version,
+source switches, embedded-server transitions, hub health probes, notification
+and alarm edges, config saves, Remove / Clear done durations, and errors, plus
+a panic hook. Settings → **Copy diagnostics** puts a redacted report on the
+clipboard — app version and build, OS and WebView2 version, source and settings
+summary, cached hub health, embedded-server state, and the log tail. It reads
+only cached state, so it is instant; tokens are reported as set/not set and are
+never copied.
+
+The window is frameless and draggable by its top bar in every view, and it
+lives in the system tray: hiding or closing it keeps it running. A left click on
+the tray icon brings it back and focuses it (a second click hides it when it is
+already the active window); the tray menu has Show / Hide, Settings and Quit,
+and right-clicking the collapsed light offers the layout, an Always on top
+toggle, and Hide.
 
 ## Serving to other devices
 
@@ -234,10 +254,10 @@ can be edited by hand.
 |------------------|-------------------|----------------------------------------------------|
 | `state_path`     | *(resolved)*      | Absolute path to `state.json`.                     |
 | `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`; `push` is a server-only mode. |
-| `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
+| `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. A `localhost` host is rewritten to `127.0.0.1` internally: `localhost` resolves to `::1` first, and on Windows a refused IPv6 connect can stall 1–2 s before the IPv4 fallback, once per request. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
 | `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `openchamber`, `producer` (use the URL the hub/plugin attached), or `off`. |
-| `session_link_base` | *(mode default)* | Base URL of the session server for the v1/v2/OpenChamber modes (default `http://localhost:4096` for opencode, `http://localhost:3000` for OpenChamber). |
+| `session_link_bases` | `{}`          | Server address per link mode (`"opencode_v2"`, `"opencode_v1"`, `"openchamber"`), so each mode remembers its own. A missing entry uses the mode default (`http://localhost:4096` for opencode, `http://localhost:3000` for OpenChamber). An older single `session_link_base` value is migrated on load. |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
