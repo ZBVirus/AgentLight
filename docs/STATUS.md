@@ -3,8 +3,8 @@
 Living snapshot of the branch/PR/release state and what is verified. Prefer this
 over git archaeology; update it whenever the branch layout changes.
 
-_Last updated: 2026-10-15 (rounds 6-6f: responsiveness, window input, hub
-relay/health, diagnostics, and the `0.5.0` release line). Verified:
+_Last updated: 2026-10-21 (v0.5.0 merged to `main` via PR #5 and released).
+Verified:
 `tests/run-linux.sh` all green; Windows Sandbox build green (tagged
 `round6f-2026-10-15` in the sandbox); `tests/windows/e2e-cdp.js` 37/37 and
 `cargo test -p agentlight` 13/13. The native window invariants passed, but the
@@ -19,7 +19,8 @@ bundle. See the "Branch layout" and "Cleanup" sections below, and
 
 ## Released
 
-- `main` — tagged **`v0.5.0`** (this release): the whole v0.5 line plus the
+- `main` = `d89542c` (merge of PR #5), tagged **`v0.5.0`** and released
+  2026-10-21: the whole v0.5 line plus the
   round-6 rounds (responsive Remove/Clear done, hub relay of subagents,
   per-mode session links, Ctrl+S/Esc, cached hub health with a hub version,
   diagnostics log + Copy diagnostics, selectable text, native tray/menu
