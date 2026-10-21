@@ -102,6 +102,15 @@ jobs:
         shell: pwsh
         run: ./run-cdp.ps1 -Exe ../../target/ci/agentlight.exe
 
+      # The suite writes its checks to a report file, so a red job otherwise
+      # hides which check failed. Print it to the log when anything above fails.
+      - name: Show CDP report
+        if: failure()
+        shell: pwsh
+        run: |
+          $report = "tests/test-report/cdp/report.txt"
+          if (Test-Path $report) { Get-Content $report } else { Write-Host "no CDP report written" }
+
   # The app and the server build in parallel. They share one cargo cache so the
   # second warm run reuses the common dependencies. Artifacts use the fast `ci`
   # profile; the release workflow builds the optimized binaries.
