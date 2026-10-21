@@ -53,6 +53,9 @@ async fn snapshot(app: &axum::Router, token: &str) -> Value {
 #[tokio::test]
 async fn ingest_accepts_a_batch_and_snapshot_shows_it() {
     let app = events_app();
+    // A current timestamp: the engine now reaps push sessions older than 24h
+    // (matching the file source), so a fixed past date would arrive as done.
+    let recent = chrono::Utc::now().to_rfc3339();
 
     let response = app
         .clone()
@@ -68,7 +71,7 @@ async fn ingest_accepts_a_batch_and_snapshot_shows_it() {
                         "name": "Fix auth",
                         "project_path": "/work/agentlight",
                         "harness": "opencode",
-                        "last_updated": "2026-01-01T01:00:00Z",
+                        "last_updated": recent,
                         "unknown_field": 1
                     },
                     { "session_id": "b", "status": "active", "name": "Run tests" }
@@ -138,7 +141,7 @@ async fn follow_up_ingest_updates_the_status() {
             "/api/v1/ingest",
             Some("secret"),
             Some(json!({ "events": [
-                { "session_id": "a", "status": "needs_help", "last_updated": "2026-01-01T02:00:00Z" }
+                { "session_id": "a", "status": "needs_help", "last_updated": chrono::Utc::now().to_rfc3339() }
             ] })),
         ))
         .await
@@ -149,6 +152,173 @@ async fn follow_up_ingest_updates_the_status() {
     assert_eq!(body["aggregate"], "red");
     assert_eq!(body["counts"]["needs_help"], 1);
     assert_eq!(body["counts"]["total"], 1);
+}
+
+#[tokio::test]
+async fn stale_push_sessions_render_as_done() {
+    let app = events_app();
+    let stale = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [
+                { "session_id": "old", "status": "needs_help", "last_updated": stale }
+            ] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(body["aggregate"], "gray");
+    assert_eq!(body["counts"]["total"], 1);
+    assert_eq!(body["counts"]["done"], 1);
+    assert_eq!(body["counts"]["needs_help"], 0);
+    assert_eq!(body["sessions"][0]["is_done"], true);
+}
+
+#[tokio::test]
+async fn snapshot_mode_prunes_sessions_absent_from_the_batch() {
+    let app = events_app();
+
+    let seed = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [
+                { "session_id": "a", "status": "active", "producer": "p1" },
+                { "session_id": "b", "status": "active", "producer": "p1" }
+            ] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(seed.status(), StatusCode::OK);
+
+    let snapshot_ingest = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({
+                "mode": "snapshot",
+                "events": [{ "session_id": "b", "status": "needs_help", "producer": "p1" }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(snapshot_ingest.status(), StatusCode::OK);
+    assert_eq!(read_json(snapshot_ingest).await["accepted"], 1);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(body["counts"]["total"], 1);
+    assert_eq!(body["sessions"][0]["session_id"], "b");
+    assert_eq!(body["sessions"][0]["status"], "needs_help");
+}
+
+#[tokio::test]
+async fn snapshot_mode_without_a_producer_never_prunes() {
+    let app = events_app();
+
+    let seed = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [
+                { "session_id": "a", "status": "active" },
+                { "session_id": "b", "status": "active" }
+            ] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(seed.status(), StatusCode::OK);
+
+    // A snapshot with no producer is upsert-only: `a` must survive.
+    let snapshot_ingest = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({
+                "mode": "snapshot",
+                "events": [{ "session_id": "b", "status": "needs_help" }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(snapshot_ingest.status(), StatusCode::OK);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(body["counts"]["total"], 2);
+}
+
+#[tokio::test]
+async fn unknown_ingest_mode_is_a_bad_request() {
+    let app = events_app();
+
+    let response = app
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "mode": "merge", "events": [] })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = read_json(response).await;
+    assert_eq!(body["error"]["code"], "bad_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown ingest mode"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn the_hub_url_template_overrides_the_producer_url() {
+    let config = ServerConfig {
+        source_kind: SourceKind::Push,
+        admin_token_hash: Some(hash_token("secret")),
+        session_url_template: Some("http://opencode-home/session/{id}".to_string()),
+        ..ServerConfig::default()
+    };
+    let app = router(AppState::from_config(&config));
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/v1/ingest",
+            Some("secret"),
+            Some(json!({ "events": [{
+                "session_id": "ses/a b",
+                "status": "active",
+                "url": "http://localhost:4096/session/ses/a b",
+                "producer": "p1"
+            }] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = snapshot(&app, "secret").await;
+    assert_eq!(
+        body["sessions"][0]["url"],
+        "http://opencode-home/session/ses%2Fa%20b"
+    );
 }
 
 #[tokio::test]

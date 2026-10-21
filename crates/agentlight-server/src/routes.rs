@@ -29,6 +29,9 @@ use crate::SCHEMA_VERSION;
 pub struct HealthResponse {
     pub status: &'static str,
     pub schema_version: u32,
+    /// The hub binary's crate version; lets a client show/check the hub version.
+    /// Additive; older hubs omit it.
+    pub version: &'static str,
     pub capabilities: CapabilityResponse,
 }
 
@@ -37,6 +40,7 @@ pub struct CapabilityResponse {
     pub events: Vec<&'static str>,
     pub commands: Vec<&'static str>,
     pub auth: &'static str,
+    pub ingest: Vec<&'static str>,
 }
 
 /// The self-contained, framework-free browser client served at `GET /`.
@@ -52,6 +56,7 @@ pub async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         schema_version: SCHEMA_VERSION,
+        version: env!("CARGO_PKG_VERSION"),
         capabilities: CapabilityResponse {
             events: vec!["sse"],
             commands: vec!["remove_session", "clear_done"],
@@ -60,6 +65,7 @@ pub async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
             } else {
                 "none"
             },
+            ingest: vec!["upsert", "snapshot"],
         },
     })
 }
@@ -125,17 +131,30 @@ pub async fn snapshot(State(state): State<AppState>) -> Result<Json<Snapshot>, A
     Ok(Json(snapshot))
 }
 
-/// `GET /api/v1/events` — Server-Sent Events carrying every [`Update`].
+/// `GET /api/v1/events` — Server-Sent Events carrying every [`Update`]. The
+/// first frame is the current state, so a client renders immediately instead of
+/// waiting for the next engine change.
 pub async fn events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>> + Send + 'static> {
-    let stream = BroadcastStream::new(state.subscribe()).filter_map(|result| match result {
+    // Compute the seed before subscribing: otherwise the update that produced
+    // it could also be queued and sent a second time.
+    let engine = state.engine().clone();
+    let initial: Option<Result<Event, Infallible>> =
+        tokio::task::spawn_blocking(move || engine.current_update())
+            .await
+            .ok()
+            .map(|update| Ok(update_event(update)));
+
+    let live = BroadcastStream::new(state.subscribe()).filter_map(|result| match result {
         Ok(update) => Some(Ok(update_event(update))),
         Err(BroadcastStreamRecvError::Lagged(skipped)) => Some(Ok(Event::default()
             .event("lagged")
             .data(skipped.to_string()))),
     });
-    Sse::new(stream).keep_alive(KeepAlive::default().interval(Duration::from_secs(15)))
+
+    Sse::new(tokio_stream::iter(initial).chain(live))
+        .keep_alive(KeepAlive::default().interval(Duration::from_secs(15)))
 }
 
 fn update_event(update: Update) -> Event {
@@ -163,6 +182,11 @@ pub enum CommandRequest {
 #[derive(Debug, Serialize)]
 pub struct CommandResponse {
     pub revision: u64,
+    /// The refreshed snapshot, so a client can update its cache from this reply
+    /// instead of fetching `/api/v1/snapshot` again. Additive; an older client
+    /// ignores it and fetches the snapshot itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
 }
 
 /// `POST /api/v1/commands` — route a mutation to its source and report the
@@ -176,7 +200,7 @@ pub async fn commands(
     let engine = state.engine().clone();
     let default_source = engine.source_id();
 
-    let revision = tokio::task::spawn_blocking(move || -> Result<u64, ApiError> {
+    let update = tokio::task::spawn_blocking(move || -> Result<Update, ApiError> {
         match request {
             CommandRequest::RemoveSession { source, session_id } => {
                 let source = source
@@ -197,19 +221,25 @@ pub async fn commands(
                 engine.clear_done().map_err(ApiError::from)?;
             }
         }
-        Ok(engine.refresh().revision)
+        Ok(engine.refresh())
     })
     .await
     .map_err(|e| ApiError::internal(format!("command task failed: {e}")))??;
 
-    Ok(Json(CommandResponse { revision }))
+    Ok(Json(CommandResponse {
+        revision: update.revision,
+        snapshot: Some(update.snapshot),
+    }))
 }
 
 /// Body for `POST /api/v1/ingest`. Unknown fields on the envelope and on each
-/// event are ignored.
+/// event are ignored. `mode` is `"upsert"` (the default) or `"snapshot"`; any
+/// other value is a `400`.
 #[derive(Debug, Deserialize)]
 pub struct IngestRequest {
     pub events: Vec<SessionEvent>,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,9 +247,10 @@ pub struct IngestResponse {
     pub accepted: usize,
 }
 
-/// `POST /api/v1/ingest` — upsert a batch of pushed session events into the
-/// event source. Only available when the server runs in events mode; otherwise
-/// the request is a `400`.
+/// `POST /api/v1/ingest` — merge a batch of pushed session events into the
+/// event source. `upsert` (the default) only adds and updates; `snapshot` also
+/// prunes push-source sessions absent from the batch. Only available when the
+/// server runs in events mode; otherwise the request is a `400`.
 pub async fn ingest(
     State(state): State<AppState>,
     payload: Result<Json<IngestRequest>, JsonRejection>,
@@ -229,6 +260,42 @@ pub async fn ingest(
     let events = state
         .events()
         .ok_or_else(|| ApiError::bad_request("this server is not in events mode"))?;
-    let accepted = events.apply(&request.events);
+    let mut batch = request.events;
+    // A hub-level template overrides the producer's own deep links, so a hub
+    // operator can point every session at the address their browsers can reach.
+    if let Some(template) = state.session_url_template() {
+        for event in &mut batch {
+            event.url = Some(template.replace("{id}", &encode_component(&event.session_id)));
+        }
+    }
+    let accepted = match request.mode.as_deref() {
+        None | Some("upsert") => events.apply(&batch),
+        Some("snapshot") => events.apply_snapshot(&batch),
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "unknown ingest mode: {other}"
+            )));
+        }
+    };
     Ok(Json(IngestResponse { accepted }))
+}
+
+/// Percent-encode a session id for use in a URL path segment, matching
+/// JavaScript's `encodeURIComponent` for the characters that matter here.
+fn encode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
 }

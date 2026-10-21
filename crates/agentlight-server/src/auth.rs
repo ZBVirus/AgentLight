@@ -108,7 +108,7 @@ fn percent_decode(input: &str) -> String {
         match bytes[i] {
             b'%' if i + 2 < bytes.len() => {
                 if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
-                    out.push(hi << 4 | lo);
+                    out.push((hi << 4) | lo);
                     i += 3;
                     continue;
                 }

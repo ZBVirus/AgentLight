@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::config::{Config, SourceKind};
-use crate::session::{display_session, DisplaySession, DONE_RETENTION};
+use crate::config::{AlarmTrigger, Config, SourceKind};
+use crate::session::{build_session_link, display_session, DisplaySession, DONE_RETENTION};
 use crate::snapshot::{Counts, Snapshot};
 use crate::source::{
     Session, SessionKey, SourceCommand, SourceHealth, SourceId, SourceSnapshot, StateSource,
@@ -52,6 +52,9 @@ pub struct Update {
     pub revision: u64,
     pub snapshot: Snapshot,
     pub notifications: Vec<Notification>,
+    /// Alarm edges for this publish. Additive; empty unless alarms are on.
+    #[serde(default)]
+    pub alarms: Vec<Notification>,
 }
 
 /// Owns sources and policy. Cheap to clone through an `Arc`.
@@ -65,6 +68,7 @@ struct Inner {
     config: Mutex<Config>,
     revision: AtomicU64,
     previous: Mutex<HashMap<SessionKey, Status>>,
+    alarm_previous: Mutex<HashMap<SessionKey, Status>>,
     subscribers: Mutex<Vec<UpdateSink>>,
 }
 
@@ -76,6 +80,7 @@ impl Engine {
                 config: Mutex::new(config),
                 revision: AtomicU64::new(0),
                 previous: Mutex::new(HashMap::new()),
+                alarm_previous: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(Vec::new()),
             }),
         }
@@ -150,6 +155,21 @@ impl Engine {
         self.inner.publish(Utc::now())
     }
 
+    /// The current state as an [`Update`], without publishing or bumping the
+    /// revision. Used to seed a new stream (e.g. SSE) with the present state
+    /// before live updates begin.
+    pub fn current_update(&self) -> Update {
+        let now = Utc::now();
+        let sources = self.inner.source_snapshots(now);
+        let snapshot = self.inner.render(&sources, now);
+        Update {
+            revision: self.inner.revision.load(Ordering::SeqCst),
+            snapshot,
+            notifications: Vec::new(),
+            alarms: Vec::new(),
+        }
+    }
+
     pub fn source_id(&self) -> Option<SourceId> {
         self.inner.sources.lock().unwrap().first().map(|s| s.id())
     }
@@ -219,6 +239,20 @@ impl Inner {
             return Ok(0);
         }
 
+        // A single source whose own `ClearDone` removes exactly this done set
+        // (a hub, or the push store) clears in one command instead of one
+        // mutation per session — over a hub each removal was a POST plus a
+        // snapshot refresh.
+        let sources = self.sources.lock().unwrap().clone();
+        if let [source] = sources.as_slice() {
+            if source.capabilities().bulk_clear_done {
+                return match source.command(SourceCommand::ClearDone) {
+                    Ok(()) => Ok(done.len()),
+                    Err(error) => Err(error),
+                };
+            }
+        }
+
         let mut removed = 0usize;
         let mut last_error: Option<Error> = None;
         for model in done {
@@ -268,11 +302,13 @@ impl Inner {
         let sources = self.source_snapshots(now);
         let snapshot = self.render(&sources, now);
         let notifications = self.notification_edge(&sources);
+        let alarms = self.alarm_edge(&sources);
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         let update = Update {
             revision,
             snapshot,
             notifications,
+            alarms,
         };
         let subscribers = self.subscribers.lock().unwrap().clone();
         for sink in subscribers {
@@ -328,6 +364,7 @@ impl Inner {
             .iter()
             .flat_map(|source| source.sessions.iter().cloned())
             .collect();
+        sessions.retain(|session| session_visible(&config, session));
         sessions.sort_by(compare_sessions);
 
         let counts = count_models(&sessions);
@@ -337,6 +374,17 @@ impl Inner {
 
         let mut rows: Vec<DisplaySession> = sessions.iter().map(display_session).collect();
         apply_retention(&mut rows, config.show_done);
+        // The desktop owns the "Open" link shape, so it can default to OpenCode
+        // v2 while still offering v1 or the producer's own URL.
+        for row in rows.iter_mut() {
+            row.url = build_session_link(
+                config.session_link,
+                config.session_link_base_for(config.session_link),
+                &row.session_id,
+                row.harness.as_deref(),
+                row.url.as_deref(),
+            );
+        }
 
         Snapshot {
             ok,
@@ -354,26 +402,27 @@ impl Inner {
     }
 
     fn notification_edge(&self, sources: &[SourceSnapshot]) -> Vec<Notification> {
-        if !self.config.lock().unwrap().notifications {
+        let config = self.config.lock().unwrap().clone();
+        if !config.notifications {
             return Vec::new();
         }
         let mut previous = self.previous.lock().unwrap();
         let models: Vec<&Session> = sources
             .iter()
             .flat_map(|source| source.sessions.iter())
+            .filter(|model| session_visible(&config, model))
             .collect();
 
         let mut notifications = Vec::new();
         for model in &models {
-            if model.status == Status::NeedsHelp
-                && previous.get(&model.key) != Some(&Status::NeedsHelp)
-            {
-                notifications.push(Notification {
-                    key: model.key.clone(),
-                    title: "AgentLight".to_string(),
-                    body: format!("\"{}\" needs help", model.name),
-                    urgency: Urgency::Critical,
-                });
+            let before = previous.get(&model.key).copied();
+            if triggers_fire(
+                &config.notification_trigger,
+                model.status,
+                before,
+                model.subagent,
+            ) {
+                notifications.push(attention_notification(model));
             }
         }
 
@@ -382,6 +431,92 @@ impl Inner {
             previous.insert(model.key.clone(), model.status);
         }
         notifications
+    }
+
+    /// Alarm edges for the configured trigger. Separate from notifications so
+    /// alarms can fire on `done` or any change without changing the toast edge.
+    fn alarm_edge(&self, sources: &[SourceSnapshot]) -> Vec<Notification> {
+        let config = self.config.lock().unwrap().clone();
+        if !config.alarms_enabled {
+            return Vec::new();
+        }
+        let models: Vec<&Session> = sources
+            .iter()
+            .flat_map(|source| source.sessions.iter())
+            .filter(|model| session_visible(&config, model))
+            .collect();
+        let mut previous = self.alarm_previous.lock().unwrap();
+
+        let mut alarms = Vec::new();
+        for model in &models {
+            let before = previous.get(&model.key).copied();
+            if triggers_fire(&config.alarm_trigger, model.status, before, model.subagent) {
+                alarms.push(attention_notification(model));
+            }
+        }
+
+        previous.clear();
+        for model in &models {
+            previous.insert(model.key.clone(), model.status);
+        }
+        alarms
+    }
+}
+
+/// Whether a session belongs in the rendered view and the attention edges.
+///
+/// A subagent is hidden unless the user opts in, but one that needs help always
+/// surfaces so a prompt is never missed.
+fn session_visible(config: &Config, model: &Session) -> bool {
+    config.show_subagents || !model.subagent || model.status == Status::NeedsHelp
+}
+
+/// Whether a status transition fires an attention edge for any of `triggers`.
+///
+/// `before` is the status last seen for the session; a newly seen session has
+/// `None`. `NeedsHelp` fires on entering the status even when first seen; `Done`
+/// and `SubagentDone` split on whether the session is a subagent; `AnyStatus`
+/// only fires on an actual change, so a first sight does not fire. An empty set
+/// never fires.
+fn triggers_fire(
+    triggers: &[AlarmTrigger],
+    status: Status,
+    before: Option<Status>,
+    is_subagent: bool,
+) -> bool {
+    triggers.iter().any(|trigger| match trigger {
+        AlarmTrigger::NeedsHelp => status == Status::NeedsHelp && before != Some(Status::NeedsHelp),
+        AlarmTrigger::Done => {
+            status == Status::Done && before != Some(Status::Done) && !is_subagent
+        }
+        AlarmTrigger::SubagentDone => {
+            status == Status::Done && before != Some(Status::Done) && is_subagent
+        }
+        AlarmTrigger::AnyStatus => before.is_some_and(|before| before != status),
+    })
+}
+
+/// The toast/sound payload for an attention edge.
+///
+/// The body reads as a sentence: the session name in quotes followed by the
+/// transition ("Fix auth" needs help / finished / is now paused / is now
+/// working). `status.label()` alone would produce "is needs help".
+fn attention_notification(model: &Session) -> Notification {
+    let phrase = match model.status {
+        Status::NeedsHelp => "needs help",
+        Status::Done => "finished",
+        Status::Inactive => "is now paused",
+        Status::Active => "is now working",
+    };
+    Notification {
+        key: model.key.clone(),
+        title: "AgentLight".to_string(),
+        body: format!("\"{}\" {}", model.name, phrase),
+        urgency: if model.status == Status::NeedsHelp {
+            Urgency::Critical
+        } else {
+            Urgency::Normal
+        },
     }
 }
 
@@ -455,6 +590,11 @@ mod tests {
         .with_updated_at(at(hour))
     }
 
+    /// A tool-spawned child session (subagent).
+    fn subagent_frame(source: &str, id: &str, status: Status, hour: u32) -> Session {
+        frame(source, id, status, hour).with_subagent(true)
+    }
+
     #[test]
     fn merges_fixture_sources_and_aggregates() {
         let engine = Engine::new(Config::default());
@@ -497,6 +637,23 @@ mod tests {
     }
 
     #[test]
+    fn current_update_does_not_bump_the_revision() {
+        let engine = Engine::new(Config::default());
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![frame("a", "1", Status::Active, 1)]),
+        ));
+
+        let before = engine.current_update().revision;
+        let _ = engine.current_update();
+        let _ = engine.current_update();
+        assert_eq!(engine.current_update().revision, before);
+
+        let after_refresh = engine.refresh().revision;
+        assert!(after_refresh > before);
+        assert_eq!(engine.current_update().revision, after_refresh);
+    }
+
+    #[test]
     fn notification_fires_once_when_entering_needs_help() {
         let config = Config {
             notifications: true,
@@ -530,6 +687,98 @@ mod tests {
     }
 
     #[test]
+    fn notification_fires_on_done_when_configured() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![AlarmTrigger::Done],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+
+        source.set_sessions(vec![frame("a", "1", Status::Done, 2)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+
+        source.set_sessions(vec![frame("a", "1", Status::Done, 3)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_fires_for_any_selected_trigger() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![AlarmTrigger::NeedsHelp, AlarmTrigger::Done],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+
+        // Not selected: an idle transition does not fire.
+        source.set_sessions(vec![frame("a", "1", Status::Inactive, 2)]);
+        assert!(notifications.lock().unwrap().is_empty());
+
+        source.set_sessions(vec![frame("a", "1", Status::NeedsHelp, 3)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+
+        source.set_sessions(vec![frame("a", "1", Status::Done, 4)]);
+        assert_eq!(notifications.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn notification_any_status_ignores_first_sight() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![AlarmTrigger::AnyStatus],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+        assert!(
+            notifications.lock().unwrap().is_empty(),
+            "a first sight does not fire"
+        );
+
+        source.set_sessions(vec![frame("a", "1", Status::NeedsHelp, 2)]);
+        assert_eq!(notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn notifications_are_suppressed_when_disabled() {
         let engine = Engine::new(Config::default());
         let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
@@ -558,6 +807,213 @@ mod tests {
             DONE_RETENTION
         );
         assert_eq!(snapshot.sessions.iter().filter(|s| !s.is_done).count(), 1);
+    }
+
+    #[test]
+    fn subagents_are_hidden_by_default_but_needs_help_surfaces() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::Active, 1),
+        ]));
+        engine.add_source(source.clone());
+        let snapshot = engine.snapshot(at(2));
+        assert_eq!(snapshot.counts.total, 1);
+        assert_eq!(snapshot.sessions.len(), 1);
+
+        source.set_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::NeedsHelp, 2),
+        ]);
+        let snapshot = engine.snapshot(at(3));
+        assert_eq!(snapshot.aggregate, "red");
+        assert!(snapshot.sessions.iter().any(|s| s.is_subagent));
+    }
+
+    #[test]
+    fn showing_subagents_includes_them() {
+        let config = Config {
+            show_subagents: true,
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(FixtureSource::new("a").with_sessions(vec![
+            frame("a", "main", Status::Active, 1),
+            subagent_frame("a", "sub", Status::Active, 1),
+        ])));
+        assert_eq!(engine.snapshot(at(2)).counts.total, 2);
+    }
+
+    #[test]
+    fn session_rows_use_the_per_mode_base() {
+        let config = Config {
+            session_link: crate::config::SessionLink::OpencodeV1,
+            session_link_bases: [
+                (
+                    "opencode_v1".to_string(),
+                    "http://localhost:7777".to_string(),
+                ),
+                ("openchamber".to_string(), "http://chamber:3000".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![frame("a", "1", Status::Active, 1)]),
+        ));
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://localhost:7777/session/1")
+        );
+
+        // Switching the mode picks up that mode's own base, not the previous
+        // one, and falls back to the default when no entry exists.
+        engine.set_config(Config {
+            session_link: crate::config::SessionLink::Openchamber,
+            session_link_bases: [
+                (
+                    "opencode_v1".to_string(),
+                    "http://localhost:7777".to_string(),
+                ),
+                ("openchamber".to_string(), "http://chamber:3000".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        });
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://chamber:3000/?session=1")
+        );
+
+        engine.set_config(Config {
+            session_link: crate::config::SessionLink::OpencodeV2,
+            ..Config::default()
+        });
+        assert_eq!(
+            engine.snapshot(at(2)).sessions[0].url.as_deref(),
+            Some("http://localhost:4096/server/aHR0cDovL2xvY2FsaG9zdDo0MDk2/session/1")
+        );
+    }
+
+    #[test]
+    fn notification_bodies_read_as_sentences() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![AlarmTrigger::AnyStatus],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let source = Arc::new(FixtureSource::new("a").with_sessions(vec![frame(
+            "a",
+            "1",
+            Status::Active,
+            1,
+        )]));
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let captured = notes.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured
+                .lock()
+                .unwrap()
+                .extend(update.notifications.into_iter().map(|n| n.body));
+        }));
+        engine.add_source(source.clone());
+        engine.refresh();
+        assert!(
+            notes.lock().unwrap().is_empty(),
+            "a first sight is not a change"
+        );
+
+        for (status, expected) in [
+            (Status::NeedsHelp, "\"Session 1\" needs help"),
+            (Status::Done, "\"Session 1\" finished"),
+            (Status::Inactive, "\"Session 1\" is now paused"),
+            (Status::Active, "\"Session 1\" is now working"),
+        ] {
+            source.set_sessions(vec![frame("a", "1", status, 2)]);
+            let notes = notes.lock().unwrap();
+            assert_eq!(
+                notes.last().map(String::as_str),
+                Some(expected),
+                "for {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn done_trigger_skips_subagents_but_subagent_done_fires() {
+        let config = Config {
+            notifications: true,
+            show_subagents: true,
+            notification_trigger: vec![AlarmTrigger::Done],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let captured = notifications.clone();
+        engine.subscribe(Arc::new(move |update: Update| {
+            captured.lock().unwrap().extend(update.notifications);
+        }));
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![subagent_frame(
+                "a",
+                "sub",
+                Status::Done,
+                1,
+            )]),
+        ));
+        engine.refresh();
+        assert!(
+            notifications.lock().unwrap().is_empty(),
+            "Done must skip a subagent"
+        );
+
+        let sub_config = Config {
+            notifications: true,
+            show_subagents: true,
+            notification_trigger: vec![AlarmTrigger::SubagentDone],
+            ..Config::default()
+        };
+        let engine2 = Engine::new(sub_config);
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let captured2 = notes.clone();
+        engine2.subscribe(Arc::new(move |update: Update| {
+            captured2.lock().unwrap().extend(update.notifications);
+        }));
+        engine2.add_source(Arc::new(FixtureSource::new("a").with_sessions(vec![
+            subagent_frame("a", "sub", Status::Done, 1),
+            frame("a", "main", Status::Done, 1),
+        ])));
+        engine2.refresh();
+        let fired = notes.lock().unwrap();
+        assert_eq!(fired.len(), 1, "only the subagent fires");
+        assert_eq!(fired[0].key.session_id, "sub");
+    }
+
+    #[test]
+    fn hidden_subagent_completion_is_silent() {
+        let config = Config {
+            notifications: true,
+            notification_trigger: vec![
+                AlarmTrigger::AnyStatus,
+                AlarmTrigger::Done,
+                AlarmTrigger::SubagentDone,
+            ],
+            ..Config::default()
+        };
+        let engine = Engine::new(config);
+        engine.add_source(Arc::new(
+            FixtureSource::new("a").with_sessions(vec![subagent_frame(
+                "a",
+                "sub",
+                Status::Done,
+                1,
+            )]),
+        ));
+        assert!(engine.refresh().notifications.is_empty());
     }
 
     #[test]
@@ -690,6 +1146,61 @@ mod tests {
 
         assert_eq!(engine.clear_done().unwrap(), 1);
         assert_eq!(engine.clear_done().unwrap(), 0);
+    }
+
+    #[test]
+    fn clear_done_uses_one_bulk_command_when_the_source_supports_it() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(
+            FixtureSource::new("hub")
+                .with_kind(SourceKind::Hub)
+                .with_capabilities(crate::source::Capabilities {
+                    remove_session: true,
+                    clear_done: true,
+                    bulk_clear_done: true,
+                    push_events: false,
+                })
+                .with_sessions(vec![
+                    frame("hub", "done1", Status::Done, 1),
+                    frame("hub", "live", Status::Active, 1),
+                ]),
+        );
+        engine.add_source(source.clone());
+
+        assert_eq!(engine.clear_done().unwrap(), 1);
+        assert_eq!(
+            source.commands(),
+            vec![SourceCommand::ClearDone],
+            "one bulk command, not a removal per session"
+        );
+        assert_eq!(engine.snapshot(at(2)).sessions.len(), 1);
+    }
+
+    #[test]
+    fn clear_done_removes_per_session_when_the_source_cannot_bulk() {
+        let engine = Engine::new(Config::default());
+        let source = Arc::new(
+            FixtureSource::new("local")
+                .with_capabilities(crate::source::Capabilities {
+                    remove_session: true,
+                    clear_done: true,
+                    bulk_clear_done: false,
+                    push_events: false,
+                })
+                .with_sessions(vec![
+                    frame("local", "done1", Status::Done, 1),
+                    frame("local", "done2", Status::Done, 1),
+                    frame("local", "live", Status::Active, 1),
+                ]),
+        );
+        engine.add_source(source.clone());
+
+        assert_eq!(engine.clear_done().unwrap(), 2);
+        let commands = source.commands();
+        assert_eq!(commands.len(), 2);
+        assert!(commands
+            .iter()
+            .all(|command| matches!(command, SourceCommand::RemoveSession(_))));
     }
 
     #[test]

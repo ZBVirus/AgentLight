@@ -4,6 +4,7 @@
 //! clawlight owns. Stored as JSON next to the OS config dir:
 //! `%APPDATA%\AgentLight\config.json` on Windows.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,84 @@ pub enum YellowMode {
     ActiveWins,
 }
 
+/// What transition fires an attention edge (notification or alarm). A session
+/// may select several; the edge fires when any selected trigger matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AlarmTrigger {
+    /// A session enters `needs_help`. Default.
+    #[default]
+    NeedsHelp,
+    /// A session becomes `done`.
+    Done,
+    /// A subagent (a child session) becomes `done`.
+    SubagentDone,
+    /// Any status change after the session is first seen.
+    AnyStatus,
+}
+
+/// Default trigger set: fire when a session needs help.
+fn default_triggers() -> Vec<AlarmTrigger> {
+    vec![AlarmTrigger::NeedsHelp]
+}
+
+/// Default alarm volume, in percent. The bundled chime is mastered loud, so
+/// leave headroom instead of blasting at full scale.
+const DEFAULT_ALARM_VOLUME: u8 = 70;
+
+fn default_alarm_volume() -> u8 {
+    DEFAULT_ALARM_VOLUME
+}
+
+/// Accept either a single trigger or a list, so an older config that stored
+/// `"needs_help"` still loads now that the field is a set.
+fn one_or_many_triggers<'de, D>(deserializer: D) -> std::result::Result<Vec<AlarmTrigger>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(AlarmTrigger),
+        Many(Vec<AlarmTrigger>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(trigger) => vec![trigger],
+        OneOrMany::Many(triggers) => triggers,
+    })
+}
+
+/// How the desktop builds the "Open session" link in the detail view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLink {
+    /// OpenCode v2 web UI (`opencode pair`). Default.
+    #[default]
+    OpencodeV2,
+    /// OpenCode v1 web UI (fixed `:4096`).
+    OpencodeV1,
+    /// OpenChamber web UI (`?session=<id>`).
+    Openchamber,
+    /// Use the URL the producer or hub attached, if any.
+    Producer,
+    /// Never show an Open action.
+    Off,
+}
+
+impl SessionLink {
+    /// Stable key for this mode, used as the per-mode entry in
+    /// [`Config::session_link_bases`]. Matches the serde name.
+    pub fn key(self) -> &'static str {
+        match self {
+            SessionLink::OpencodeV2 => "opencode_v2",
+            SessionLink::OpencodeV1 => "opencode_v1",
+            SessionLink::Openchamber => "openchamber",
+            SessionLink::Producer => "producer",
+            SessionLink::Off => "off",
+        }
+    }
+}
+
 /// Collapsed (mini) window layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +135,7 @@ pub enum CollapseStyle {
     TripleVertical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Absolute path to clawlight's `state.json`. `None` uses the default.
@@ -67,10 +146,22 @@ pub struct Config {
     pub yellow_mode: YellowMode,
     /// Layout of the collapsed window.
     pub collapse_style: CollapseStyle,
+    /// Custom color for the red (needs help / aggregate red) collapsed light.
+    /// Any CSS color; `None` keeps the built-in palette.
+    pub mini_red: Option<String>,
+    /// Custom color for the orange (idle / aggregate orange) collapsed light.
+    pub mini_orange: Option<String>,
+    /// Custom color for the green (working / aggregate green) collapsed light.
+    pub mini_green: Option<String>,
+    /// Show the text labels beside the collapsed lights.
+    pub mini_show_labels: bool,
     /// Fallback poll interval, in milliseconds, for the file watcher.
     pub poll_ms: u64,
     /// Show every `done` session instead of only the newest few.
     pub show_done: bool,
+    /// Show tool-spawned subagent sessions. Off by default: a subagent reports
+    /// through its parent, but one that needs help still surfaces.
+    pub show_subagents: bool,
     /// Where session state comes from: `file` (default) or `hub`.
     pub source_kind: SourceKind,
     /// Base URL of the remote hub, e.g. `http://127.0.0.1:8787`. Used only when
@@ -83,8 +174,42 @@ pub struct Config {
     /// hash. It therefore stays plaintext in `config.json`; protect that file
     /// as you would any secret. It is never logged.
     pub hub_token: Option<String>,
-    /// Fire a desktop notification when a session needs help.
+    /// Fire a desktop notification when a session hits a notification trigger.
     pub notifications: bool,
+    /// Which transitions fire a desktop notification. Several may be selected;
+    /// the notification fires when any of them matches.
+    #[serde(
+        default = "default_triggers",
+        deserialize_with = "one_or_many_triggers"
+    )]
+    pub notification_trigger: Vec<AlarmTrigger>,
+    /// Play an attention alarm (sound) when a session hits an alarm trigger.
+    pub alarms_enabled: bool,
+    /// Which transitions fire an alarm.
+    #[serde(
+        default = "default_triggers",
+        deserialize_with = "one_or_many_triggers"
+    )]
+    pub alarm_trigger: Vec<AlarmTrigger>,
+    /// Custom sound file for alarms. `None` uses the system/default sound.
+    pub alarm_sound: Option<String>,
+    /// Alarm playback volume as a percentage, 0-100. Applied by scaling the WAV
+    /// samples, so it affects only AgentLight's alarm, never other apps.
+    #[serde(default = "default_alarm_volume")]
+    pub alarm_volume: u8,
+    /// How the detail view builds a session's "Open" link.
+    pub session_link: SessionLink,
+    /// Base server URL per link mode, keyed by [`SessionLink::key`]. A missing
+    /// entry uses the mode's default (`http://localhost:4096` for V1/V2,
+    /// `http://localhost:3000` for OpenChamber). Ignored in the `producer` and
+    /// `off` modes, which have no base. Remembering one per mode means switching
+    /// modes does not carry a stale address (or lose a configured one).
+    pub session_link_bases: BTreeMap<String, String>,
+    /// Legacy single-value base URL. Read-only: [`Config::sanitized`] migrates
+    /// it into [`session_link_bases`](Self::session_link_bases) for the
+    /// configured mode and clears it, and it is never serialized back to disk.
+    #[serde(default, skip_serializing)]
+    pub session_link_base: Option<String>,
     /// Launch AgentLight at login. Off by default.
     pub start_at_login: bool,
     /// Serve the engine over HTTP on the LAN. Off by default.
@@ -109,12 +234,25 @@ impl Default for Config {
             always_on_top: true,
             yellow_mode: YellowMode::AnyInactive,
             collapse_style: CollapseStyle::Single,
+            mini_red: None,
+            mini_orange: None,
+            mini_green: None,
+            mini_show_labels: false,
             poll_ms: 1500,
             show_done: false,
+            show_subagents: false,
             source_kind: SourceKind::File,
             hub_url: DEFAULT_HUB_URL.to_string(),
             hub_token: None,
             notifications: false,
+            notification_trigger: default_triggers(),
+            alarms_enabled: false,
+            alarm_trigger: default_triggers(),
+            alarm_sound: None,
+            alarm_volume: DEFAULT_ALARM_VOLUME,
+            session_link: SessionLink::default(),
+            session_link_bases: BTreeMap::new(),
+            session_link_base: None,
             start_at_login: false,
             server_enabled: false,
             server_bind: DEFAULT_SERVER_BIND.to_string(),
@@ -142,6 +280,18 @@ impl Config {
     /// pathological watcher interval.
     pub fn sanitized(mut self) -> Self {
         self.poll_ms = self.poll_ms.clamp(250, 60_000);
+        self.alarm_volume = self.alarm_volume.min(100);
+        for color in [
+            &mut self.mini_red,
+            &mut self.mini_orange,
+            &mut self.mini_green,
+        ] {
+            *color = color
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
         if let Some(path) = &self.state_path {
             if path.trim().is_empty() {
                 self.state_path = None;
@@ -159,6 +309,28 @@ impl Config {
             .map(str::trim)
             .filter(|token| !token.is_empty())
             .map(str::to_string);
+        self.alarm_sound = self
+            .alarm_sound
+            .as_deref()
+            .map(str::trim)
+            .filter(|sound| !sound.is_empty())
+            .map(str::to_string);
+        // Per-mode session bases: trim, drop blanks. A legacy single value is
+        // migrated into the entry for the currently selected mode, so the
+        // setting the user had keeps applying to the mode it was set for.
+        self.session_link_bases = std::mem::take(&mut self.session_link_bases)
+            .into_iter()
+            .map(|(mode, base)| (mode.trim().to_string(), base.trim().to_string()))
+            .filter(|(mode, base)| !mode.is_empty() && !base.is_empty())
+            .collect();
+        if let Some(base) = self.session_link_base.take() {
+            let base = base.trim();
+            if !base.is_empty() {
+                self.session_link_bases
+                    .entry(self.session_link.key().to_string())
+                    .or_insert_with(|| base.to_string());
+            }
+        }
         self.server_bind = self.server_bind.trim().to_string();
         if self.server_bind.is_empty() {
             self.server_bind = DEFAULT_SERVER_BIND.to_string();
@@ -183,6 +355,12 @@ impl Config {
     pub fn state_file(&self) -> PathBuf {
         state::resolve_state_path(self)
     }
+
+    /// The configured base URL for a session-link mode, if any. A missing entry
+    /// means the mode's own default applies.
+    pub fn session_link_base_for(&self, mode: SessionLink) -> Option<&str> {
+        self.session_link_bases.get(mode.key()).map(String::as_str)
+    }
 }
 
 /// Default config file location: `<config_dir>/AgentLight/config.json`.
@@ -197,7 +375,11 @@ pub fn config_path() -> PathBuf {
 pub fn load(path: &Path) -> Config {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|c| serde_json::from_str::<Config>(&c).ok())
+        // Windows editors may save UTF-8 with a BOM, and serde_json does not
+        // skip it. A whole config silently falling back to defaults is worse
+        // than tolerating the BOM.
+        .map(|raw| raw.trim_start_matches('\u{feff}').to_string())
+        .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
         .unwrap_or_default()
         .sanitized()
 }
@@ -384,12 +566,117 @@ mod tests {
     }
 
     #[test]
+    fn mini_customization_parses_and_sanitizes() {
+        let c: Config = serde_json::from_str(
+            r#"{"mini_red":"  #ff0000  ","mini_green":"   ","mini_show_labels":true}"#,
+        )
+        .unwrap();
+        assert_eq!(c.mini_red.as_deref(), Some("  #ff0000  "));
+        let c = c.sanitized();
+        assert_eq!(c.mini_red.as_deref(), Some("#ff0000"));
+        assert!(
+            c.mini_green.is_none(),
+            "a blank color falls back to built-in"
+        );
+        assert!(c.mini_show_labels);
+
+        let defaults = Config::default();
+        assert!(
+            !defaults.mini_show_labels,
+            "labels are hidden in the collapsed view by default"
+        );
+    }
+
+    #[test]
+    fn triggers_parse_and_default() {
+        let defaults = Config::default();
+        assert!(!defaults.alarms_enabled);
+        assert_eq!(defaults.alarm_trigger, vec![AlarmTrigger::NeedsHelp]);
+        assert!(defaults.alarm_sound.is_none());
+        assert_eq!(defaults.notification_trigger, vec![AlarmTrigger::NeedsHelp]);
+
+        // A single legacy value still loads into the set.
+        let c: Config = serde_json::from_str(r#"{"notification_trigger":"done"}"#).unwrap();
+        assert_eq!(c.notification_trigger, vec![AlarmTrigger::Done]);
+
+        // A list selects several triggers.
+        let c: Config =
+            serde_json::from_str(r#"{"notification_trigger":["done","needs_help"]}"#).unwrap();
+        assert_eq!(
+            c.notification_trigger,
+            vec![AlarmTrigger::Done, AlarmTrigger::NeedsHelp]
+        );
+
+        let c: Config = serde_json::from_str(
+            r#"{"alarms_enabled":true,"alarm_trigger":"any_status","alarm_sound":"  C:/ding.wav  "}"#,
+        )
+        .unwrap();
+        assert!(c.alarms_enabled);
+        assert_eq!(c.alarm_trigger, vec![AlarmTrigger::AnyStatus]);
+        let c = c.sanitized();
+        assert_eq!(c.alarm_sound.as_deref(), Some("C:/ding.wav"));
+
+        let c = Config {
+            alarm_sound: Some("   ".to_string()),
+            ..Config::default()
+        }
+        .sanitized();
+        assert!(c.alarm_sound.is_none());
+    }
+
+    #[test]
     fn collapse_style_parses_and_defaults() {
         assert_eq!(Config::default().collapse_style, CollapseStyle::Single);
         let c: Config = serde_json::from_str(r#"{"collapse_style":"triple"}"#).unwrap();
         assert_eq!(c.collapse_style, CollapseStyle::Triple);
         let c: Config = serde_json::from_str(r#"{"collapse_style":"triple_vertical"}"#).unwrap();
         assert_eq!(c.collapse_style, CollapseStyle::TripleVertical);
+    }
+
+    #[test]
+    fn session_link_bases_are_per_mode_and_migrate_the_legacy_value() {
+        // A legacy single value migrates to the mode it was configured for and
+        // is never serialized back.
+        let c = serde_json::from_str::<Config>(
+            r#"{"session_link":"opencode_v1","session_link_base":"  http://localhost:9999  "}"#,
+        )
+        .unwrap()
+        .sanitized();
+        assert_eq!(
+            c.session_link_base_for(SessionLink::OpencodeV1),
+            Some("http://localhost:9999")
+        );
+        assert_eq!(c.session_link_base_for(SessionLink::OpencodeV2), None);
+        assert!(
+            c.session_link_base.is_none(),
+            "the legacy value is consumed"
+        );
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("\"session_link_base\":"),
+            "the legacy field must not be written: {json}"
+        );
+        assert!(json.contains("\"session_link_bases\""), "{json}");
+
+        // Per-mode entries are trimmed, blanks dropped, and a legacy value
+        // never overrides an explicit entry.
+        let c = serde_json::from_str::<Config>(
+            r#"{"session_link":"openchamber","session_link_base":"http://legacy:1",
+                "session_link_bases":{"opencode_v1":"  http://v1:4096  ","openchamber":"http://chamber:3000","opencode_v2":"   "}}"#,
+        )
+        .unwrap()
+        .sanitized();
+        assert_eq!(
+            c.session_link_base_for(SessionLink::OpencodeV1),
+            Some("http://v1:4096")
+        );
+        assert_eq!(
+            c.session_link_base_for(SessionLink::Openchamber),
+            Some("http://chamber:3000")
+        );
+        assert_eq!(c.session_link_base_for(SessionLink::OpencodeV2), None);
+        assert_eq!(c.session_link_base_for(SessionLink::Producer), None);
+        assert_eq!(SessionLink::Openchamber.key(), "openchamber");
     }
 
     #[test]
@@ -427,6 +714,20 @@ mod tests {
     fn missing_file_loads_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(&dir.path().join("nope.json")), Config::default());
+    }
+
+    #[test]
+    fn a_utf8_bom_does_not_discard_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"source_kind\":\"hub\",\"hub_url\":\"http://h:1\"}",
+        )
+        .unwrap();
+        let config = load(&path);
+        assert_eq!(config.source_kind, SourceKind::Hub);
+        assert_eq!(config.hub_url, "http://h:1");
     }
 
     #[test]

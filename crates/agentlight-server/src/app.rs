@@ -1,6 +1,7 @@
 //! Engine wiring and the router.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::routing::{delete, get, post};
 use axum::{middleware, Router};
@@ -33,6 +34,8 @@ pub struct AppState {
     /// The push source when the server runs in events mode, so the ingest route
     /// can reach it. `None` in file mode.
     events: Option<Arc<EventPushSource>>,
+    /// Optional deep-link template applied to ingested sessions.
+    session_url_template: Option<String>,
 }
 
 impl AppState {
@@ -67,6 +70,7 @@ impl AppState {
             admin_token_hash,
             devices: Arc::new(devices),
             events: None,
+            session_url_template: None,
         }
     }
 
@@ -74,6 +78,18 @@ impl AppState {
     pub fn with_events(mut self, events: Option<Arc<EventPushSource>>) -> Self {
         self.events = events;
         self
+    }
+
+    /// Rewrite ingested session deep links with `template` (`{id}` replaced by
+    /// the URL-encoded session id).
+    pub fn with_session_url_template(mut self, template: Option<String>) -> Self {
+        self.session_url_template = template;
+        self
+    }
+
+    /// The active deep-link template, if any.
+    pub fn session_url_template(&self) -> Option<&str> {
+        self.session_url_template.as_deref()
     }
 
     /// Build the engine, source, and device store a config describes.
@@ -85,6 +101,7 @@ impl AppState {
             DeviceStore::load(config.devices_path.clone()),
         )
         .with_events(events)
+        .with_session_url_template(config.session_url_template.clone())
     }
 
     pub fn engine(&self) -> &Engine {
@@ -147,9 +164,24 @@ pub fn build_engine(config: &ServerConfig) -> Engine {
 /// Build the engine for `config`, returning the push source when events mode is
 /// selected so the caller can keep it for the ingest route.
 pub fn build_engine_with_source(config: &ServerConfig) -> (Engine, Option<Arc<EventPushSource>>) {
-    let engine = Engine::new(config.core.clone());
+    // The hub relays session state and must not impose the desktop's link shape;
+    // it passes the producer/template URL through untouched. It also relays
+    // subagent rows: visibility ("Show subagent sessions") is a per-client
+    // display choice, so the hub keeps the flag on the wire and every desktop
+    // applies its own setting. Filtering them here made the desktop's toggle a
+    // no-op for hub sources because the rows never arrived.
+    let mut core = config.core.clone();
+    core.session_link = agentlight_core::SessionLink::Producer;
+    core.show_subagents = true;
+    let engine = Engine::new(core);
     if config.source_kind == SourceKind::Push {
-        let events = Arc::new(EventPushSource::new(EVENTS_SOURCE_ID));
+        let mut events = EventPushSource::with_store(EVENTS_SOURCE_ID, config.events_path.clone());
+        if config.heartbeat_ms > 0 {
+            events = events.with_stale_after(Some(Duration::from_millis(
+                config.heartbeat_ms.saturating_mul(4),
+            )));
+        }
+        let events = Arc::new(events);
         engine.add_source(events.clone());
         (engine, Some(events))
     } else {
@@ -197,4 +229,47 @@ pub fn router(state: AppState) -> Router {
 /// Build the default router for a config, constructing the engine and source.
 pub fn app(config: &ServerConfig) -> Router {
     router(AppState::from_config(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentlight_core::Status;
+    use agentlight_source_events::SessionEvent;
+
+    fn event(id: &str, subagent: bool) -> SessionEvent {
+        SessionEvent {
+            session_id: id.to_string(),
+            status: Status::Active,
+            name: Some(format!("Session {id}")),
+            project_path: None,
+            harness: Some("opencode".to_string()),
+            last_updated: None,
+            url: None,
+            producer: Some("p1".to_string()),
+            subagent,
+        }
+    }
+
+    #[test]
+    fn hub_relays_subagent_rows_so_clients_can_filter() {
+        let config = ServerConfig {
+            source_kind: SourceKind::Push,
+            ..ServerConfig::default()
+        };
+        let (engine, events) = build_engine_with_source(&config);
+        let events = events.expect("events mode has a push source");
+        events.apply(&[event("main", false), event("sub", true)]);
+
+        // The hub relays both rows with their flag intact; a desktop client
+        // then applies its own `show_subagents` filter locally.
+        let snapshot = engine.snapshot_now();
+        assert_eq!(snapshot.counts.total, 2, "the hub relays both rows");
+        let sub = snapshot
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "sub")
+            .expect("subagent row relayed");
+        assert!(sub.is_subagent, "the wire row keeps its subagent flag");
+    }
 }

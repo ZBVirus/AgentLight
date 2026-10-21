@@ -21,4 +21,16 @@ pub struct SessionEvent {
     /// RFC 3339 timestamp echoed verbatim and parsed for ordering.
     #[serde(default)]
     pub last_updated: Option<String>,
+    /// Optional deep link back to the session in its harness UI.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Optional producer identity. A `snapshot` batch prunes only sessions
+    /// recorded for the same producer, so independent producers do not evict
+    /// each other. Absent means legacy global pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    /// True when the producer reports a tool-spawned child session (a
+    /// subagent). Additive; absent means a main session.
+    #[serde(default)]
+    pub subagent: bool,
 }

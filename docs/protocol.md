@@ -90,9 +90,12 @@ Every error response is JSON:
 The built-in, self-contained web client: a single HTML document with inline CSS
 and JavaScript that reads the token from `location.search` or `localStorage`,
 fetches `/api/v1/snapshot`, and subscribes to `/api/v1/events`. With no token it
-shows a self-service pairing form that calls `POST /api/v1/pair` and remembers
-the returned device token. No auth to load, no build step, no third-party
-assets. It is same-origin with the API, so no CORS is required.
+probes `/healthz`: an open server (`capabilities.auth: "none"`, the loopback
+default) shows state directly, while a server that requires auth shows a
+self-service pairing form that calls `POST /api/v1/pair` and remembers the
+returned device token. A saved token that the server rejects with `401` is
+dropped and the client returns to pairing. No auth to load, no build step, no
+third-party assets. It is same-origin with the API, so no CORS is required.
 
 ## `GET /healthz`
 
@@ -102,16 +105,20 @@ Liveness plus the negotiation data a client needs before authenticating. No auth
 {
   "status": "ok",
   "schema_version": 1,
+  "version": "0.4.0",
   "capabilities": {
     "events": ["sse"],
     "commands": ["remove_session", "clear_done"],
+    "ingest": ["upsert", "snapshot"],
     "auth": "bearer"
   }
 }
 ```
 
-`capabilities.auth` is `"bearer"` or `"none"`. Clients negotiate by treating
-unknown capability strings as unsupported; unknown fields are ignored.
+`capabilities.auth` is `"bearer"` or `"none"`. `version` is the hub binary's
+crate version (additive: an older hub omits it; a client shows the schema
+then). Clients negotiate by treating unknown capability strings as
+unsupported; unknown fields are ignored.
 
 ## `POST /api/v1/pair`
 
@@ -191,6 +198,8 @@ Each session row:
 | `harness_badge` | string \| null | Two-char badge, already derived. |
 | `last_updated` | string | Raw clawlight timestamp, echoed verbatim. |
 | `is_done` | bool | Post-retention done marker. |
+| `url` | string \| null | Optional deep link back to the session in its harness UI. Additive. |
+| `is_subagent` | bool | True for a tool-spawned child session. Additive; the hub relays it verbatim and each client applies its own visibility setting. |
 
 `done` sessions are capped at the newest five unless the host config sets
 `show_done`.
@@ -211,6 +220,12 @@ keep-alive comment every 15 seconds.
 |---|---|
 | `update` | A `agentlight_core::Update` object as JSON (below). |
 | `lagged` | Decimal count of updates dropped for this client; re-fetch `/api/v1/snapshot`. |
+
+Immediately on connect, before any live frames, the server sends one `update`
+frame carrying the current state. A subscriber therefore has the initial view
+without a separate `GET /api/v1/snapshot` round trip. A `lagged` frame still
+means updates were dropped for that client; because every frame is a whole
+snapshot, re-fetching is optional but recommended.
 
 An `Update` frame:
 
@@ -234,6 +249,11 @@ is `low` \| `normal` \| `critical`, and an entry fires once when a session
 transitions into `needs_help`. The standalone binary enables notifications for
 its engine, so remote clients receive these edges; an embedder that leaves
 `Config::notifications` off will always see an empty array.
+
+Each frame is a whole snapshot, so a client should use `snapshot` directly
+rather than fetching `/api/v1/snapshot` again; only `lagged` (which carries no
+state) needs a re-fetch. Older clients that ignore the payload fall back to a
+fetch, and both remain correct.
 
 **Revision semantics.** `revision` is a monotonic `u64`, incremented on every
 engine publish (a source change or a command's follow-up refresh). Whole
@@ -262,13 +282,25 @@ whose file `status` is `done`. Unknown fields are preserved:
 { "command": "clear_done" }
 ```
 
-Success returns the revision produced by the refresh that follows the command:
+Success returns the refreshed snapshot together with the revision the refresh
+produced, so a client can update its cache from this single round trip instead
+of fetching `/api/v1/snapshot` again. `snapshot` is additive: a client must
+tolerate its absence (an older hub) and fetch the snapshot itself.
 
 ```json
-{ "revision": 8 }
+{
+  "revision": 8,
+  "snapshot": { "...": "same shape as GET /api/v1/snapshot" }
+}
 ```
 
 The resulting state is also published on `/api/v1/events` for subscribers.
+A removed session is remembered as a tombstone (persisted with the push store):
+a later `"snapshot"` from its producer does not resurrect it, while an explicit
+`"upsert"` (real new activity) clears the tombstone and brings the session
+back — matching the file source, where a removed session returns only when the
+harness writes it again.
+
 Commands are executed by the host that owns the source. Capability gating
 (`Capabilities::remove_session` / `clear_done`) is not enforced by the server
 yet; a client should consult future negotiation data before offering the
@@ -279,12 +311,12 @@ failed to parse.
 
 Auth required (admin or device token). Available only when the server runs in
 events mode (`AGENTLIGHT_SOURCE=events`); in file mode it returns
-`400 bad_request`. It upserts a batch of pushed session events into the
-in-memory event source, keyed by `session_id`, and returns how many were
-accepted:
+`400 bad_request`. It merges a batch of pushed session events into the durable
+push source, keyed by `session_id`, and returns how many were accepted. The
+envelope carries an optional `mode` field, defaulting to `"upsert"`:
 
 ```json
-{ "events": [
+{ "mode": "snapshot", "events": [
   {
     "session_id": "abc",
     "status": "needs_help",
@@ -306,43 +338,69 @@ Each event:
 | `project_path` | string \| null | Raw project path, empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
+| `producer` | string \| null | Optional, additive. Scopes `"snapshot"` pruning to this producer. Absent means the batch only upserts and never prunes. |
+| `subagent` | bool | Optional, additive. `true` marks a tool-spawned child session. The hub relays the flag on every snapshot and lets each client apply its own visibility setting (the desktop hides them unless "Show subagent sessions" is on, and its "A session finishes" trigger ignores them — use `subagent_done`). A subagent that needs help still colors the aggregate. |
+| `url` | string \| null | Optional deep link back to the session in its harness UI. |
 
-Unknown fields on the envelope and on each event are ignored. Re-pushing a
-`session_id` replaces its prior status in place. The batch is a single change:
-subscribers to `/api/v1/events` see one `update` afterward. Response:
+`mode` is optional and selects how the batch is applied: `"upsert"` (default)
+merges keyed by `session_id`, while `"snapshot"` upserts the batch and then
+prunes push-source sessions absent from it (scoped by `producer`; see below). An
+unknown mode is `400 bad_request`. Unknown fields on the envelope and on each
+event are ignored.
+Re-pushing a `session_id` replaces its prior status in place. The batch is a
+single change: subscribers to `/api/v1/events` see one `update` afterward.
+
+A session whose `last_updated` is more than 24 hours old renders as `done`,
+matching the file source's staleness rule. This is in-memory only: the durable
+store keeps the event as sent, a fresh event restores the session, and nothing
+is written back to a producer.
+Response:
 
 ```json
 { "accepted": 1 }
 ```
 
 `accepted` is the number of events in the batch, not the number that changed.
-Sessions are held in memory only today; there is no file and no history, so a
-restart starts empty. `GET /api/v1/snapshot` reports `source_kind: "push"` and
-`source_label: "events"`, and before the first event `ok` is `false` with the
-error `Waiting for agent events`.
+Pushed sessions persist to `AGENTLIGHT_EVENTS_FILE` and reload on restart, so
+the hub reports last-known state instead of starting empty; there is still no
+history beyond the current live set. `GET /api/v1/snapshot` reports
+`source_kind: "push"` and `source_label: "events"`, and before the first event
+`ok` is `false` with the error `Waiting for agent events`.
 
-### Snapshot mode and producer heartbeat (planned, schema 1 additive)
+### Snapshot mode and producer heartbeat (schema 1 additive)
 
 Upsert alone cannot answer "what is the current state" after the hub or the
 producer restarts. Two additive pieces fix that. Both are optional; omitting
-them keeps today's behavior.
+them keeps upsert-only behavior.
 
 **`mode` on the ingest envelope.** Optional string, default `"upsert"`.
 
-- `"upsert"` — merge the batch into the source, keyed by `session_id`. Today's
-  behavior: only adds and updates.
+- `"upsert"` — merge the batch into the source, keyed by `session_id`: only
+  adds and updates.
 - `"snapshot"` — the batch is the producer's authoritative **live set**: upsert
-  the batch, then drop every push-source session whose `session_id` is absent
-  from it. This prunes sessions that vanished while the hub was down. The batch
-  is still a single change and still returns `{"accepted": N}`.
+  the batch, then drop push-source sessions whose `session_id` is absent from it
+  **and** that belong to the same `producer`. This prunes sessions that vanished
+  while the hub was down without one producer evicting another's sessions. The
+  batch is still a single change and still returns `{"accepted": N}`.
 
-When implemented, `/healthz` advertises `capabilities.ingest` as
-`["upsert", "snapshot"]`; a producer should treat an unknown or absent mode list
-as upsert-only.
+An unknown mode is `400 bad_request`. `/healthz` advertises
+`capabilities.ingest` as `["upsert", "snapshot"]`; a producer should treat an
+unknown or absent mode list as upsert-only.
+
+**`producer` on each event (snapshot scoping).** Optional and additive. The hub
+records the producer for a session when an event carries one, and a `"snapshot"`
+prunes a session only when the batch's producer matches the session's recorded
+producer (the batch producer is the first non-absent `producer` in the events;
+all events in one snapshot share it). A batch whose events carry **no**
+`producer` only upserts: it never prunes, so an old or hand-rolled producer
+cannot wipe the hub's live set. Producers should send a **stable** id (e.g.
+`opencode:<host>:<directory>`) so a second instance cannot delete the first's
+sessions. A producer should also **not send an empty snapshot**: a starting or
+idle instance that posts `"events": []` would prune its own live set. Skip the
+request while there is nothing to report.
 
 **What a heartbeat carries.** A producer that wants the hub to stay truthful
-sends its live set on load and on a periodic heartbeat (recommended every 30s).
-The live set is:
+sends its live set on load and on a periodic heartbeat. The live set is:
 
 - every session that is not `done`, plus
 - a bounded tail of recent `done` sessions, matching the engine's own retention
@@ -355,11 +413,11 @@ for sessions that end without a delete is the correct fix; resending history is
 not.
 
 **Durability.** The push source persists its live set to
-`AGENTLIGHT_EVENTS_FILE` and reloads it at startup, so the hub can report
+`AGENTLIGHT_EVENTS_FILE` and reloads it at startup, so the hub reports
 last-known state before the first heartbeat. Restored rows keep their
 per-session `last_updated`, so clients show the row's age instead of claiming
-freshness. A hub with no ingest within a multiple of the heartbeat interval may
-mark the source stale.
+freshness. When `AGENTLIGHT_HEARTBEAT_MS` is greater than 0, a hub with no
+ingest within four times that interval marks the source stale.
 
 ## Server defaults
 
@@ -372,8 +430,13 @@ session source: `file` (default) reads clawlight's `state.json`, while `events`
 `state.json`, `AGENTLIGHT_POLL_MS` sets the watcher backstop, and
 `AGENTLIGHT_DEVICES_FILE` (default `devices.json` in the working directory)
 is where paired devices persist. In events mode, `AGENTLIGHT_EVENTS_FILE`
-(default `push-state.json`) is the **planned** durable store for the push
-source; see "Snapshot mode and producer heartbeat" above. The pairing code is
+(default `push-state.json` in the working directory) is the durable store for
+the push source, and `AGENTLIGHT_HEARTBEAT_MS` (default `0`, disabled) marks the
+source stale after four times that interval with no ingest; see "Snapshot mode
+and producer heartbeat" above. Optionally, `AGENTLIGHT_SESSION_URL_TEMPLATE`
+rewrites the `url` of every ingested session (`{id}` is replaced with the
+URL-encoded session id), so a hub operator can point links at an address the
+viewing browsers can reach. The pairing code is
 logged at startup so a headless host can be paired. LAN exposure is an explicit opt-in; use a VPN for
 off-LAN access.
 

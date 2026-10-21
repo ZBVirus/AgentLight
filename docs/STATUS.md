@@ -1,0 +1,289 @@
+# Project status
+
+Living snapshot of the branch/PR/release state and what is verified. Prefer this
+over git archaeology; update it whenever the branch layout changes.
+
+_Last updated: 2026-10-15 (rounds 6-6f: responsiveness, window input, hub
+relay/health, diagnostics, and the `0.5.0` release line). Verified:
+`tests/run-linux.sh` all green; Windows Sandbox build green (tagged
+`round6f-2026-10-15` in the sandbox); `tests/windows/e2e-cdp.js` 37/37 and
+`cargo test -p agentlight` 13/13. The native window invariants passed, but the
+input-driven parts of `tests/windows/ui-harness.ps1` (click-to-expand, drag,
+collapsed context menu) could not run in this sandbox instance because its
+guest session rejects synthetic input (`SendInput` → error 5), so those
+behaviours were verified by hand by the tester instead. The former in-flight
+and `backup/*` branches were consolidated and deleted; every pre-cleanup commit
+is retained by the `archive/pre-cleanup-2026-10-09` tag and the snapshot
+bundle. See the "Branch layout" and "Cleanup" sections below, and
+`local/HANDOFF.md` for environment facts and commands._
+
+## Released
+
+- `main` — tagged **`v0.5.0`** (this release): the whole v0.5 line plus the
+  round-6 rounds (responsive Remove/Clear done, hub relay of subagents,
+  per-mode session links, Ctrl+S/Esc, cached hub health with a hub version,
+  diagnostics log + Copy diagnostics, selectable text, native tray/menu
+  fixes, instant drag-aware click-away, one round trip per hub mutation,
+  `localhost` → `127.0.0.1`, BOM tolerance, push-session staleness).
+  NSIS installer + portable exe + `agentlight-server` on the release page.
+- Known issue in `v0.5.0`: "Clear done" over a hub can report a stale row it
+  cannot remove — a session reaped by the 24 h push-staleness rule renders as
+  `done` but is not in the push store's clear set, so the toast keeps counting
+  it. Use the row's X meanwhile. Fix queued for the next chat; diagnosis and
+  regression test are written down in `docs/ROADMAP.md` (round-6 backlog).
+- Previous release: `v0.4.0` = `834f7e4`.
+- Older tags: `v0.3.0`, `v0.2.0-single-light`, `v0.2.0-triple-light`,
+  `checkpoint-2026-09-13`.
+
+## Branch layout
+
+- `main` — released line, **protected**. Only releases reach it (`v0.5.0`).
+- `develop` — the single long-lived integration branch. All in-flight work is
+  already contained here.
+- `archive/*` tags — immutable safety refs from the 2026-10-09 cleanup.
+
+Short-lived work branches are created off `develop` and deleted once contained;
+feature branches are not kept after their commits land in `develop`.
+
+## Cleanup (2026-10-09)
+
+The repo carried a linear PR stack plus two `backup/*` branches. Everything in
+the non-backup branches was already contained in the stack top, so the layout was
+collapsed:
+
+- The stack (`feat/sse-client` -> `feat/parked-fixes` -> `feat/parked-window` ->
+  `feat/parked-producer` -> `chore/local-tooling`, PRs #1-#4) was fast-forwarded
+  into `develop`; those branch refs were deleted. The PRs are superseded by
+  `develop` and can be closed.
+- `feat/agentlight-app` / `-toggle` / `-triple-light` / `architecture-redesign`
+  were already merged into `main`; their redundant refs were deleted.
+- `backup/2026-10-09` and `backup/pre-ui-revert` had one unique commit each;
+  those commits are preserved as the `archive/backup-2026-10-09` and
+  `archive/backup-pre-ui-revert` tags, and the branches were deleted.
+- A complete pre-cleanup snapshot (all refs, full history) was written outside
+  the tree as a git bundle and a bare mirror clone; see the manifest in
+  `AgentLight-cleanup-snapshot-2026-10-09/`.
+
+Nothing reachable from `main` or the old stack was lost: the whole pre-cleanup
+history is reachable from `archive/pre-cleanup-2026-10-09` (`5bebedf`).
+
+### What the integrated stack adds
+
+- `feat/sse-client` — initial SSE frame + `HubSource` live stream with poll
+  fallback; CI runs on PRs into any base.
+- `feat/parked-fixes` (PR #1) — same-monitor expand/collapse, right-click Hide,
+  plugin `AGENTLIGHT_AUTOSTART_BIN` hub autostart.
+- `feat/parked-window` (PR #2) — collapsed color/label customization, collapsed
+  resizing (since reverted), `topmost_reassert` (since removed).
+- `feat/parked-producer` (PR #3) — session deep link (`url` + `open_url`), alarm
+  sounds/triggers.
+- `chore/local-tooling` (current HEAD) — fixes from hands-on testing, on top of
+  the whole stack:
+  - **Producer-scoped snapshots** so two producers sharing a hub stop wiping each
+    other's sessions (the "sessions clear then reappear" bug). `SessionEvent`
+    gained `producer`; the plugin sends a stable id and never posts an empty
+    snapshot. See `docs/protocol.md` and `docs/plugin.md`.
+  - UI/window fixes: colors apply in both views, gray option removed, "Reset
+    colors", notification triggers (`notification_trigger`), alarm rows hidden
+    when disabled, `mini_show_labels` defaults off.
+  - Second hands-on round:
+    - **Removed-session tombstones** in `EventPushSource`: a producer heartbeat
+      can no longer resurrect a session removed with the X button or "Clear
+      done"; a real upsert event clears the tombstone. Persisted with the push
+      store. See `docs/protocol.md`.
+    - "Notify when" rows hide unless Desktop notifications is on, with an
+      installed-build caveat (Windows toasts need the NSIS install, not the
+      portable exe).
+    - Alarm uses the Win32 sound API with a bundled two-note chime default;
+      no PowerShell and no console window flash.
+    - Frontend: "Choose state file…" hides for hub/push sources, Settings opens
+      scrolled to the top, and an unchanged save no longer writes the resolved
+      file path over a hub config (which restarted the hub source).
+    - Collapsed window is fixed-size again (the aspect-snap resize fought the
+      user); `mini_width` / `mini_height` and the resize persister are removed.
+    - Server logs a warning when bound beyond loopback with no admin token.
+    - Plugin logs its version and settings on startup so a stale copied file is
+      visible; `docs/plugin.md` corrects the same-directory producer caveat and
+      documents the non-local URL template.
+  - Third round (no-legacy compatibility):
+    - **Removed the legacy global prune**: a `mode:"snapshot"` batch without a
+      `producer` now only upserts, so an old or hand-rolled producer can never
+      wipe another producer's live set. See `docs/protocol.md`.
+    - **Notification identity**: the app registers its `AppUserModelID` under
+      `HKCU\Software\Classes\AppUserModelId` at startup and sets the process
+      AUMID, so the portable exe can show Windows toasts instead of being
+      silently dropped. Settings hint adjusted.
+  - Fourth round (post-test UI feedback):
+    - **Collapsed sizes restored**: the `vmin`-scaled lights/labels were too
+      small, so the fixed 42 px / 24 px lights and 10 px labels are back at the
+      fixed collapsed window sizes.
+    - **`topmost_reassert` removed**: it did not hold over a Microsoft Store
+      windowed-fullscreen window. The pin / "Always on top" setting is now the
+      single authority on topmost; the idea is recorded as a future feature in
+      `docs/ROADMAP.md`.
+    - **No console flashes**: opening a session URL now uses the Win32
+      `ShellExecuteW` call instead of `cmd /C start`; nothing the app does
+      spawns a console window.
+    - **Multi-select triggers**: desktop notifications and alarms each fire on
+      any combination of `needs_help` / `done` / `any_status` (checkboxes).
+    - **Server URL template**: the standalone hub accepts
+      `AGENTLIGHT_SESSION_URL_TEMPLATE` and rewrites ingested session URLs, so
+      it can be set where the server is launched.
+    - **Toast identity**: the AppUserModelID registration writes both
+      `DisplayName` and `IconUri` so the toast header reads "AgentLight".
+  - Fifth round (test coverage):
+    - **Web client pairing fixed**: `client.html` probes `/healthz` and shows
+      state directly when the server is open (`auth: "none"`); a saved token the
+      server rejects with `401` returns to pairing. See `docs/protocol.md`.
+    - **`tests/frontend`**: a jsdom suite that runs on any Linux/CI host with no
+      browser — collapsed styles, multi-select triggers, row gating, the Open
+      action, the web-client pairing flow, and static `style.css` size checks.
+    - **`tests/playwright`**: Chromium suites for the frontend (mocked
+      `__TAURI__`) and the real hub web client (spawns `agentlight-server`).
+    - **CI**: `agentlight-source-events` added to the core job, plus a `frontend`
+      (jsdom) job. (The `playwright` job was removed here; the web-UI suite is
+      opt-in via `run-windows.ps1 -IncludeWebUi`.)
+    - **Test suites + runners**: `tests/run-linux.sh`, `tests/run-windows.ps1`,
+      `tests/windows/ui-harness.ps1` (Win32 + UI Automation for native window
+      behavior), and `tests/windows/e2e-cdp.js` (Playwright over WebView2 CDP),
+      documented in `tests/README.md` and `tests/windows/README.md`.
+  - Sixth round (round-6 hands-on feedback, 2026-10-14, uncommitted):
+    - **Responsive Remove / Clear done**: `get_snapshot`, `clear_session`, and
+      `clear_done` are `async` Tauri commands, so a hub round trip can no longer
+      block the window's event loop. `HubSource::command` also re-fetches its
+      cached snapshot and emits a change right after a mutation, so the removed
+      row disappears when the hub acknowledges it instead of waiting for the SSE
+      echo or the poll fallback.
+    - **Dragging never collapses the view**: the outside-click collapse
+      (`always_on_top` + detail view) is deferred by 400 ms and skipped when the
+      window moved recently. A drag used to trigger the collapse mid-move; the
+      OS move loop then restored the pre-drag size and left the light in an
+      expanded frame.
+    - **Tray click brings the window back**: a left click shows/raises/focuses a
+      hidden, minimized, or buried window, and only hides it when it is already
+      the foreground window (`GetForegroundWindow`). The collapsed view's
+      right-click menu gained an **Always on top** toggle next to the layout
+      choices and Hide.
+    - **Settings keyboard**: Ctrl/Cmd+S saves, Esc leaves without saving (same
+      as Back). The "Session link server" address is remembered per link mode
+      (`session_link_bases`; the legacy single `session_link_base` migrates on
+      load), and `producer` mode explains that its URL comes from the hub/plugin.
+    - **Notification wording**: toasts read `"<name>" needs help` /
+      `finished` / `is now paused` / `is now working` instead of
+      `"<name>" is needs help`.
+    - **Subagents over a hub**: the standalone hub relays `is_subagent` rows and
+      each client applies its own "Show subagent sessions" setting (the hub used
+      to filter them out, which made the desktop toggle a no-op for hub
+      sources). Shown rows carry a `sub` badge; the built-in web client hides
+      them.
+    - **Docs**: clicking outside Settings collapsing the window without losing
+      the edit draft is recorded as Planned in `docs/ROADMAP.md`.
+  - Round-6c (2026-10-15 feedback, uncommitted):
+    - **Instant feel**: the outside-click collapse no longer waits — the
+      webview reports drag-region mousedowns and the shell excludes a fresh
+      drag (with a recent move as fallback) instead of deferring real clicks.
+      Hub mutations now use the snapshot the hub returns with the command
+      reply, and SSE `update` frames are applied directly, so Remove / Clear
+      done are one round trip instead of two or three. The tray menu's
+      Show / Hide item keys off visibility instead of focus (an open native
+      menu owns the foreground), which fixes it appearing to do nothing.
+    - **Hub status policy**: cached and instantaneous to render; probed at
+      startup, when the hub source changes, and by a Refresh button beside the
+      field. Opening or saving Settings never probes.
+    - **Diagnostics**: instant (cached hub health) and richer — WebView2
+      version, a settings summary, and Remove / Clear done durations in the
+      log; hub probes log their own duration. A `localhost` hub URL is
+      rewritten to `127.0.0.1` at the client (minreq tries every resolved
+      address with the full remaining timeout, so a filtered `::1` stalls each
+      request), and the startup autostart no-op no longer logs a spurious
+      warning. A UTF-8 BOM in `config.json` or `state.json` no longer discards
+      the file.
+    - **Title-bar clicks never collapse**: on Windows the focus-loss check now
+      asks whether the cursor is over our own window at that moment, which
+      distinguishes a click/drag on the title bar from a click on another app
+      regardless of webview event order. Push-source sessions also get the same
+      24h staleness backstop as the file source, so a producer that stopped
+      reporting cannot leave a session `active` forever.
+    - **Version**: workspace bumped to **0.5.0** (`src-tauri/tauri.conf.json`
+      and the plugin's version follow), so a running build is distinguishable
+      from the `v0.4.0` release.
+    - **Round-6 follow-up (suggestions implemented)**: the hub fields show a
+      live `/healthz` status with the hub's own version (additive `version`
+      field) and schema; the shell writes a rotating
+      `%APPDATA%\AgentLight\agentlight.log` with a panic hook and Settings has
+      a redacted **Copy diagnostics** action; `clear_done` over a hub (and the
+      push store) is one bulk command via the new `bulk_clear_done`
+      capability instead of a removal per session; and session rows, labels,
+      hints, the pairing code, and form fields are selectable/copyable again.
+
+## Verification matrix
+
+| Check | Where | Status |
+|-------|-------|--------|
+| `cargo fmt --all --check` | Linux container | green |
+| `cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings` | Linux | green |
+| `cargo test` (core 97, source-events 19, server 44, hub-client 27) | Linux | green |
+| `cargo test -p agentlight` (shell: geometry, collapse decision, tray toggle, hub-status line, diagnostics/log) | Windows Sandbox | green 13/13 (2026-10-15) |
+| `node --test tests/plugin/` (50: V1 20 + V2 30) | Linux | green |
+| `node --test tests/frontend` (jsdom: frontend + web client pairing) | Linux | green |
+| `node --check` on `dist/**/*.js` | Linux | green |
+| `cargo check -p agentlight` (shell, staged sysroot) | Linux | skipped here (no `~/sysroot`); the Windows MSVC build type-checks the shell |
+| Server end-to-end (healthz, ingest, tombstone, subagent relay, URL template) | Linux | green |
+| Playwright (frontend + hub web client) | opt-in (`run-windows.ps1 -IncludeWebUi`); not in CI | not run here (browser download unavailable in the sandbox) |
+| Windows build (app + server) | GitHub Actions `windows-latest`; also built locally in the Windows Sandbox | green (2026-10-15; tagged `round6b-2026-10-14` in `C:\SandboxOutput\build\`) |
+| Native window behavior (title, collapsed 88×88, not resizable, no console child, AUMID) | Windows Sandbox Session 1, `tests/windows/ui-harness.ps1` | green (2026-10-14); the input-driven checks (expand-by-click, drag, collapsed context menu) could not run — that sandbox session had no input desktop (`GetForegroundWindow` = 0), so synthetic clicks never reached the app |
+| Real-WebView2 UI (expand/collapse → 88↔420×548, pin, settings gating, Esc/Ctrl+S with a latency bound, per-mode session link, producer hint, hub status + Refresh, Copy diagnostics latency, not resizable, native right-click) | CI `windows-latest` (`windows-gui`) and Windows Sandbox (`tests/windows/e2e-cdp.js`) | green 37/37 (2026-10-15) |
+| Toast actually rendered (header "AgentLight") | Windows desktop | AUMID registry entry verified; rendering still needs a human |
+
+## Building a test exe
+
+The app and server both build on Windows CI. To get a fresh portable pair for a
+branch without opening a PR, dispatch the CI workflow on that ref:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://api.github.com/repos/ZBVirus/AgentLight/actions/workflows/ci.yml/dispatches \
+  -d '{"ref":"<branch>"}'
+```
+
+Artifacts (7-day retention): `agentlight-windows-portable` (single portable
+`AgentLight-portable.exe`) and `agentlight-server-windows`. `dev-build.yml`
+produces only the app artifact `agentlight-windows-dev`. In the Windows Sandbox
+these land under `C:\SandboxOutput\build\`.
+
+## Environment facts (dev container)
+
+- `cargo` is at `$HOME/.cargo/bin` — `export PATH="$HOME/.cargo/bin:$PATH"`.
+- The shell crate checks with a staged sysroot; see the command in `AGENTS.md`.
+- Windows-native build/test runs in the Windows Sandbox (`ssh windows`), with
+  `C:\Workspace` a read-only mirror of this tree and `C:\SandboxOutput` for
+  artifacts. Never edit `C:\Workspace`.
+
+## Producer environment variables
+
+Read by the opencode plugins (`plugins/opencode/agentlight.js` for V1,
+`plugins/opencode/agentlight-v2.js` for V2):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `AGENTLIGHT_HUB_URL` | `http://127.0.0.1:8787` | Hub base URL. |
+| `AGENTLIGHT_TOKEN` | *(none)* | Bearer token, if the hub requires auth. |
+| `AGENTLIGHT_PRODUCER` | `opencode:<host>:<directory>` | Stable snapshot-scope id. |
+| `AGENTLIGHT_HEARTBEAT_MS` | `30000` | Snapshot interval; `0` disables. |
+| `AGENTLIGHT_SESSION_URL_TEMPLATE` | `http://localhost:4096/session/{id}` | Deep link; empty disables. |
+| `AGENTLIGHT_AUTOSTART_BIN` | *(none)* | Spawn this hub binary if `/healthz` is down. |
+| `AGENTLIGHT_DEBUG` | *(off)* | `1` logs each event type and payload keys to opencode's logs. |
+
+Server (`agentlight-server`): `AGENTLIGHT_BIND`, `AGENTLIGHT_TOKEN`,
+`AGENTLIGHT_SOURCE` (`file`/`events`), `AGENTLIGHT_EVENTS_FILE`,
+`AGENTLIGHT_HEARTBEAT_MS`, `AGENTLIGHT_DEVICES_FILE`.
+
+## Document map
+
+- `README.md` — product, configuration table, build/test.
+- `AGENTS.md` — onboarding: layout, commands, hard rules.
+- `docs/state-format.md` — clawlight `state.json` contract (verified).
+- `docs/protocol.md` — hub HTTP/SSE wire contract, ingest modes, producer scoping.
+- `docs/plugin.md` — opencode plugin setup and `SessionEvent` schema.
+- `docs/architecture-redesign.md` — engine/hub design rationale.
+- `docs/ROADMAP.md` — Done / Planned / Deferred.

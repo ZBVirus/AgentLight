@@ -9,4 +9,8 @@ repository.workspace = true
 [dependencies]
 agentlight-core = { path = "../agentlight-core" }
 serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

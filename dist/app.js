@@ -15,7 +15,7 @@ import {
   view,
 } from "./lib/store.js";
 import { clearDone, renderDetail } from "./views/detail.js";
-import { populateSettings, saveSettings } from "./views/settings.js";
+import { handleSettingsKey, populateSettings, saveSettings } from "./views/settings.js";
 import { wireMini } from "./lib/drag.js";
 import { toast } from "./lib/toast.js";
 
@@ -65,6 +65,9 @@ function wire() {
   $("btn-browse").addEventListener("click", browse);
 
   $("settings-form").addEventListener("submit", saveSettings);
+  // Ctrl/Cmd+S saves and Esc discards while Settings is open, like the
+  // Save/Back buttons.
+  window.addEventListener("keydown", handleSettingsKey);
 
   if (listen) {
     listen("state-changed", (event) => {
@@ -75,11 +78,18 @@ function wire() {
       setConfig(event.payload);
       renderPin();
       applyCollapseStyle();
+      // Keep the Settings checkbox in step with the toolbar pin (and any other
+      // path that flips topmost) while Settings is open.
+      const top = $("set-top");
+      if (top) top.checked = !!(event.payload && event.payload.always_on_top);
     });
     listen("open-settings", () => {
       populateSettings();
       setView("settings");
     });
+    // The shell collapses the expanded view when it loses focus, if "Always on
+    // top" is on.
+    listen("collapse", () => setView("mini"));
   }
 }
 

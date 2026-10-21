@@ -32,15 +32,40 @@ mode (see [`docs/state-format.md`](docs/state-format.md)). Switch to
   move. Chosen in Settings.
 - **Details** — aggregate light plus live counts, then every session: status
   dot, name, harness badge (`oc` / `cx` / `co`), project, relative time, and a
-  remove button. A "Clear done" action drops all `done` rows.
+  remove button. A "Clear done" action drops all `done` rows. Names and
+  sub-lines are selectable so they can be copied.
 - **Settings** — source (local file or remote hub), state path (with a file
-  picker) or hub URL and token, collapsed view, always-on-top, start at login,
-  notifications, show-every-done, idle behavior, and the poll interval.
+  picker) or hub URL and token, the session link mode and its per-mode server
+  address, collapsed view (style, color pickers with Reset, labels),
+  always-on-top, start at login, notifications with a trigger choice, alarm
+  sound with a trigger choice, show-every-done, subagent visibility, idle
+  behavior, the embedded server, and the poll interval. Ctrl+S saves, Esc
+  leaves without saving. With a hub source the hub fields show a **status row**
+  (reachability, hub version, protocol schema; probed at startup, when the hub
+  changes, or with its Refresh button — never while opening or saving), and the
+  Version row has **Copy diagnostics**.
 
-The window is frameless and draggable by its top bar, and it lives in the system
-tray: closing or hiding it keeps it running, and the tray icon toggles it back.
-Left-clicking the tray icon shows/hides the window; the tray menu has Settings
-and Quit.
+For the current branch/PR/release state and how to build a test exe, see
+[`docs/STATUS.md`](docs/STATUS.md).
+
+## Diagnostics
+
+The app appends a small log to `%APPDATA%\AgentLight\agentlight.log` (rotated
+to `agentlight.log.1` when it passes 512 KB at startup): startup and version,
+source switches, embedded-server transitions, hub health probes, notification
+and alarm edges, config saves, Remove / Clear done durations, and errors, plus
+a panic hook. Settings → **Copy diagnostics** puts a redacted report on the
+clipboard — app version and build, OS and WebView2 version, source and settings
+summary, cached hub health, embedded-server state, and the log tail. It reads
+only cached state, so it is instant; tokens are reported as set/not set and are
+never copied.
+
+The window is frameless and draggable by its top bar in every view, and it
+lives in the system tray: hiding or closing it keeps it running. A left click on
+the tray icon brings it back and focuses it (a second click hides it when it is
+already the active window); the tray menu has Show / Hide, Settings and Quit,
+and right-clicking the collapsed light offers the layout, an Always on top
+toggle, and Hide.
 
 ## Serving to other devices
 
@@ -59,7 +84,11 @@ The admin token is stored only as a SHA-256 hash, and device tokens are hashed
 the same way; plaintext tokens are never persisted, so a saved admin token
 cannot be shown again. Pair other devices with the pairing code. The standalone
 binary reads `AGENTLIGHT_TOKEN`, `AGENTLIGHT_BIND`, and
-`AGENTLIGHT_DEVICES_FILE` (default `devices.json`). The full rule is in
+`AGENTLIGHT_DEVICES_FILE` (default `devices.json`), and — in events mode —
+`AGENTLIGHT_EVENTS_FILE` (default `push-state.json`),
+`AGENTLIGHT_HEARTBEAT_MS` (default `0` = disabled), and the optional
+`AGENTLIGHT_SESSION_URL_TEMPLATE` (rewrites every ingested session's `url`;
+`{id}` is the session id). The full rule is in
 [`docs/protocol.md`](docs/protocol.md).
 
 For a headless or container host, build the standalone `agentlight-server`
@@ -72,6 +101,12 @@ The desktop can read its sessions from either a local `state.json` (the default)
 or a remote AgentLight hub, chosen under **Source** in Settings. The embedded
 server above is independent: this widget can host a hub and read from one at the
 same time, and reading from a hub needs no local clawlight install.
+
+The desktop follows the hub's live SSE stream (`GET /api/v1/events`) instead of
+fixed-interval polling, so updates arrive as the hub emits them and the
+connect-time frame supplies the current state immediately. If the stream cannot
+be established it falls back to polling `GET /api/v1/snapshot`, emitting only on
+change.
 
 A hub that requires auth is addressed with a bearer token. That token is a
 **client credential** the hub validates, so it must be sent verbatim and cannot
@@ -91,14 +126,32 @@ producer side ships two pieces:
 
 - `agentlight-hook` — a CLI that reads a `SessionEvent` (or a batch) from stdin
   or `--json` and POSTs it to `POST /api/v1/ingest`.
-- A reference **opencode plugin**, validated against a live opencode build, that
-  forwards `session` / `tool` / `permission` events to the hub.
+- Reference **opencode plugins**, one per OpenCode plugin API generation (V1
+  and V2), that forward `session` / `tool` / `permission` events to the hub.
+  The V1 plugin is validated against a live opencode build; the V2 plugin is
+  covered by the same Node test suite against the V2 event shape.
 
 ```bash
 export AGENTLIGHT_SOURCE=events AGENTLIGHT_TOKEN=secret
 agentlight-server &
 echo '{"session_id":"abc","status":"active","name":"Fix auth"}' | agentlight-hook
 ```
+
+The hub persists pushed sessions to `AGENTLIGHT_EVENTS_FILE` (default
+`push-state.json`) and reloads them on restart, so last-known state survives a
+hub restart instead of starting empty. A `mode:"snapshot"` ingest is
+authoritative and **scoped to the batch's `producer`**, so several producers can
+share one hub without evicting each other's sessions; a producer never posts an
+empty snapshot. The plugin tags events with a stable `AGENTLIGHT_PRODUCER`
+(default `opencode:<host>:<directory>`) and populates a best-effort session
+`url` from `AGENTLIGHT_SESSION_URL_TEMPLATE` (default
+`http://localhost:4096/session/{id}`; empty disables) so the detail view can
+offer **Open**. The **hub** can override that link for every ingested session by
+setting its own `AGENTLIGHT_SESSION_URL_TEMPLATE`, which is handy when the
+browser can't resolve the producer's host. The plugin can also start the hub
+itself: set
+`AGENTLIGHT_AUTOSTART_BIN` to the `agentlight-server` binary and it probes
+`/healthz`, spawning the hub only when nothing is already running.
 
 See [`docs/plugin.md`](docs/plugin.md) for hub setup, the hook, plugin install,
 the `SessionEvent` schema, and the token security note.
@@ -167,10 +220,11 @@ build tools and WebView2 (preinstalled on Windows 10/11, otherwise the Evergreen
 runtime). No Node toolchain is required — the frontend is static.
 
 ```bash
-# library: parse / aggregate / clear / snapshot
-cargo test -p agentlight-core
-cargo clippy -p agentlight-core --all-targets -- -D warnings
+# libraries + hub + client: parse / aggregate / clear / snapshot / ingest
+cargo test -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events
+cargo clippy -p agentlight-core -p agentlight-server -p agentlight-hub-client -p agentlight-source-events --all-targets -- -D warnings
 cargo fmt --all --check
+node --test tests/plugin/agentlight.test.js
 
 # GUI (Windows)
 cargo install tauri-cli --version "^2.0.0" --locked
@@ -183,9 +237,13 @@ The portable exe needs the WebView2 runtime, which ships with Windows 10/11.
 For quick testing without an install, download the `agentlight-windows-portable`
 artifact from the latest CI run, or the `*_portable.exe` asset on a release.
 
-CI (`.github/workflows/ci.yml`) runs the core tests on Linux and builds the
-portable exe on Windows; the release workflow attaches both the portable exe and
-the NSIS installer to a tagged release.
+CI (`.github/workflows/ci.yml`) runs on pull requests into **any** base branch
+(and on manual dispatch): the core and plugin tests on Linux, plus the portable
+exe and the server exe on Windows in parallel, using the fast `ci` profile. The
+release workflow builds the optimized binaries and attaches the portable exe
+and the NSIS installer to a tagged release. For an on-demand testable build,
+run the `dev-build` workflow and download the `agentlight-windows-dev`
+artifact.
 
 ## Configuration
 
@@ -196,14 +254,24 @@ can be edited by hand.
 |------------------|-------------------|----------------------------------------------------|
 | `state_path`     | *(resolved)*      | Absolute path to `state.json`.                     |
 | `source_kind`    | `"file"`          | `file` reads `state_path`; `hub` reads `hub_url`; `push` is a server-only mode. |
-| `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. |
+| `hub_url`        | `http://127.0.0.1:8787` | Remote hub base URL when `source_kind` is `hub`. A `localhost` host is rewritten to `127.0.0.1` internally: `localhost` resolves to `::1` first, and on Windows a refused IPv6 connect can stall 1–2 s before the IPv4 fallback, once per request. |
 | `hub_token`      | *(none)*          | Bearer token sent to the hub. Stored plaintext.    |
+| `session_link`   | `"opencode_v2"`   | How the **Open** button builds the session URL: `opencode_v2` (default), `opencode_v1`, `openchamber`, `producer` (use the URL the hub/plugin attached), or `off`. |
+| `session_link_bases` | `{}`          | Server address per link mode (`"opencode_v2"`, `"opencode_v1"`, `"openchamber"`), so each mode remembers its own. A missing entry uses the mode default (`http://localhost:4096` for opencode, `http://localhost:3000` for OpenChamber). An older single `session_link_base` value is migrated on load. |
 | `always_on_top`  | `true`            | Keep the window above other windows.               |
 | `yellow_mode`    | `"any_inactive"`  | `any_inactive` or `active_wins`.                   |
 | `collapse_style` | `"single"`        | `single`, `triple`, or `triple_vertical`.          |
+| `mini_red` / `mini_orange` / `mini_green` | *(built-in)* | Custom light colors (any CSS color), applied to the lights and status chips in both the collapsed and detail views. "Reset colors" restores the palette. |
+| `mini_show_labels` | `false`         | Show labels beside the collapsed lights.           |
 | `poll_ms`        | `1500`            | Watcher backstop poll interval (clamped 250–60000).|
 | `show_done`      | `false`           | Show every `done` session instead of the newest 5. |
-| `notifications`  | `false`           | Desktop notification when a session needs help.    |
+| `show_subagents` | `false`           | Show tool-spawned subagent sessions. Hidden ones stay silent, but a subagent that needs help still turns the light red. |
+| `notifications`  | `false`           | Desktop notification when a session hits a `notification_trigger`. |
+| `notification_trigger` | `["needs_help"]` | Any combination of `needs_help`, `done`, `subagent_done`, `any_status`; fires on the first match. |
+| `alarms_enabled` | `false`           | Play a sound alarm when a session needs attention. |
+| `alarm_trigger`  | `["needs_help"]`  | Any combination of `needs_help`, `done`, `subagent_done`, `any_status`; fires on the first match. |
+| `alarm_sound`    | *(bundled chime)* | `.wav` file for the alarm; empty plays the bundled two-note chime through the Win32 sound API (no console window). |
+| `alarm_volume`   | `70`              | Alarm volume percent (`0`–`100`), applied by scaling the sound's samples. |
 | `start_at_login` | `false`           | Launch at login. Off unless you turn it on.        |
 | `server_enabled` | `false`           | Start the embedded hub. Off unless you turn it on. |
 | `server_bind`    | `127.0.0.1:8787`  | Address the embedded hub binds.                    |
@@ -235,6 +303,14 @@ only Remove and Clear done are unavailable.
 - **Advisory lock across mounts.** See the caveat under Removing sessions.
 - **`done` retention.** The details view keeps the newest 5 `done` sessions
   unless "Show every done session" is enabled.
+- **Windows notification identity.** The app registers its `AppUserModelID`
+  (HKCU) on first launch so the portable exe can toast as well as the installed
+  build; an installed build gets it from the NSIS shortcut. If toasts still do
+  not appear, check Focus Assist and Settings → Notifications.
+- **Removed sessions in events mode.** A session removed from the detail view
+  stays removed when the producer's next heartbeat snapshot re-reports it, but
+  new activity for that session brings it back — the same behavior as the file
+  source.
 - **One state file at a time.** See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Credits

@@ -10,6 +10,7 @@ import {
   setConfig,
   setView,
   snapshot,
+  view,
 } from "../lib/store.js";
 
 const $ = (id) => document.getElementById(id);
@@ -17,9 +18,27 @@ const $ = (id) => document.getElementById(id);
 const DEFAULT_SERVER_BIND = "127.0.0.1:8787";
 const DEFAULT_HUB_URL = "http://127.0.0.1:8787";
 
+// Built-in palette, matching the CSS custom properties. A color input seeded
+// with one of these is treated as "not customized" on save so the config keeps
+// its null and the palette stays future-proof.
+const MINI_BUILTIN = {
+  red: "#e06c75",
+  orange: "#e5c07b",
+  green: "#98c379",
+};
+
+const MINI_COLORS = ["red", "orange", "green"];
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
 // Whether the persisted config carries an admin token hash. Lets the token
 // hint explain that a secret is set without ever putting the hash in the input.
 let adminTokenSet = false;
+
+// Per-link-mode server addresses while Settings is open, seeded from
+// `config.session_link_bases` and saved back as a whole. Each mode keeps its
+// own address, so switching modes never carries a stale one over.
+let linkBases = {};
+let linkMode = "opencode_v2";
 
 // The backend emits this whenever the live server starts or stops, including
 // from a path other than the Settings buttons. Keep the button label and
@@ -71,24 +90,140 @@ export function populateSettings() {
   $("set-top").checked = !!config.always_on_top;
   $("set-autostart").checked = !!config.start_at_login;
   $("set-notifications").checked = !!config.notifications;
+  setTriggers("notification", config.notification_trigger);
   $("set-show-done").checked = !!config.show_done;
+  $("set-show-subagents").checked = !!config.show_subagents;
+  $("set-alarms-enabled").checked = !!config.alarms_enabled;
+  setTriggers("alarm", config.alarm_trigger);
+  $("set-alarm-sound").value = config.alarm_sound || "";
+  $("set-alarm-volume").value = config.alarm_volume ?? 70;
+  $("set-alarm-volume").oninput = renderAlarmVolume;
+  renderAlarmVolume();
   $("set-yellow-mode").value = config.yellow_mode || "any_inactive";
   $("set-collapse-style").value = config.collapse_style || "single";
+  // A color input only understands #rrggbb, so seed the built-in hex when the
+  // config carries nothing (or a color the picker cannot represent).
+  for (const key of MINI_COLORS) {
+    const value = config[`mini_${key}`];
+    $(`set-mini-${key}`).value = HEX_COLOR.test(value || "")
+      ? value
+      : MINI_BUILTIN[key];
+  }
+  $("set-mini-show-labels").checked = config.mini_show_labels !== false;
   $("set-poll").value = config.poll_ms || 1500;
+  $("set-session-link").value = config.session_link || "opencode_v2";
+  linkBases = { ...(config.session_link_bases || {}) };
+  linkMode = $("set-session-link").value;
+  $("set-session-link-base").value = linkBases[linkMode] || "";
   $("set-server-bind").value = config.server_bind || DEFAULT_SERVER_BIND;
   // The admin token is write-only: never render the stored hash back here.
   $("set-server-token").value = "";
   // Assigning `oninput` (instead of addEventListener) keeps re-population from
   // stacking listeners.
-  $("set-source-kind").onchange = renderSourceFields;
+  $("set-source-kind").onchange = () => {
+    renderSourceFields();
+    renderHubStatus();
+  };
+  $("set-hub-url").oninput = markHubStatusStale;
+  $("btn-hub-refresh").onclick = refreshHubStatus;
   $("set-server-bind").oninput = renderServerUrl;
   $("set-server-token").oninput = renderServerUrl;
+  $("set-notifications").onchange = renderNotificationRows;
+  $("set-alarms-enabled").onchange = renderAlarmRows;
+  $("set-session-link").onchange = renderSessionLinkFields;
+  // "Any status change" acts as a select-all within its trigger row.
+  $("set-notification-any").onchange = () => syncAnyTrigger("notification");
+  $("set-alarm-any").onchange = () => syncAnyTrigger("alarm");
+  for (const kind of ["notification", "alarm"]) {
+    const ids = TRIGGER_IDS[kind];
+    for (const key of ["needsHelp", "done", "subagent"]) {
+      $(ids[key]).onchange = () => syncSpecificTriggers(kind);
+    }
+  }
+  // Apply "Always on top" immediately so the toolbar pin and this checkbox
+  // stay in sync without a Save.
+  $("set-top").onchange = applyAlwaysOnTop;
   $("btn-new-code").onclick = regeneratePairing;
   $("btn-server-toggle").onclick = toggleServer;
   $("btn-server-token-clear").onclick = clearAdminToken;
+  $("btn-alarm-sound-pick").onclick = chooseAlarmSound;
+  $("btn-alarm-sound-clear").onclick = clearAlarmSound;
+  $("btn-alarm-test").onclick = testAlarm;
+  refreshAppVersion();
+  $("btn-reset-colors").onclick = resetColors;
+  $("btn-copy-diagnostics").onclick = copyDiagnostics;
   renderSourceFields();
+  renderNotificationRows();
+  renderAlarmRows();
+  renderSessionLinkFields();
   renderServerUrl();
   refreshServerStatus();
+  renderHubStatus();
+}
+
+// Render the cached /healthz result (no network). Settings opening must never
+// wait on a probe; the shell refreshes the cache at startup and when the hub
+// source changes, and the Refresh button probes on demand.
+export async function renderHubStatus() {
+  if (!invoke || $("set-source-kind").value !== "hub") return;
+  let status = null;
+  try {
+    status = await invoke("get_hub_status_cached");
+  } catch (error) {
+    status = null;
+  }
+  renderHubStatusValue(status);
+}
+
+function renderHubStatusValue(status) {
+  if (!status) {
+    $("set-hub-status").value = "Not checked yet — Refresh";
+    return;
+  }
+  const typed = $("set-hub-url").value.trim().replace(/\/+$/, "");
+  const checkedUrl = (status.url || "").replace(/\/+$/, "");
+  if (typed && checkedUrl && typed !== checkedUrl) {
+    $("set-hub-status").value = "Not checked for this address — Refresh";
+    return;
+  }
+  const checked = status.checked_at ? ` · checked ${status.checked_at.slice(11)}` : "";
+  $("set-hub-status").value = status.reachable
+    ? `Connected · hub ${status.version || "unknown"} · schema ${status.schema_version ?? "?"}${checked}`
+    : `Unreachable: ${status.error || "no answer"}${checked}`;
+}
+
+// Probe the hub address currently in the form (the Refresh button, or a first
+// open with an empty cache).
+export async function refreshHubStatus() {
+  if (!invoke || $("set-source-kind").value !== "hub") return;
+  $("set-hub-status").value = "Checking…";
+  try {
+    const status = await invoke("get_hub_status", {
+      url: $("set-hub-url").value.trim(),
+      token: $("set-hub-token").value.trim() || (config && config.hub_token) || null,
+    });
+    renderHubStatusValue(status);
+  } catch (error) {
+    $("set-hub-status").value = `Unreachable: ${error}`;
+  }
+}
+
+// The typed address no longer matches the cached result.
+function markHubStatusStale() {
+  if ($("set-source-kind").value !== "hub") return;
+  $("set-hub-status").value = "Not checked for this address — Refresh";
+}
+
+// Put the shell's redacted diagnostics report on the clipboard. The report
+// includes versions, source/hub state, and the log tail; never a token.
+async function copyDiagnostics() {
+  if (!invoke) return;
+  try {
+    await invoke("copy_diagnostics");
+    toast("Diagnostics copied");
+  } catch (error) {
+    toast(`Copy failed: ${error}`);
+  }
 }
 
 export async function refreshServerStatus() {
@@ -190,6 +325,17 @@ function clearTokenInput() {
   renderServerUrl();
 }
 
+// Apply the "Always on top" checkbox right away; the shell persists it and
+// emits `config-changed`, which refreshes the toolbar pin.
+async function applyAlwaysOnTop() {
+  if (!invoke) return;
+  try {
+    await invoke("set_always_on_top", { enabled: $("set-top").checked });
+  } catch (error) {
+    toast(`Pin failed: ${error}`);
+  }
+}
+
 async function toggleServer() {
   if (!invoke || !config) return;
   const running = $("btn-server-toggle").textContent === "Stop server";
@@ -220,22 +366,233 @@ async function clearAdminToken() {
   await refreshServerStatus();
 }
 
+// Show and enable the notification trigger only while notifications are on.
+function renderNotificationRows() {
+  const rows = $("set-notification-rows");
+  if (!rows) return;
+  const enabled = $("set-notifications").checked;
+  rows.classList.toggle("hidden", !enabled);
+  for (const el of rows.querySelectorAll("input, select, button")) {
+    el.disabled = !enabled;
+  }
+}
+
+// Show the server base URL only for the modes that use it; `producer` gets its
+// URL from the hub/plugin, and `off` has no link at all. Switching modes swaps
+// in that mode's own remembered address.
+function renderSessionLinkFields() {
+  const mode = $("set-session-link").value;
+  const usesBase = mode === "opencode_v1" || mode === "opencode_v2" || mode === "openchamber";
+  $("set-session-link-base-field").classList.toggle("hidden", !usesBase);
+  $("set-session-link-producer-hint").classList.toggle("hidden", mode !== "producer");
+  if (mode !== linkMode) {
+    rememberLinkBase(linkMode);
+    linkMode = mode;
+    $("set-session-link-base").value = linkBases[mode] || "";
+  }
+  const placeholders = {
+    opencode_v1: "http://localhost:4096",
+    opencode_v2: "http://localhost:4096",
+    openchamber: "http://localhost:3000",
+  };
+  $("set-session-link-base").placeholder = placeholders[mode] || "";
+}
+
+// Remember the visible address under the mode it was typed for; a blank input
+// clears that mode's entry so the default applies again.
+function rememberLinkBase(mode) {
+  const value = $("set-session-link-base").value.trim();
+  if (value) linkBases[mode] = value;
+  else delete linkBases[mode];
+}
+
+// Show and enable the alarm trigger/sound rows only while alarms are on.
+function renderAlarmRows() {
+  const rows = $("set-alarm-rows");
+  if (!rows) return;
+  const enabled = $("set-alarms-enabled").checked;
+  rows.classList.toggle("hidden", !enabled);
+  for (const el of rows.querySelectorAll("input, select, button")) {
+    el.disabled = !enabled;
+  }
+}
+
+// Seed the color inputs with the built-in palette. Saving afterwards treats
+// them as uncustomized and persists nulls, restoring the defaults.
+function resetColors() {
+  for (const key of MINI_COLORS) {
+    $(`set-mini-${key}`).value = MINI_BUILTIN[key];
+  }
+}
+
+// A color input always holds a value, so "customized" means it differs from the
+// built-in hex. Returning null keeps the built-in palette for that light.
+function miniColorValue(key) {
+  const value = $(`set-mini-${key}`).value.trim();
+  return value && value.toLowerCase() !== MINI_BUILTIN[key] ? value : null;
+}
+
+async function chooseAlarmSound() {
+  if (!invoke) return;
+  try {
+    const path = await invoke("pick_sound_file");
+    if (path) $("set-alarm-sound").value = path;
+  } catch (error) {
+    toast(`Could not pick sound: ${error}`);
+  }
+}
+
+function clearAlarmSound() {
+  $("set-alarm-sound").value = "";
+}
+
+// Show the running app version and build id; the package version alone does not
+// change between builds.
+async function refreshAppVersion() {
+  if (!invoke) return;
+  try {
+    $("app-version").value = await invoke("app_version");
+  } catch {
+    $("app-version").value = "";
+  }
+}
+
+// Show the current alarm volume beside the slider.
+function renderAlarmVolume() {
+  $("set-alarm-volume-value").textContent = `${$("set-alarm-volume").value}%`;
+}
+
+// Play the alarm at the current (unsaved) sound and volume so the user can
+// judge the setting before saving.
+async function testAlarm() {
+  if (!invoke) return;
+  try {
+    await invoke("test_alarm", {
+      sound: $("set-alarm-sound").value.trim() || null,
+      volume: Number($("set-alarm-volume").value),
+    });
+  } catch (error) {
+    toast(`Alarm test failed: ${error}`);
+  }
+}
+
+// Trigger fields (`notification_trigger` / `alarm_trigger`) are lists of
+// `needs_help` / `done` / `any_status`. A single string is accepted too.
+const TRIGGER_IDS = {
+  notification: {
+    needsHelp: "set-notification-needs-help",
+    done: "set-notification-done",
+    subagent: "set-notification-subagent",
+    any: "set-notification-any",
+  },
+  alarm: {
+    needsHelp: "set-alarm-needs-help",
+    done: "set-alarm-done",
+    subagent: "set-alarm-subagent",
+    any: "set-alarm-any",
+  },
+};
+
+// An explicit empty list means "no trigger selected"; a missing value falls
+// back to the default.
+function triggerValues(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value) return [value];
+  return ["needs_help"];
+}
+
+// "Any status change" is a select-all: it already matches every transition, so
+// when it is set the specific triggers are shown selected too.
+function setTriggers(kind, value) {
+  let selected = triggerValues(value);
+  if (selected.includes("any_status")) {
+    selected = ["needs_help", "done", "subagent_done", "any_status"];
+  }
+  const ids = TRIGGER_IDS[kind];
+  $(ids.needsHelp).checked = selected.includes("needs_help");
+  $(ids.done).checked = selected.includes("done");
+  $(ids.subagent).checked = selected.includes("subagent_done");
+  $(ids.any).checked = selected.includes("any_status");
+}
+
+// Checking "Any status change" selects the specific triggers; clearing it
+// clears them, so the row behaves as one "select all" control.
+function syncAnyTrigger(kind) {
+  const ids = TRIGGER_IDS[kind];
+  const on = $(ids.any).checked;
+  $(ids.needsHelp).checked = on;
+  $(ids.done).checked = on;
+  $(ids.subagent).checked = on;
+}
+
+// Clearing a specific trigger clears "Any status change" too: it is no longer
+// true that any change fires.
+function syncSpecificTriggers(kind) {
+  const ids = TRIGGER_IDS[kind];
+  $(ids.any).checked = $(ids.needsHelp).checked && $(ids.done).checked && $(ids.subagent).checked;
+}
+
+// Keyboard while Settings is open: Ctrl/Cmd+S saves the form, Esc leaves
+// without saving (the same discard as the Back button).
+export function handleSettingsKey(event) {
+  if (!event || view !== "settings") return;
+  const key = event.key;
+  if (key === "Escape") {
+    event.preventDefault();
+    setView("detail");
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && (key === "s" || key === "S")) {
+    event.preventDefault();
+    saveSettings();
+  }
+}
+
+function readTriggers(kind) {
+  const ids = TRIGGER_IDS[kind];
+  const selected = [];
+  if ($(ids.needsHelp).checked) selected.push("needs_help");
+  if ($(ids.done).checked) selected.push("done");
+  if ($(ids.subagent).checked) selected.push("subagent_done");
+  if ($(ids.any).checked) selected.push("any_status");
+  return selected;
+}
+
 export async function saveSettings(event) {
   if (event) event.preventDefault();
   if (!invoke || !config) return;
+  const sourceKind = $("set-source-kind").value;
+  const linkModeNow = $("set-session-link").value;
+  rememberLinkBase(linkModeNow);
   const next = applyServerFields({
     ...config,
-    source_kind: $("set-source-kind").value,
+    source_kind: sourceKind,
     hub_url: $("set-hub-url").value.trim() || DEFAULT_HUB_URL,
     hub_token: $("set-hub-token").value.trim() || null,
-    state_path: $("set-state-path").value.trim() || null,
+    // The state-file input is seeded from the snapshot's resolved clawlight
+    // path even in hub mode; never write that back for a non-file source, or
+    // an unchanged save would restart the hub source.
+    state_path:
+      sourceKind === "file" ? $("set-state-path").value.trim() || null : config.state_path,
     always_on_top: $("set-top").checked,
     start_at_login: $("set-autostart").checked,
     notifications: $("set-notifications").checked,
+    notification_trigger: readTriggers("notification"),
     show_done: $("set-show-done").checked,
+    show_subagents: $("set-show-subagents").checked,
+    alarms_enabled: $("set-alarms-enabled").checked,
+    alarm_trigger: readTriggers("alarm"),
+    alarm_sound: $("set-alarm-sound").value.trim() || null,
+    alarm_volume: Number($("set-alarm-volume").value),
     yellow_mode: $("set-yellow-mode").value,
     collapse_style: $("set-collapse-style").value,
+    mini_red: miniColorValue("red"),
+    mini_orange: miniColorValue("orange"),
+    mini_green: miniColorValue("green"),
+    mini_show_labels: $("set-mini-show-labels").checked,
     poll_ms: Number($("set-poll").value) || 1500,
+    session_link: linkModeNow,
+    session_link_bases: { ...linkBases },
   });
   try {
     setConfig(await invoke("set_config", { config: next }));

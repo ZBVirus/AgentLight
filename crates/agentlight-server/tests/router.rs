@@ -28,6 +28,7 @@ fn engine_with_sessions() -> (Engine, Arc<FixtureSource>) {
             .with_capabilities(Capabilities {
                 remove_session: true,
                 clear_done: true,
+                bulk_clear_done: false,
                 push_events: false,
             })
             .with_sessions(vec![
@@ -76,8 +77,13 @@ async fn healthz_is_open_and_negotiates() {
     let body = read_json(response).await;
     assert_eq!(body["status"], "ok");
     assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(body["capabilities"]["auth"], "bearer");
     assert_eq!(body["capabilities"]["events"][0], "sse");
+    assert_eq!(
+        body["capabilities"]["ingest"],
+        json!(["upsert", "snapshot"])
+    );
 }
 
 #[tokio::test]
@@ -179,6 +185,13 @@ async fn remove_session_routes_to_the_source() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = read_json(response).await;
     assert!(body["revision"].as_u64().unwrap() >= 1);
+    // The reply carries the refreshed snapshot so a client need not re-fetch.
+    assert_eq!(body["snapshot"]["counts"]["total"], 2);
+    assert!(body["snapshot"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|session| session["session_id"] != "a"));
 
     let snapshot = engine.snapshot_now();
     assert_eq!(snapshot.counts.total, 2);

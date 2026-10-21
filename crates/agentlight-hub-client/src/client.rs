@@ -22,6 +22,39 @@ pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8787";
 /// Per-request timeout. The client is blocking, so a call cannot hang forever.
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
+/// Normalize a hub base URL: trimmed, without a trailing slash, and with a
+/// `localhost` host rewritten to the IPv4 loopback `127.0.0.1`.
+///
+/// `localhost` resolves to `::1` first on many Windows hosts, and when that
+/// address is filtered rather than refused, every request waits for a connect
+/// timeout before the IPv4 attempt. The hub binds `127.0.0.1` by default, so
+/// going straight there is safe and keeps a same-machine hub instant. An
+/// already-numeric host, another name, a port, a userinfo part, or a path are
+/// preserved.
+pub fn normalize_base_url(base: &str) -> String {
+    let trimmed = base.trim().trim_end_matches('/');
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return trimmed.to_string();
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(position) => (&rest[..position], &rest[position..]),
+        None => (rest, ""),
+    };
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((userinfo, hostport)) => (Some(userinfo), hostport),
+        None => (None, authority),
+    };
+    let port = hostport.find(':').map(|at| &hostport[at..]).unwrap_or("");
+    let host = &hostport[..hostport.len() - port.len()];
+    if !host.eq_ignore_ascii_case("localhost") {
+        return trimmed.to_string();
+    }
+    match userinfo {
+        Some(userinfo) => format!("{scheme}://{userinfo}@127.0.0.1{port}{path}"),
+        None => format!("{scheme}://127.0.0.1{port}{path}"),
+    }
+}
+
 /// Connection settings for a single hub.
 ///
 /// `id` is the local [`SourceId`](agentlight_core::SourceId) this hub's
@@ -131,20 +164,39 @@ enum CommandBody<'a> {
     ClearDone,
 }
 
-#[derive(Debug, Deserialize)]
-struct CommandResponse {
-    revision: u64,
-}
-
-/// Body for `POST /api/v1/ingest`: the canonical pushed-event shape, unchanged.
+/// Body for `POST /api/v1/ingest`: the canonical pushed-event shape. `mode` is
+/// omitted for the default upsert so the body is unchanged from before.
 #[derive(Debug, Serialize)]
 struct IngestBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'a str>,
     events: &'a [SessionEvent],
 }
 
 #[derive(Debug, Deserialize)]
 struct IngestResponse {
     accepted: usize,
+}
+
+/// The hub's reply to a mutation: the revision the refresh produced and, on a
+/// hub that includes it, the refreshed snapshot. The snapshot lets a client
+/// update its cache from the command itself instead of a second round trip; an
+/// older hub omits it and the client falls back to a snapshot fetch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandReply {
+    pub revision: u64,
+    #[serde(default)]
+    pub snapshot: Option<Snapshot>,
+}
+
+/// `GET /healthz` — what a hub reports about itself without auth. `version` is
+/// additive: an older hub omits it and clients show just the schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubHealth {
+    pub status: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// Blocking HTTP client for one hub. Cheap to clone and safe to share.
@@ -162,9 +214,11 @@ impl HubClient {
         &self.config
     }
 
-    /// `base_url` without a trailing slash, so endpoint joins are stable.
-    fn base(&self) -> &str {
-        self.config.base_url.trim_end_matches('/')
+    /// `base_url` without a trailing slash, with a `localhost` host rewritten to
+    /// the IPv4 loopback (see [`normalize_base_url`]), so endpoint joins are
+    /// stable and every request takes the fast path.
+    fn base(&self) -> String {
+        normalize_base_url(&self.config.base_url)
     }
 
     fn authorize(&self, request: minreq::Request) -> minreq::Request {
@@ -186,15 +240,55 @@ impl HubClient {
         serde_json::from_str(body).map_err(HubError::Decode)
     }
 
-    /// `POST /api/v1/commands` with a `remove_session` body. Returns the
-    /// revision produced by the hub's follow-up refresh.
-    pub fn remove_session(&self, source: Option<&str>, session_id: &str) -> Result<u64, HubError> {
+    /// `GET /healthz` — liveness, schema version, and (on a new enough hub) the
+    /// hub binary's version. Unauthenticated on the hub, so this works with or
+    /// without a token.
+    pub fn health(&self) -> Result<HubHealth, HubError> {
+        let url = format!("{}/healthz", self.base());
+        let response = self
+            .authorize(minreq::get(url))
+            .with_timeout(REQUEST_TIMEOUT_SECS)
+            .send()?;
+        ensure_success(&response)?;
+        let body = response.as_str()?;
+        serde_json::from_str(body).map_err(HubError::Decode)
+    }
+
+    /// `GET /api/v1/events` — the hub's Server-Sent Events stream.
+    ///
+    /// Returned lazily and deliberately without a timeout: minreq's timeout is
+    /// an absolute deadline, so it would kill a long-lived stream. The caller
+    /// reads frames until EOF (the hub closes the connection on lag/disconnect,
+    /// so a reconnect is expected). A non-2xx status is reported as
+    /// [`HubError::Http`] without consuming the stream.
+    pub(crate) fn events_stream(&self) -> Result<minreq::ResponseLazy, HubError> {
+        let url = format!("{}/api/v1/events", self.base());
+        let response = self
+            .authorize(minreq::get(url))
+            .with_header("Accept", "text/event-stream")
+            .send_lazy()?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(HubError::Http {
+                status: response.status_code,
+                body: String::new(),
+            });
+        }
+        Ok(response)
+    }
+
+    /// `POST /api/v1/commands` with a `remove_session` body. The reply carries
+    /// the revision the hub's follow-up refresh produced, and on a new enough
+    /// hub the refreshed snapshot itself.
+    pub fn remove_session(
+        &self,
+        source: Option<&str>,
+        session_id: &str,
+    ) -> Result<CommandReply, HubError> {
         self.post_command(&CommandBody::RemoveSession { source, session_id })
     }
 
-    /// `POST /api/v1/commands` with a `clear_done` body. Returns the revision
-    /// produced by the hub's follow-up refresh.
-    pub fn clear_done(&self) -> Result<u64, HubError> {
+    /// `POST /api/v1/commands` with a `clear_done` body. See [`Self::remove_session`].
+    pub fn clear_done(&self) -> Result<CommandReply, HubError> {
         self.post_command(&CommandBody::ClearDone)
     }
 
@@ -203,8 +297,19 @@ impl HubClient {
     /// length). Only meaningful against an events-mode hub; a file-mode hub
     /// answers `400 bad_request`.
     pub fn ingest(&self, events: &[SessionEvent]) -> Result<usize, HubError> {
+        self.post_ingest(events, None)
+    }
+
+    /// `POST /api/v1/ingest` with `"mode":"snapshot"` — the batch is the
+    /// producer's authoritative live set, so the hub prunes push-source
+    /// sessions absent from it. Returns the hub's `accepted` count.
+    pub fn ingest_snapshot(&self, events: &[SessionEvent]) -> Result<usize, HubError> {
+        self.post_ingest(events, Some("snapshot"))
+    }
+
+    fn post_ingest(&self, events: &[SessionEvent], mode: Option<&str>) -> Result<usize, HubError> {
         let url = format!("{}/api/v1/ingest", self.base());
-        let payload = serde_json::to_string(&IngestBody { events })?;
+        let payload = serde_json::to_string(&IngestBody { mode, events })?;
         let response = self
             .authorize(minreq::post(url))
             .with_header("Content-Type", "application/json")
@@ -217,7 +322,7 @@ impl HubClient {
         Ok(parsed.accepted)
     }
 
-    fn post_command(&self, body: &CommandBody<'_>) -> Result<u64, HubError> {
+    fn post_command(&self, body: &CommandBody<'_>) -> Result<CommandReply, HubError> {
         let url = format!("{}/api/v1/commands", self.base());
         let payload = serde_json::to_string(body)?;
         let response = self
@@ -228,8 +333,7 @@ impl HubClient {
             .send()?;
         ensure_success(&response)?;
         let body = response.as_str()?;
-        let parsed: CommandResponse = serde_json::from_str(body)?;
-        Ok(parsed.revision)
+        serde_json::from_str(body).map_err(HubError::Decode)
     }
 }
 
@@ -245,4 +349,51 @@ fn ensure_success(response: &minreq::Response) -> Result<(), HubError> {
         status: response.status_code,
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_base_url;
+
+    #[test]
+    fn localhost_is_rewritten_to_ipv4_loopback() {
+        assert_eq!(
+            normalize_base_url("http://localhost:8787"),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_base_url("http://LOCALHOST:8787/"),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_base_url("  http://LocalHost  "),
+            "http://127.0.0.1"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:8787/api"),
+            "http://127.0.0.1:8787/api"
+        );
+        assert_eq!(
+            normalize_base_url("http://user@localhost:8787"),
+            "http://user@127.0.0.1:8787"
+        );
+    }
+
+    #[test]
+    fn other_hosts_and_shapes_are_left_alone() {
+        assert_eq!(
+            normalize_base_url("http://127.0.0.1:8787/"),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_base_url("http://hub.local:8787"),
+            "http://hub.local:8787"
+        );
+        assert_eq!(normalize_base_url("http://[::1]:8787"), "http://[::1]:8787");
+        assert_eq!(
+            normalize_base_url("http://mylocalhost:1"),
+            "http://mylocalhost:1"
+        );
+        assert_eq!(normalize_base_url("not a url"), "not a url");
+    }
 }

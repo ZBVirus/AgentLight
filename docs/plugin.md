@@ -26,11 +26,20 @@ agentlight-server
 - `AGENTLIGHT_BIND` defaults to `127.0.0.1:8787`; exposing it on the LAN is an
   explicit change.
 - `AGENTLIGHT_STATE_FILE` is ignored in events mode.
-- Sessions live in memory only: a restart starts empty, and `GET
-  /api/v1/snapshot` reports `source_kind: "push"`, `source_label: "events"`,
-  and — before the first event — `ok: false` with `Waiting for agent events`.
-  A durable store and a producer heartbeat are specified but not yet
-  implemented; see "Snapshot mode and producer heartbeat" in
+- Pushed sessions persist to `AGENTLIGHT_EVENTS_FILE` (default
+  `push-state.json`) and reload on restart, so `GET /api/v1/snapshot` reports
+  last-known state before the first heartbeat. It reports `source_kind:
+  "push"`, `source_label: "events"`, and — only before any event has ever been
+  seen — `ok: false` with `Waiting for agent events`.
+- The reference opencode plugin sends a `mode: "snapshot"` batch on startup and
+  then every `AGENTLIGHT_HEARTBEAT_MS` (default `30000` ms; `0` disables). The
+  live set is every non-`done` session plus the newest five `done`. Snapshots
+  are producer-scoped (each event carries a stable `producer`), so instances
+  with **different** producer ids do not prune each other's sessions. The
+  default id is per host **and project directory**, so two instances in the
+  same directory share a scope and need distinct `AGENTLIGHT_PRODUCER` values
+  (see below). An empty live set is never sent, so a starting or idle instance
+  cannot wipe the hub. See "Snapshot mode and producer heartbeat" in
   [`protocol.md`](protocol.md).
 
 `POST /api/v1/ingest` requires the admin or a device token and accepts an
@@ -80,20 +89,33 @@ leak the secret into the process list and shell history.
 
 ## 3. Reference opencode plugin
 
-[`plugins/opencode/agentlight.js`](../plugins/opencode/agentlight.js) is a real
-plugin for the documented [opencode plugin API](https://opencode.ai/docs/plugins).
-It subscribes to the event bus and forwards status with `fetch`, coalescing
-bursts per session. It is a reference: it was written against the documented API
-and event names and has since been validated against a live opencode build in
-this repository. Other versions may rename events, so adapt the `handleEvent`
-switch if your version's names or payloads differ.
+AgentLight ships two reference plugins, one per OpenCode plugin API generation:
 
-Install it by copying the file into a plugin directory opencode loads at
-startup:
+| OpenCode | File | API |
+|---|---|---|
+| **V1** | [`plugins/opencode/agentlight.js`](../plugins/opencode/agentlight.js) | named function export returning a hooks object; events carry `event.properties` |
+| **V2** | [`plugins/opencode/agentlight-v2.js`](../plugins/opencode/agentlight-v2.js) | default export with `id` + `setup(ctx)`; events carry `event.data` |
+
+Both subscribe to opencode's event bus and forward status with `fetch`,
+coalescing bursts per session. They are references: each was written against its
+documented API and event names, and the V1 plugin has been validated against a
+live opencode V1 build. V2 does **not** run V1 plugin implementations — the
+server logs `Plugin must export a default definition with an id and an effect or
+setup function` for the V1 file — so install the file that matches the OpenCode
+major version you run. Do not copy both into one plugin directory; V2 attempts
+to load every file it discovers and logs a warning for the one that does not
+match.
+
+Install the matching file by copying it into a plugin directory opencode loads
+at startup:
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
-cp plugins/opencode/agentlight.js ~/.config/opencode/plugins/
+
+# OpenCode V1:
+cp plugins/opencode/agentlight.js    ~/.config/opencode/plugins/agentlight.js
+# OpenCode V2:
+cp plugins/opencode/agentlight-v2.js ~/.config/opencode/plugins/agentlight.js
 # project-local instead: .opencode/plugins/agentlight.js
 ```
 
@@ -102,7 +124,67 @@ Configure it through the environment opencode is launched with:
 ```bash
 export AGENTLIGHT_HUB_URL=http://127.0.0.1:8787
 export AGENTLIGHT_TOKEN=secret   # only if the hub requires auth
+export AGENTLIGHT_PRODUCER=my-host:my-project  # optional; default opencode:<host>:<directory>
+export AGENTLIGHT_HEARTBEAT_MS=30000          # heartbeat snapshot interval; 0 disables
+export AGENTLIGHT_AUTOSTART_BIN=/path/to/agentlight-server  # optional; see below
+export AGENTLIGHT_SESSION_URL_TEMPLATE='http://localhost:4096/session/{id}'  # defaults to this; empty disables
 ```
+
+`AGENTLIGHT_PRODUCER` is a stable id used to scope snapshot pruning. It defaults
+to `opencode:<hostname>:<directory>`, which is stable per project and
+distinguishes hosts. The default assumes **one opencode instance per project
+directory**: two instances in the same directory on the same host share the id,
+so each heartbeat prunes the sessions the other has not reported. Run one
+instance per project, or give each instance its own `AGENTLIGHT_PRODUCER`. Set
+it explicitly only if you need to override that identity. The plugin never
+sends a snapshot with an empty live set, so a starting or idle instance does
+not wipe the hub, and a session removed in the UI stays removed through
+heartbeats (new activity for it brings it back). One caveat: after opencode
+restarts, the plugin's in-memory live set is empty, so a still-open session
+that has not emitted an event yet is pruned by the first heartbeat until its
+next event; reconciling that safely needs opencode to expose per-session
+status (see `docs/ROADMAP.md`).
+
+`AGENTLIGHT_SESSION_URL_TEMPLATE` is best-effort and defaults to
+`http://localhost:4096/session/{id}`, opencode's usual web address, so the
+desktop's detail row shows an "Open" action with no setup. Every reported event
+carries `url` with `{id}` replaced by the (URL-encoded) session id. Set the
+variable to an explicit empty value to disable the link, or to a custom template
+when the browser and opencode are not on the same host — for example opencode in
+Docker with port 4096 published: `http://localhost:4096/session/{id}`, or on
+another machine: `http://192.168.1.20:4096/session/{id}`. The template must be
+reachable from the machine running the AgentLight desktop. A native app cannot
+focus a specific browser window or tab, so the browser decides whether to reuse
+an existing tab or open a new one; exact focus would need a browser extension or
+remote debugging.
+
+This variable is read by the **producer** (where opencode runs). The hub can also
+override the link for every ingested session with its own
+`AGENTLIGHT_SESSION_URL_TEMPLATE`; that hub-side setting wins over the value the
+plugin sent.
+
+The desktop's detail row shows the **Open** action for the URL it builds from the
+**Session link** setting: OpenCode v2 by default
+(`<base>/server/<base64url(base)>/session/<id>`, matching `opencode pair`),
+OpenCode v1, OpenChamber (`<base>/?session=<id>`), `producer` (the URL the hub or
+plugin attached), or off. So the plugin's `url` matters only in `producer` mode.
+
+The plugin logs one line at startup (`agentlight plugin <version> started`,
+with the producer, hub, heartbeat, and URL template) to opencode's logs. The
+plugin file is **copied** into opencode's plugin directory, so after updating
+this repo, re-copy the matching `plugins/opencode/agentlight*.js` or the running
+copy stays stale — the startup line is the quickest way to confirm which version
+is loaded (`agentlight-v2.js` logs `(v2)`).
+
+Set `AGENTLIGHT_DEBUG=1` to log every event's `type` and the keys of its payload
+(`event.properties` for V1, `event.data` for V2) to opencode's logs. It is off by
+default and adds one line per event; use it to confirm the shape a given opencode
+build emits when a mapping looks wrong.
+
+`AGENTLIGHT_AUTOSTART_BIN` is opt-in. When set and `/healthz` is unreachable at
+startup, the plugin spawns that binary detached, waits a few seconds for health,
+and then reports normally. It never stops the process it started; the hub owns
+its own lifecycle. Leave it unset if you run the hub yourself.
 
 Mapping (opencode → AgentLight):
 
@@ -111,17 +193,32 @@ Mapping (opencode → AgentLight):
 | `session.status` `busy` / `retry` | `active` (working) |
 | `session.status` `idle`, `session.idle` (main session) | `inactive` (paused) |
 | `session.status` `idle`, `session.idle` (subagent, has `parentID`) | `done` |
-| `permission.asked` / `permission.updated` | `needs_help` (waiting on you) |
-| `permission.replied` | `active` (resumes) |
-| `session.error` | `needs_help` |
+| `permission.asked` / `permission.replied` | `needs_help` / `active` |
 | `session.deleted` | `done` |
+| V1 only: `permission.updated` | `needs_help` (waiting on you) |
+| V1 only: `session.error` | `needs_help` |
+| V2 only: `session.execution.started` | `active` |
+| V2 only: `session.execution.failed` | `needs_help` |
+| V2 only: `session.execution.succeeded` / `.interrupted` | idle path (`done` for a subagent, `inactive` for a main session) |
+| V2 only: `form.created` / `form.replied` / `form.cancelled` | `needs_help` / `active` / idle path (a question from opencode) |
+
+The V1 plugin reads event payloads from `event.properties`; the V2 plugin reads
+them from `event.data`. `session.created` carries `parentID` and `title` (V1
+under `properties.info`; V2 under `data` and `location.directory`), and a
+`session.renamed` event updates the display name. V2 has no `session.updated` or
+`session.error` (the V1 shapes); its "waiting on you" signals are
+`permission.asked` and `form.created`. `session.status` / `session.idle` remain
+the authoritative idle transition.
 
 A finished subagent never emits `session.deleted`; it only goes idle. The plugin
-therefore reports idle on a session that has a `parentID` as `done`, so "Clear
-done" can drop it, while a top-level idle session stays `inactive`. An idle
-event while a permission is still pending stays `needs_help`. This mapping is
-covered by `plugins/opencode/test/agentlight.test.js` (run `node --test
-plugins/opencode/test/agentlight.test.js`).
+therefore reports idle on a session that has a `parentID` as `done`, and tags it
+`subagent: true` on the wire. The desktop hides subagent rows by default and
+only fires "A session finishes" for main sessions; a subagent that needs help
+still surfaces. An idle event while a permission is still pending stays
+`needs_help`. Both mappings are
+covered by `tests/plugin/agentlight.test.js` (V1) and
+`tests/plugin/agentlight-v2.test.js` (V2); run both with `node --test
+tests/plugin/`.
 
 `name` and `project_path` come from the session (`title`, `directory`);
 `harness` is `opencode` and `last_updated` is stamped at send time. Transient
@@ -146,6 +243,7 @@ its prior status in place.
 | `project_path` | string \| null | Raw project path; empty when unknown. |
 | `harness` | string \| null | Reporting harness; its two-char badge is derived. |
 | `last_updated` | string \| null | RFC 3339 timestamp, echoed and used for ordering. |
+| `producer` | string \| null | Optional. Scopes `"snapshot"` pruning to this producer; absent means the batch only upserts and never prunes. |
 
 The response is `{ "accepted": N }`, where `N` is the batch length, not the
 number that changed.

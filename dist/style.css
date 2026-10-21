@@ -17,6 +17,21 @@
   user-select: none;
 }
 
+/* Text a user may want to copy stays selectable despite the global rule above
+   (which keeps window drags from selecting chrome): session rows, labels,
+   hints, the pairing code, and form fields. */
+.session .name,
+.session .sub,
+.detail-title,
+.light-label,
+.chips,
+.hint,
+.pair-code,
+input,
+textarea {
+  user-select: text;
+}
+
 html,
 body {
   margin: 0;
@@ -150,23 +165,48 @@ main {
   cursor: grabbing;
 }
 
+.mini-single,
+.mini-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
 .mini-triple {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
+.mini-label {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.view.mini.no-labels .mini-label {
+  display: none;
+}
+
 body[data-collapse="single"] .mini-triple {
   display: none;
 }
 
-body[data-collapse="triple"] #mini-light,
-body[data-collapse="triple_vertical"] #mini-light {
+body[data-collapse="triple"] #mini-single,
+body[data-collapse="triple_vertical"] #mini-single {
   display: none;
 }
 
 body[data-collapse="triple_vertical"] .mini-triple {
   flex-direction: column;
+}
+
+/* Horizontal lights read green | orange | red, left to right (vertical keeps
+   the traffic-light order, red on top). */
+body[data-collapse="triple"] .mini-triple {
+  flex-direction: row-reverse;
 }
 
 .mini-light {
@@ -189,25 +229,62 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .mini-light.on.red {
-  border-color: rgba(224, 108, 117, 0.65);
+  border-color: var(--mini-red, rgba(224, 108, 117, 0.65));
 }
 .mini-light.on.red .core {
-  background: var(--red);
-  box-shadow: 0 0 12px rgba(224, 108, 117, 0.75);
+  background: var(--mini-red, var(--red));
+  box-shadow: 0 0 12px var(--mini-red, rgba(224, 108, 117, 0.75));
 }
 .mini-light.on.orange {
-  border-color: rgba(229, 192, 123, 0.6);
+  border-color: var(--mini-orange, rgba(229, 192, 123, 0.6));
 }
 .mini-light.on.orange .core {
-  background: var(--yellow);
-  box-shadow: 0 0 12px rgba(229, 192, 123, 0.7);
+  background: var(--mini-orange, var(--yellow));
+  box-shadow: 0 0 12px var(--mini-orange, rgba(229, 192, 123, 0.7));
 }
 .mini-light.on.green {
-  border-color: rgba(152, 195, 121, 0.6);
+  border-color: var(--mini-green, rgba(152, 195, 121, 0.6));
 }
 .mini-light.on.green .core {
-  background: var(--green);
-  box-shadow: 0 0 12px rgba(152, 195, 121, 0.7);
+  background: var(--mini-green, var(--green));
+  box-shadow: 0 0 12px var(--mini-green, rgba(152, 195, 121, 0.7));
+}
+
+/* Mini context menu ------------------------------------------------------ */
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  padding: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+
+.context-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--rule);
+}
+
+.context-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.context-item:hover {
+  background: var(--sel);
 }
 
 /* Light ------------------------------------------------------------------ */
@@ -242,16 +319,16 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .light.red .light-core {
-  background: var(--red);
-  box-shadow: 0 0 18px rgba(224, 108, 117, 0.75);
+  background: var(--mini-red, var(--red));
+  box-shadow: 0 0 18px var(--mini-red, rgba(224, 108, 117, 0.75));
 }
 .light.orange .light-core {
-  background: var(--yellow);
-  box-shadow: 0 0 18px rgba(229, 192, 123, 0.7);
+  background: var(--mini-orange, var(--yellow));
+  box-shadow: 0 0 18px var(--mini-orange, rgba(229, 192, 123, 0.7));
 }
 .light.green .light-core {
-  background: var(--green);
-  box-shadow: 0 0 18px rgba(152, 195, 121, 0.7);
+  background: var(--mini-green, var(--green));
+  box-shadow: 0 0 18px var(--mini-green, rgba(152, 195, 121, 0.7));
 }
 .light.gray .light-core {
   background: #5c6370;
@@ -299,13 +376,13 @@ body[data-collapse="triple_vertical"] .mini-triple {
 }
 
 .chip.red .dot {
-  background: var(--red);
+  background: var(--mini-red, var(--red));
 }
 .chip.orange .dot {
-  background: var(--yellow);
+  background: var(--mini-orange, var(--yellow));
 }
 .chip.green .dot {
-  background: var(--green);
+  background: var(--mini-green, var(--green));
 }
 .chip.gray .dot {
   background: #5c6370;
@@ -391,13 +468,13 @@ body[data-collapse="triple_vertical"] .mini-triple {
   background: var(--dim);
 }
 .session.red .status-dot {
-  background: var(--red);
+  background: var(--mini-red, var(--red));
 }
 .session.orange .status-dot {
-  background: var(--yellow);
+  background: var(--mini-orange, var(--yellow));
 }
 .session.green .status-dot {
-  background: var(--green);
+  background: var(--mini-green, var(--green));
 }
 
 .session .meta {
@@ -441,6 +518,12 @@ body[data-collapse="triple_vertical"] .mini-triple {
   letter-spacing: 0.03em;
 }
 
+/* Tool-spawned child session marker; only drawn when subagents are shown. */
+.badge.sub {
+  background: #243039;
+  color: #7fb4d6;
+}
+
 .status-text {
   text-transform: lowercase;
 }
@@ -461,6 +544,23 @@ body[data-collapse="triple_vertical"] .mini-triple {
 .remove:hover {
   background: var(--red);
   color: #fff;
+}
+
+.session .open {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.session .open:hover {
+  background: var(--sel);
+  border-color: var(--accent);
 }
 
 .empty {
@@ -495,6 +595,19 @@ body[data-collapse="triple_vertical"] .mini-triple {
   gap: 5px;
   font-size: 12px;
   color: var(--dim);
+}
+
+#set-alarm-rows,
+#set-notification-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.triggers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .field.inline {
@@ -600,6 +713,30 @@ select:focus {
 
 input[type="checkbox"] {
   accent-color: var(--accent);
+}
+
+.mini-colors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.color-field input[type="color"] {
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  cursor: pointer;
 }
 
 .ghost {
