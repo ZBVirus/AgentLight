@@ -94,9 +94,11 @@ mod tests {
 
     fn samples(bytes: &[u8]) -> Vec<i16> {
         // Data chunk starts after the fixed 44-byte header in these fixtures.
-        bytes[44..]
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        // Plain indexing rather than `chunks_exact(2)`: newer clippy versions
+        // want `as_chunks`, which the workspace's minimum toolchain predates.
+        let data = &bytes[44..];
+        (0..data.len() / 2)
+            .map(|i| i16::from_le_bytes([data[2 * i], data[2 * i + 1]]))
             .collect()
     }
 
