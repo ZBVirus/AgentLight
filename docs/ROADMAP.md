@@ -280,6 +280,20 @@ decide and prioritize later.
 Captured from the round-6 testing feedback. Statuses updated as the follow-up
 work landed.
 
+- **`Clear done` over a hub reports stale rows it cannot remove. Bug, fix
+  next.** Found after 6f: with two `done` rows in the expanded view, "Clear
+  done" reported "Cleared 2 done sessions" but removed one; the next clicks
+  kept reporting "Cleared 1" and removed nothing, until the row's X was used.
+  Cause: `EventPushSource::snapshot()` marks a session `done` when it is older
+  than the 24 h staleness window **in the returned copy only**, but
+  `clear_done()` filters the stored `is_done` flag, so a stale-reaped row
+  renders as done yet is not in the clear set; the engine reports
+  `done.len()` from the rendered models, hence the repeated count.
+  - Fix: select the clear set with the same cutoff `snapshot()` uses (stored
+    `is_done` **or** `updated_at` at/before the cutoff), tombstone those ids as
+    today, and report the number actually removed so the toast cannot claim
+    more than the source deleted. Regression test: a stale non-`done` push
+    session disappears on Clear done and is not counted again.
 - **Settings dirty-state feedback. Planned.** Back/Esc discard silently today.
   Mark the form when it differs from the saved config (dot on the Save button
   or a short "unsaved changes" hint) and/or dim/disable Save when nothing

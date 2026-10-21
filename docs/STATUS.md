@@ -26,6 +26,11 @@ bundle. See the "Branch layout" and "Cleanup" sections below, and
   fixes, instant drag-aware click-away, one round trip per hub mutation,
   `localhost` → `127.0.0.1`, BOM tolerance, push-session staleness).
   NSIS installer + portable exe + `agentlight-server` on the release page.
+- Known issue in `v0.5.0`: "Clear done" over a hub can report a stale row it
+  cannot remove — a session reaped by the 24 h push-staleness rule renders as
+  `done` but is not in the push store's clear set, so the toast keeps counting
+  it. Use the row's X meanwhile. Fix queued for the next chat; diagnosis and
+  regression test are written down in `docs/ROADMAP.md` (round-6 backlog).
 - Previous release: `v0.4.0` = `834f7e4`.
 - Older tags: `v0.3.0`, `v0.2.0-single-light`, `v0.2.0-triple-light`,
   `checkpoint-2026-09-13`.
